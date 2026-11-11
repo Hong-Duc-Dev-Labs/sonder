@@ -1,23 +1,20 @@
-//! Command-line harness: list exclusive-mode devices and play one file bit-perfect.
+//! Command-line harness: list exclusive-mode devices and play files or folders bit-perfect.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use sonder_decode::Decoder;
+use sonder_engine::{Player, PlayerConfig, PlayerEvent};
 use sonder_output::format::pack;
-use sonder_output::{
-    DeviceInfo, OutputBackend, SampleContainer, StreamOptions, WriteTap, negotiate, sample_ring,
-};
+use sonder_output::{DeviceFormat, DeviceInfo, OutputBackend, SampleContainer, WriteTap};
 
-/// Seconds of decoded audio buffered between the decoder and the render thread.
-const QUEUE_SECONDS: usize = 1;
+/// File extensions queued when a folder is given.
+const AUDIO_EXTENSIONS: [&str; 7] = ["flac", "wav", "aif", "aiff", "m4a", "mp4", "alac"];
 
 #[derive(Parser)]
 #[command(
@@ -34,15 +31,20 @@ struct Cli {
 enum Command {
     /// List output devices and the stereo formats they accept in exclusive mode.
     Devices,
-    /// Play one file in exclusive mode at its native rate and bit depth.
+    /// Play files and folders gapless in exclusive mode at their native rate and bit depth.
     Play {
-        file: PathBuf,
+        /// Audio files, or folders whose audio files are queued in name order.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
         /// Device index from `sonder-cli devices` (default: the system default device).
         #[arg(long)]
         device: Option<usize>,
+        /// Software volume in dB (disables bit-perfect output).
+        #[arg(long, allow_hyphen_values = true)]
+        volume: Option<f64>,
         /// Hash the bytes written into the device buffer and compare them with the decoded
-        /// samples packed into the same container.
-        #[arg(long)]
+        /// samples packed into the same container. Needs every track to share one stream.
+        #[arg(long, conflicts_with = "volume")]
         verify_hash: bool,
     },
 }
@@ -51,10 +53,11 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Devices => list_devices(),
         Command::Play {
-            file,
+            paths,
             device,
+            volume,
             verify_hash,
-        } => play(file, device, verify_hash),
+        } => play(paths, device, volume, verify_hash),
     }
 }
 
@@ -63,9 +66,19 @@ fn backend() -> Result<Box<dyn OutputBackend>> {
     Ok(Box::new(sonder_output::wasapi::WasapiExclusive::new()))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn backend() -> Result<Box<dyn OutputBackend>> {
-    bail!("no exclusive-mode output backend exists for this platform yet")
+    Ok(Box::new(sonder_output::coreaudio::CoreAudioHog::new()))
+}
+
+#[cfg(target_os = "linux")]
+fn backend() -> Result<Box<dyn OutputBackend>> {
+    Ok(Box::new(sonder_output::alsa::AlsaHw::new()))
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+fn backend() -> Result<Box<dyn OutputBackend>> {
+    bail!("no exclusive-mode output backend exists for this platform")
 }
 
 fn list_devices() -> Result<()> {
@@ -108,10 +121,41 @@ fn pick_device(devices: &[DeviceInfo], index: Option<usize>) -> Result<&DeviceIn
     }
 }
 
-/// Records the SHA-256 of every audio byte the render thread writes into the device buffer.
+/// Expands folders into their audio files, sorted by name; files are kept in the given order.
+fn collect_tracks(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut tracks = Vec::new();
+    for path in paths {
+        if path.is_dir() {
+            let mut files: Vec<PathBuf> = std::fs::read_dir(path)
+                .with_context(|| format!("cannot read {}", path.display()))?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_file() && is_audio(p))
+                .collect();
+            files.sort();
+            tracks.extend(files);
+        } else {
+            tracks.push(path.clone());
+        }
+    }
+    if tracks.is_empty() {
+        bail!("no audio files found");
+    }
+    Ok(tracks)
+}
+
+fn is_audio(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| AUDIO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// SHA-256 of every audio byte written into the device buffer, one entry per stream.
+type Digests = Arc<Mutex<Vec<(DeviceFormat, String)>>>;
+
 struct HashTap {
+    format: DeviceFormat,
     hasher: Sha256,
-    result: Arc<Mutex<Option<String>>>,
+    result: Digests,
 }
 
 impl WriteTap for HashTap {
@@ -121,8 +165,8 @@ impl WriteTap for HashTap {
 
     fn finish(&mut self) {
         let digest = std::mem::take(&mut self.hasher).finalize();
-        if let Ok(mut slot) = self.result.lock() {
-            *slot = Some(hex(&digest));
+        if let Ok(mut all) = self.result.lock() {
+            all.push((self.format, hex(&digest)));
         }
     }
 }
@@ -131,155 +175,153 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-struct DecodeSummary {
-    /// SHA-256 of the decoded samples packed into the device container (verify mode only).
-    expected_hash: Option<String>,
-    skipped_packets: u64,
-    /// Samples with non-zero bits below the source bit depth (verify mode only).
-    misaligned: u64,
-    error: Option<String>,
-}
-
-fn play(file: PathBuf, device: Option<usize>, verify_hash: bool) -> Result<()> {
-    let mut decoder =
-        Decoder::open(&file).with_context(|| format!("cannot open {}", file.display()))?;
-    let source = decoder.format();
-
-    let mut backend = backend()?;
+fn play(
+    paths: Vec<PathBuf>,
+    device: Option<usize>,
+    volume: Option<f64>,
+    verify_hash: bool,
+) -> Result<()> {
+    let tracks = collect_tracks(&paths)?;
+    let backend = backend()?;
     let devices = backend.devices()?;
     let device = pick_device(&devices, device)?;
-    let format = negotiate(
-        backend.as_ref(),
-        &device.id,
-        source.rate,
-        source.bits,
-        source.channels,
-    )
-    .with_context(|| format!("cannot play on {}", device.name))?;
+    eprintln!("Device: {} (exclusive)", device.name);
 
-    eprintln!(
-        "Source: {} Hz, {}-bit, {} ch",
-        source.rate, source.bits, source.channels
-    );
-    eprintln!("Device: {} (exclusive) at {format}", device.name);
-
-    let (mut producer, ring_source) =
-        sample_ring(source.rate as usize * QUEUE_SECONDS, source.channels);
-    let device_hash = Arc::new(Mutex::new(None));
-    let options = StreamOptions {
-        tap: verify_hash.then(|| {
+    let mut config = PlayerConfig::new(device.id.clone());
+    let digests: Digests = Arc::default();
+    if verify_hash {
+        let digests = digests.clone();
+        config.tap = Some(Box::new(move |format| {
             Box::new(HashTap {
+                format,
                 hasher: Sha256::new(),
-                result: device_hash.clone(),
+                result: digests.clone(),
             }) as Box<dyn WriteTap>
-        }),
-    };
-    let stream = backend.open(&device.id, format, ring_source, options)?;
-    let handle = stream.handle();
+        }));
+    }
 
-    let container = format.container;
-    let decode_thread = thread::Builder::new()
-        .name("sonder-decode".into())
-        .spawn(move || {
-            let mut hasher = verify_hash.then(Sha256::new);
-            let low_mask = if source.bits >= 32 {
-                0
-            } else {
-                (1i32 << (32 - source.bits)) - 1
-            };
-            let mut misaligned = 0u64;
-            let mut block = Vec::new();
-            let mut packed = Vec::new();
-            let mut error = None;
-            loop {
-                match decoder.next_i32(&mut block) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        if let Some(hasher) = hasher.as_mut() {
-                            // `pack` drops low bits, so a decoder that failed to left-justify
-                            // would hash identically on both sides. Catch that here.
-                            misaligned +=
-                                block.iter().filter(|&&s| s & low_mask != 0).count() as u64;
-                            packed.resize(block.len() * container.bytes(), 0);
-                            pack(container, &block, &mut packed);
-                            hasher.update(&packed);
-                        }
-                        if !producer.push(&block) {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        // Untrusted input: a broken file ends the track, never the process.
-                        error = Some(e.to_string());
-                        break;
-                    }
+    let (player, events) = Player::spawn(backend, config).context("cannot start the player")?;
+    if volume.is_some() {
+        player.set_volume(volume);
+    }
+    player.enqueue(tracks.clone());
+    player.play();
+
+    let mut failures = 0;
+    let mut underruns = 0;
+    let mut lost = false;
+    for event in events.iter() {
+        match event {
+            PlayerEvent::TrackChanged {
+                index,
+                path,
+                source,
+                ..
+            } => {
+                eprintln!(
+                    "\n[{}/{}] {} ({} Hz, {}-bit, {} ch)",
+                    index + 1,
+                    tracks.len(),
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    source.rate,
+                    source.bits,
+                    source.channels
+                );
+            }
+            PlayerEvent::OutputFormat(format) => {
+                eprintln!("Output: {format}");
+                // After a device loss the player reopens paused; a CLI run just carries on.
+                if std::mem::take(&mut lost) {
+                    player.play();
                 }
             }
-            DecodeSummary {
-                expected_hash: hasher.map(|h| hex(&h.finalize())),
-                skipped_packets: decoder.skipped_packets(),
-                misaligned,
-                error,
+            PlayerEvent::Position { elapsed, .. } => {
+                let secs = elapsed.as_secs();
+                eprint!(
+                    "\r{:02}:{:02}  underruns: {underruns}",
+                    secs / 60,
+                    secs % 60
+                );
+                let _ = std::io::stderr().flush();
             }
-            // Dropping `producer` here marks the end of input.
-        })
-        .context("cannot spawn decoder thread")?;
-
-    while !stream.is_finished() {
-        thread::sleep(Duration::from_millis(250));
-        let secs = handle.frames_written() / u64::from(source.rate);
-        eprint!(
-            "\r{:02}:{:02}  underruns: {}",
-            secs / 60,
-            secs % 60,
-            handle.underruns()
-        );
-        let _ = std::io::stderr().flush();
+            PlayerEvent::Underruns(total) => underruns = total,
+            PlayerEvent::TrackFailed { path, error, .. } => {
+                failures += 1;
+                eprintln!("\nSkipped {}: {error}", path.display());
+            }
+            PlayerEvent::DeviceLost(reason) => {
+                lost = true;
+                eprintln!("\nDevice lost ({reason}); waiting for it to come back...");
+            }
+            PlayerEvent::DeviceBusy => {
+                bail!("the device is in use by another application");
+            }
+            PlayerEvent::OutputFailed(reason) => bail!("output failed: {reason}"),
+            PlayerEvent::EndOfQueue => break,
+            _ => {}
+        }
     }
     eprintln!();
+    drop(player);
 
-    let report = stream.wait()?;
-    let decoded = decode_thread
-        .join()
-        .map_err(|_| anyhow!("decoder thread panicked"))?;
-
-    eprintln!(
-        "Frames played: {}, underruns: {}",
-        report.frames_written, report.underruns
-    );
-    if decoded.skipped_packets > 0 {
-        eprintln!("Skipped {} corrupt packets", decoded.skipped_packets);
-    }
-    if let Some(e) = &decoded.error {
-        eprintln!("Decoding stopped early: {e}");
-    }
-
+    eprintln!("Underruns: {underruns}");
     if verify_hash {
-        let expected = decoded.expected_hash.unwrap_or_default();
-        let written = device_hash
-            .lock()
-            .map_err(|_| anyhow!("hash lock poisoned"))?
-            .clone();
-        let written = written.unwrap_or_default();
-        eprintln!("Decoded  sha256: {expected}");
-        eprintln!("Device   sha256: {written}");
-        if expected.is_empty() || expected != written {
-            bail!("bit-perfect check FAILED: device bytes differ from decoded samples");
-        }
-        if decoded.misaligned > 0 {
-            bail!(
-                "bit-perfect check FAILED: {} decoded samples carry bits below {}-bit",
-                decoded.misaligned,
-                source.bits
-            );
-        }
-        if report.underruns > 0 {
-            bail!(
-                "bit-perfect check FAILED: {} underruns inserted silence",
-                report.underruns
-            );
-        }
-        eprintln!("Bit-perfect check PASSED ({container} container)");
+        verify(&tracks, &digests, underruns)?;
     }
+    if failures > 0 {
+        bail!("{failures} track(s) could not be played");
+    }
+    Ok(())
+}
+
+/// Compares the device-side digest with the decoded tracks packed into the same container.
+fn verify(tracks: &[PathBuf], digests: &Digests, underruns: u64) -> Result<()> {
+    let sessions = digests
+        .lock()
+        .map_err(|_| anyhow!("hash lock poisoned"))?
+        .clone();
+    let [(format, written)] = sessions.as_slice() else {
+        bail!(
+            "verification needs one continuous stream, but {} streams were opened \
+             (tracks differ in rate or channels)",
+            sessions.len()
+        );
+    };
+    let container = format.container;
+    let mut hasher = Sha256::new();
+    let mut block = Vec::new();
+    let mut packed = Vec::new();
+    for track in tracks {
+        let mut decoder = Decoder::open(track)?;
+        let bits = decoder.format().bits;
+        let low_mask = if bits >= 32 {
+            0
+        } else {
+            (1i32 << (32 - bits)) - 1
+        };
+        while decoder.next_i32(&mut block)? > 0 {
+            // `pack` drops low bits, so a decoder that failed to left-justify would hash
+            // identically on both sides. Catch that here.
+            if block.iter().any(|&s| s & low_mask != 0) {
+                bail!(
+                    "bit-perfect check FAILED: {} carries bits below {bits}-bit",
+                    track.display()
+                );
+            }
+            packed.resize(block.len() * container.bytes(), 0);
+            pack(container, &block, &mut packed);
+            hasher.update(&packed);
+        }
+    }
+    let expected = hex(&hasher.finalize());
+    eprintln!("Decoded  sha256: {expected}");
+    eprintln!("Device   sha256: {written}");
+    if expected != *written {
+        bail!("bit-perfect check FAILED: device bytes differ from decoded samples");
+    }
+    if underruns > 0 {
+        bail!("bit-perfect check FAILED: {underruns} underruns inserted silence");
+    }
+    eprintln!("Bit-perfect check PASSED ({container} container)");
     Ok(())
 }

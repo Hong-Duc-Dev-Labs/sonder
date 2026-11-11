@@ -14,7 +14,7 @@ use ::wasapi::{
 };
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Media::Audio::{
-    AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_E_DEVICE_IN_USE,
+    AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_E_DEVICE_INVALIDATED,
     AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED, AUDCLNT_E_UNSUPPORTED_FORMAT,
 };
 use windows::Win32::System::Threading::{
@@ -75,6 +75,19 @@ impl OutputBackend for WasapiExclusive {
             });
         }
         Ok(devices)
+    }
+
+    fn device_ids(&self) -> Result<Vec<DeviceId>, OutputError> {
+        let _com = ComGuard::new();
+        let collection = DeviceEnumerator::new()
+            .map_err(backend)?
+            .get_device_collection(Direction::Render)
+            .map_err(backend)?;
+        let mut ids = Vec::new();
+        for device in &collection {
+            ids.push(DeviceId(device.and_then(|d| d.get_id()).map_err(backend)?));
+        }
+        Ok(ids)
     }
 
     fn is_supported(&self, device: &DeviceId, format: DeviceFormat) -> Result<bool, OutputError> {
@@ -175,6 +188,17 @@ fn backend(err: impl std::fmt::Display) -> OutputError {
     OutputError::Backend(err.to_string())
 }
 
+/// Classifies a failure of a running stream: an invalidated device (unplugged, disabled, format
+/// changed in the control panel, system sleep) is [`OutputError::DeviceLost`].
+fn stream_error(err: WasapiError) -> OutputError {
+    if let WasapiError::Windows(win) = &err
+        && win.code() == AUDCLNT_E_DEVICE_INVALIDATED
+    {
+        return OutputError::DeviceLost(err.to_string());
+    }
+    backend(err)
+}
+
 fn find_device(id: &DeviceId) -> Result<Device, OutputError> {
     DeviceEnumerator::new()
         .map_err(backend)?
@@ -230,6 +254,9 @@ fn init_error(err: WasapiError, device: &Device, format: DeviceFormat) -> Output
         let code = win.code();
         if code == AUDCLNT_E_DEVICE_IN_USE {
             return OutputError::DeviceInUse;
+        }
+        if code == AUDCLNT_E_DEVICE_INVALIDATED {
+            return OutputError::DeviceLost(err.to_string());
         }
         if code == AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED {
             return OutputError::ExclusiveNotAllowed;
@@ -350,17 +377,21 @@ fn run_stream(
         && !renderer.handle().is_stopping()
         && started.elapsed() < PREBUFFER_TIMEOUT
     {
+        // A seek during prebuffering must not wait for the first device period.
+        renderer.service_flush();
         thread::sleep(Duration::from_millis(1));
     }
 
     let result = (|| {
         // Fill the whole buffer before starting so playback opens with real audio.
-        let frames = client.get_available_space_in_frames().map_err(backend)? as usize;
+        let frames = client
+            .get_available_space_in_frames()
+            .map_err(stream_error)? as usize;
         let mut exhausted = renderer.fill(frames).input_exhausted;
         render_client
             .write_to_device(renderer.bytes(frames), None)
-            .map_err(backend)?;
-        client.start_stream().map_err(backend)?;
+            .map_err(stream_error)?;
+        client.start_stream().map_err(stream_error)?;
 
         let mut drain_left = DRAIN_PERIODS;
         let mut missed = 0;
@@ -368,7 +399,8 @@ fn run_stream(
             if event.wait_for_event(EVENT_WAIT_MS).is_err() {
                 missed += 1;
                 if missed > MAX_MISSED_EVENTS {
-                    return Err(OutputError::Backend(
+                    // Seen after system sleep and on some driver resets.
+                    return Err(OutputError::DeviceLost(
                         "the device stopped requesting audio".into(),
                     ));
                 }
@@ -376,7 +408,9 @@ fn run_stream(
             }
             missed = 0;
 
-            let frames = client.get_available_space_in_frames().map_err(backend)? as usize;
+            let frames = client
+                .get_available_space_in_frames()
+                .map_err(stream_error)? as usize;
             let frames = frames.min(buffer_frames);
             if frames == 0 {
                 continue;
@@ -392,7 +426,7 @@ fn run_stream(
             }
             render_client
                 .write_to_device(renderer.bytes(frames), None)
-                .map_err(backend)?;
+                .map_err(stream_error)?;
         }
         Ok(())
     })();

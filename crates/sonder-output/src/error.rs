@@ -8,6 +8,10 @@ pub enum OutputError {
     DeviceNotFound(String),
     #[error("the device is in use by another application")]
     DeviceInUse,
+    /// The device disappeared or stopped working mid-stream: unplugged, disabled, invalidated
+    /// by a system sleep, or reconfigured by another application.
+    #[error("the output device was lost: {0}")]
+    DeviceLost(String),
     #[error(
         "exclusive mode is not allowed on this device; enable \"Allow applications to take \
          exclusive control of this device\" in the Windows sound properties"

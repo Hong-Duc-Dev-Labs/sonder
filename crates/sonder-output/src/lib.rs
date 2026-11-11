@@ -4,8 +4,13 @@
 //! ([`sample_ring`]); the backend's render thread packs them into the negotiated device
 //! container without changing their value.
 
+#[cfg(target_os = "linux")]
+pub mod alsa;
+#[cfg(target_os = "macos")]
+pub mod coreaudio;
 mod error;
 pub mod format;
+pub mod null;
 mod render;
 mod ring;
 mod stream;
@@ -35,8 +40,23 @@ pub struct DeviceInfo {
     pub formats: Vec<DeviceFormat>,
 }
 
-pub trait OutputBackend {
+/// An exclusive-mode output API.
+///
+/// Errors from [`open`](Self::open) and from a running [`Stream`] use these variants so the
+/// engine can apply one recovery policy everywhere:
+/// - [`OutputError::DeviceInUse`]: another application holds the device exclusively.
+/// - [`OutputError::DeviceLost`] / [`OutputError::DeviceNotFound`]: the device went away
+///   (unplugged, invalidated, system sleep).
+/// - xruns are recovered inside the stream and only counted in
+///   [`StreamHandle::underruns`].
+pub trait OutputBackend: Send {
     fn devices(&self) -> Result<Vec<DeviceInfo>, OutputError>;
+
+    /// Ids of the devices currently present. Cheap enough to poll every few seconds: it does
+    /// not probe formats or open the device.
+    fn device_ids(&self) -> Result<Vec<DeviceId>, OutputError> {
+        Ok(self.devices()?.into_iter().map(|d| d.id).collect())
+    }
 
     /// Whether `device` accepts `format` exactly, without any conversion.
     fn is_supported(&self, device: &DeviceId, format: DeviceFormat) -> Result<bool, OutputError>;

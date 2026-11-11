@@ -19,9 +19,11 @@ use symphonia::core::codecs::audio::well_known::{
 use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
+use symphonia::core::packet::Packet;
+use symphonia::core::units::{Duration as TbDuration, TimeBase, Timestamp};
 use symphonia_common::apple::audio::alac::MagicCookie;
 
 /// Format of the decoded stream as stored in the source file.
@@ -60,6 +62,17 @@ pub struct Decoder {
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
     format: SourceFormat,
+    /// Track timebase when it is not simply one tick per frame.
+    time_base: Option<TimeBase>,
+    /// Timestamp of the first playable frame.
+    start_ts: i64,
+    /// Playable frames (encoder delay and padding excluded), when the container says.
+    total_frames: Option<u64>,
+    /// Index of the next frame [`next_i32`](Self::next_i32) or [`next_f64`](Self::next_f64)
+    /// returns, counted in playable frames from the start of the track.
+    position: u64,
+    /// After a seek: frames before this index are decoded and dropped.
+    seek_target: Option<u64>,
     /// Packets dropped because their payload was corrupt.
     skipped_packets: u64,
 }
@@ -87,6 +100,9 @@ impl Decoder {
             .default_track(TrackType::Audio)
             .ok_or_else(|| DecodeError::Unsupported("no audio track".into()))?;
         let track_id = track.id;
+        let track_time_base = track.time_base;
+        let start_ts = track.start_ts.get();
+        let total_frames = track.num_frames;
         let params = track
             .codec_params
             .as_ref()
@@ -124,6 +140,9 @@ impl Decoder {
         let decoder = symphonia::default::get_codecs()
             .make_audio_decoder(&params, &AudioDecoderOptions::default())?;
 
+        // One tick per frame is the common case; anything else is converted explicitly.
+        let time_base = track_time_base.filter(|tb| tb.numer.get() != 1 || tb.denom.get() != rate);
+
         Ok(Self {
             reader,
             decoder,
@@ -133,12 +152,87 @@ impl Decoder {
                 bits,
                 channels,
             },
+            time_base,
+            start_ts,
+            total_frames,
+            position: 0,
+            seek_target: None,
             skipped_packets: 0,
         })
     }
 
     pub fn format(&self) -> SourceFormat {
         self.format
+    }
+
+    /// Playable frames in the track (encoder delay and padding excluded), if known.
+    pub fn total_frames(&self) -> Option<u64> {
+        self.total_frames
+    }
+
+    /// Index of the next frame the decoder returns, in playable frames from the track start.
+    pub fn position(&self) -> u64 {
+        self.position
+    }
+
+    /// Moves to exactly `frame` (playable frames from the track start).
+    ///
+    /// The container seek may land early (FLAC without a seek table, coarse indexes); the
+    /// frames before `frame` are then decoded and dropped, so the next block starts on the
+    /// requested frame.
+    pub fn seek(&mut self, frame: u64) -> Result<(), DecodeError> {
+        let frame = self.total_frames.map_or(frame, |total| frame.min(total));
+        let ts = self.start_ts.saturating_add(self.ticks_from_frames(frame));
+        self.reader.seek(
+            SeekMode::Accurate,
+            SeekTo::Timestamp {
+                ts: Timestamp::new(ts),
+                track_id: self.track_id,
+            },
+        )?;
+        self.decoder.reset();
+        self.position = frame;
+        self.seek_target = Some(frame);
+        Ok(())
+    }
+
+    fn frames_from_ticks(&self, ticks: u64) -> u64 {
+        match self.time_base {
+            None => ticks,
+            Some(tb) => {
+                let v =
+                    u128::from(ticks) * u128::from(tb.numer.get()) * u128::from(self.format.rate)
+                        / u128::from(tb.denom.get());
+                u64::try_from(v).unwrap_or(u64::MAX)
+            }
+        }
+    }
+
+    fn ticks_from_frames(&self, frames: u64) -> i64 {
+        let ticks = match self.time_base {
+            None => u128::from(frames),
+            Some(tb) => {
+                u128::from(frames) * u128::from(tb.denom.get())
+                    / (u128::from(tb.numer.get()) * u128::from(self.format.rate))
+            }
+        };
+        i64::try_from(ticks).unwrap_or(i64::MAX)
+    }
+
+    fn frames_from_duration(&self, dur: TbDuration) -> usize {
+        usize::try_from(self.frames_from_ticks(dur.get())).unwrap_or(usize::MAX)
+    }
+
+    /// Frame index (from the track start) of the first playable frame in `packet`.
+    fn packet_start_frame(&self, packet: &Packet) -> i64 {
+        let first_valid = packet
+            .pts
+            .get()
+            .saturating_add_unsigned(packet.trim_start.get());
+        let offset = first_valid.saturating_sub(self.start_ts);
+        let frames = self.frames_from_ticks(offset.unsigned_abs());
+        let frames = i64::try_from(frames).unwrap_or(i64::MAX);
+        if offset < 0 { -frames } else { frames }
     }
 
     /// Number of corrupt packets skipped so far.
@@ -176,15 +270,37 @@ impl Decoder {
             if packet.track_id != self.track_id {
                 continue;
             }
-            match self.decoder.decode(&packet) {
-                Ok(buf) => {
-                    let frames = copy_checked(&buf, self.format.channels, out)?;
-                    if frames > 0 {
-                        return Ok(frames);
-                    }
+            let channels = usize::from(self.format.channels);
+            let trim_start = self.frames_from_duration(packet.trim_start);
+            let trim_end = self.frames_from_duration(packet.trim_end);
+            let start_frame = self.packet_start_frame(&packet);
+            let decoded = match self.decoder.decode(&packet) {
+                Ok(buf) => copy_checked(&buf, self.format.channels, out)?,
+                Err(SymphoniaError::DecodeError(_)) => {
+                    self.skipped_packets += 1;
+                    continue;
                 }
-                Err(SymphoniaError::DecodeError(_)) => self.skipped_packets += 1,
                 Err(e) => return Err(e.into()),
+            };
+
+            // Encoder delay and padding are decoded but never played; this is what makes
+            // gapless albums in lossy-framed containers line up.
+            let keep_end = decoded.saturating_sub(trim_end);
+            let mut keep_start = trim_start.min(keep_end);
+            if let Some(target) = self.seek_target {
+                let target = i64::try_from(target).unwrap_or(i64::MAX);
+                let before = usize::try_from(target.saturating_sub(start_frame)).unwrap_or(0);
+                keep_start = keep_start.saturating_add(before).min(keep_end);
+                if keep_start < keep_end {
+                    self.seek_target = None;
+                }
+            }
+            out.truncate(keep_end * channels);
+            out.drain(..keep_start * channels);
+            let frames = keep_end - keep_start;
+            if frames > 0 {
+                self.position += frames as u64;
+                return Ok(frames);
             }
         }
     }

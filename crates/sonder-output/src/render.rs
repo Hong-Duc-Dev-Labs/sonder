@@ -63,15 +63,53 @@ impl Renderer {
         self.source.handle.0.end_of_input.load(Ordering::Acquire)
     }
 
+    /// Discards everything queued if the producer asked for a flush since the last call.
+    ///
+    /// Called once per device period by [`fill`](Self::fill); backends that wait before their
+    /// first period (prebuffering) call it directly so a flush is never left hanging.
+    pub(crate) fn service_flush(&mut self) {
+        let shared = &self.source.handle.0;
+        let requested = shared.flush_requested.load(Ordering::Acquire);
+        if requested == shared.flush_done.load(Ordering::Relaxed) {
+            return;
+        }
+        let queued = self.source.consumer.slots();
+        if let Ok(chunk) = self.source.consumer.read_chunk(queued) {
+            chunk.commit_all();
+        }
+        shared
+            .frames_discarded
+            .fetch_add((queued / self.channels) as u64, Ordering::AcqRel);
+        shared.flush_done.store(requested, Ordering::Release);
+    }
+
+    /// Records a device xrun the backend recovered from without reopening.
+    pub(crate) fn note_xrun(&self) {
+        self.source
+            .handle
+            .0
+            .underruns
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Prepares `frames` frames: queued audio first, silence for whatever is missing.
     ///
-    /// A shortfall while the producer is still running counts as an underrun.
+    /// A shortfall while the producer is still running counts as an underrun. While paused,
+    /// the whole buffer is silence and the queue is left untouched.
     pub(crate) fn fill(&mut self, frames: usize) -> Fill {
         assert!(
             frames * self.frame_bytes <= self.scratch.len(),
             "fill larger than scratch"
         );
+        self.service_flush();
         let shared = &self.source.handle.0;
+        if shared.paused.load(Ordering::Acquire) {
+            self.scratch[..frames * self.frame_bytes].fill(0);
+            return Fill {
+                payload_frames: 0,
+                input_exhausted: false,
+            };
+        }
 
         // Read the end-of-input flag before the queue length: once the flag is seen, every
         // sample pushed before it is visible, so an empty queue really means the end.
@@ -121,6 +159,7 @@ impl Renderer {
     }
 
     /// Prepares `frames` frames of silence without touching the queue or the tap.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn silence(&mut self, frames: usize) {
         assert!(
             frames * self.frame_bytes <= self.scratch.len(),
@@ -246,6 +285,58 @@ mod tests {
         assert_eq!(renderer.bytes(3), &[0u8; 18]);
         assert!(captured.lock().unwrap().is_empty());
         assert_eq!(renderer.handle().frames_written(), 0);
+    }
+
+    #[test]
+    fn pause_plays_silence_and_keeps_the_queue() {
+        let (mut producer, source) = sample_ring(16, 2);
+        let mut renderer = Renderer::new(source, FORMAT, 8, None);
+        assert!(producer.push(&[1 << 8, 2 << 8, 3 << 8, 4 << 8]));
+        renderer.handle().set_paused(true);
+
+        let fill = renderer.fill(4);
+        assert_eq!(fill.payload_frames, 0);
+        assert!(renderer.bytes(4).iter().all(|&b| b == 0));
+        assert_eq!(renderer.queued_samples(), 4);
+        assert_eq!(renderer.handle().underruns(), 0);
+
+        renderer.handle().set_paused(false);
+        assert_eq!(renderer.fill(2).payload_frames, 2);
+    }
+
+    #[test]
+    fn flush_discards_queued_frames_and_counts_them_as_consumed() {
+        let (mut producer, source) = sample_ring(16, 2);
+        let handle = producer.handle();
+        let mut renderer = Renderer::new(source, FORMAT, 8, None);
+        assert!(producer.push(&[1 << 8; 12]));
+        assert_eq!(renderer.fill(2).payload_frames, 2);
+
+        // Pause first so the flush, not playback, empties the queue.
+        handle.set_paused(true);
+        let render = std::thread::spawn(move || {
+            while renderer.queued_samples() > 0 {
+                renderer.fill(1);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            renderer
+        });
+        assert!(producer.flush(std::time::Duration::from_secs(1)));
+        let renderer = render.join().unwrap();
+
+        assert_eq!(renderer.queued_samples(), 0);
+        assert_eq!(handle.frames_written(), 2);
+        assert_eq!(handle.frames_consumed(), 6);
+    }
+
+    #[test]
+    fn push_some_queues_whole_frames_only() {
+        let (mut producer, source) = sample_ring(3, 2);
+        let renderer = Renderer::new(source, FORMAT, 8, None);
+        assert_eq!(producer.push_some(&[0; 5]), 4);
+        assert_eq!(producer.push_some(&[0; 4]), 2);
+        assert_eq!(producer.push_some(&[0; 4]), 0);
+        assert_eq!(renderer.queued_samples(), 6);
     }
 
     #[test]

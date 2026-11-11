@@ -162,6 +162,54 @@ fn float_wav_is_refused_as_floating_point() {
     assert!(err.to_string().contains("floating-point"), "{err}");
 }
 
+fn decode_from(path: &Path, frame: u64) -> Vec<i32> {
+    let mut dec = Decoder::open(path).unwrap();
+    dec.seek(frame).unwrap();
+    assert_eq!(dec.position(), frame);
+    let mut all = Vec::new();
+    let mut block = Vec::new();
+    while dec.next_i32(&mut block).unwrap() > 0 {
+        all.extend_from_slice(&block);
+    }
+    all
+}
+
+#[test]
+fn seek_lands_on_the_exact_frame() {
+    let src = signal(16, 2, 20_000);
+    let wav = temp_path("seek.wav");
+    write_wav(&wav, 44_100, 16, 2, &src);
+    let flac_path = temp_path("seek.flac");
+    flac::write(&flac_path, 44_100, 16, 2, &src);
+    let (_, full) = decode_all(&flac_path);
+
+    for path in [&wav, &flac_path] {
+        // Inside a block, on a block boundary, the first and the last frame.
+        for frame in [0u64, 1, 4095, 4096, 12_345, 19_999] {
+            let start = frame as usize * 2;
+            assert_eq!(
+                decode_from(path, frame),
+                full[start..],
+                "{} at {frame}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn seek_past_the_end_yields_nothing() {
+    let src = signal(16, 2, 1_000);
+    let path = temp_path("seek-end.flac");
+    flac::write(&path, 44_100, 16, 2, &src);
+    let mut dec = Decoder::open(&path).unwrap();
+    assert_eq!(dec.total_frames(), Some(1_000));
+    if dec.seek(5_000).is_ok() {
+        let mut block = Vec::new();
+        assert_eq!(dec.next_i32(&mut block).unwrap(), 0);
+    }
+}
+
 #[test]
 fn garbage_file_is_an_error_not_a_panic() {
     let path = temp_path("garbage.flac");

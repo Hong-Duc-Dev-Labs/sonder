@@ -133,7 +133,12 @@ impl Library {
         // 1. Walk.
         let walked: Vec<WalkOutput> = scopes
             .par_iter()
-            .map(|s| walk(&s.path, s.root.follow_symlinks || s.path == s.root.path))
+            .map(|s| {
+                let follow = s.root.follow_symlinks;
+                // The root itself is the user's choice even when it is a link; anything
+                // linked inside it is followed only on opt-in.
+                walk(&s.path, follow || s.path == s.root.path, follow)
+            })
             .collect();
 
         // 2. Diff.
@@ -315,8 +320,9 @@ fn prefix_range(dir: &str) -> (String, String) {
     (format!("{base}{MAIN_SEPARATOR}"), format!("{base}{after}"))
 }
 
-/// Lists audio files at or below `path`, walking its subfolders in parallel.
-fn walk(path: &Path, follow_top: bool) -> WalkOutput {
+/// Lists audio files at or below `path`, walking its subfolders in parallel. `follow_top`
+/// applies to `path` itself, `follow_links` to every link below it.
+fn walk(path: &Path, follow_top: bool, follow_links: bool) -> WalkOutput {
     let mut out = WalkOutput::default();
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
@@ -356,14 +362,19 @@ fn walk(path: &Path, follow_top: bool) -> WalkOutput {
     };
     children
         .into_par_iter()
-        .map(|child| walk_tree(&child.path(), follow_top))
+        .map(|child| walk_tree(&child.path(), follow_links))
         .reduce(WalkOutput::default, WalkOutput::merge)
         .merge(out)
 }
 
 fn walk_tree(path: &Path, follow_links: bool) -> WalkOutput {
     let mut out = WalkOutput::default();
-    for entry in WalkDir::new(path).follow_links(follow_links) {
+    // `path` is a child of the walked folder, so a link there is no more trusted than one
+    // deeper down (walkdir follows a link passed as its root unless told otherwise).
+    let walker = WalkDir::new(path)
+        .follow_links(follow_links)
+        .follow_root_links(follow_links);
+    for entry in walker {
         match entry {
             Ok(entry) => {
                 if !entry.file_type().is_file() {

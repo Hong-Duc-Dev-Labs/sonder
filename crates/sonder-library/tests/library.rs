@@ -563,28 +563,49 @@ fn reopening_keeps_the_index_and_two_connections_share_it() {
     assert_eq!(b.albums(AlbumSort::Title).unwrap().len(), 3);
 }
 
-#[cfg(unix)]
+/// Creates a directory symlink; `false` when the OS refuses (Windows without Developer Mode).
+fn link_dir(target: &Path, link: &Path) -> bool {
+    fs::create_dir_all(link.parent().unwrap()).unwrap();
+    #[cfg(unix)]
+    let result = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let result = std::os::windows::fs::symlink_dir(target, link);
+    match result {
+        Ok(()) => true,
+        Err(e) if cfg!(windows) => {
+            eprintln!("skipping: cannot create symlinks here ({e})");
+            false
+        }
+        Err(e) => panic!("symlink: {e}"),
+    }
+}
+
 #[test]
 fn symlinks_are_followed_only_on_opt_in() {
     let env = Env::new();
-    let outside = env.music.with_file_name("outside");
-    flac(
-        &outside.join("x.flac"),
-        44_100,
-        16,
-        2,
-        1,
-        &Meta {
-            title: Some("Outside"),
-            ..Default::default()
-        },
-    );
-    std::os::unix::fs::symlink(&outside, env.path("link")).unwrap();
+    // One link directly in the root and one in a subfolder, both leading outside it.
+    for (name, link) in [("outside-a", "link"), ("outside-b", "Album/link")] {
+        let outside = env.music.with_file_name(name);
+        flac(
+            &outside.join("x.flac"),
+            44_100,
+            16,
+            2,
+            1,
+            &Meta {
+                title: Some(name),
+                ..Default::default()
+            },
+        );
+        if !link_dir(&outside, &env.path(link)) {
+            return;
+        }
+    }
     let mut lib = env.open();
     lib.add_root(&env.music, false).unwrap();
     assert_eq!(lib.scan().unwrap().added, 0);
     lib.add_root(&env.music, true).unwrap();
-    assert_eq!(lib.scan().unwrap().added, 1);
+    assert_eq!(lib.scan().unwrap().added, 2);
 }
 
 #[test]

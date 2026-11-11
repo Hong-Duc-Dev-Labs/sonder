@@ -618,3 +618,25 @@ fn missing_paths_do_not_need_to_exist_to_be_ignored() {
         .unwrap();
     assert!(!report.changed());
 }
+
+#[test]
+fn alac_with_a_padded_sample_entry_is_indexed() {
+    let env = Env::new();
+    let path = env.path("Album/01 Padded.m4a");
+    fixtures::alac_m4a_padded(&path, 96_000, 24);
+    // The case being covered: lofty reads the file but cannot name its codec.
+    {
+        use lofty::file::AudioFile;
+        let mut file = fs::File::open(&path).unwrap();
+        let mp4 =
+            lofty::mp4::Mp4File::read_from(&mut file, lofty::config::ParseOptions::new()).unwrap();
+        assert_eq!(mp4.properties().codec(), None);
+    }
+    let meta = sonder_library::read_file(&path).unwrap();
+    assert_eq!(meta.audio.codec, Codec::Alac);
+    assert_eq!(
+        (meta.audio.rate, meta.audio.bits, meta.audio.channels),
+        (96_000, Some(24), 2)
+    );
+    assert_eq!(meta.tags.title.as_deref(), Some("Padded"));
+}

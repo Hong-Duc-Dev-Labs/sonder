@@ -240,3 +240,112 @@ pub fn dff(path: &Path, rate: u32, millis: u64, m: Option<&Meta>, native_title: 
     f.extend_from_slice(&body);
     fs::write(path, f).unwrap();
 }
+
+fn mp4_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    let mut out = ((8 + body.len()) as u32).to_be_bytes().to_vec();
+    out.extend_from_slice(kind);
+    out.extend_from_slice(body);
+    out
+}
+
+fn full_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    let mut b = vec![0u8; 4]; // version + flags
+    b.extend_from_slice(body);
+    mp4_box(kind, &b)
+}
+
+/// An ALAC `.m4a` with no audio samples whose sample entry carries a `free` padding box
+/// after the `alac` config, as some encoders write it. lofty cannot name its codec.
+pub fn alac_m4a_padded(path: &Path, rate: u32, bits: u8) {
+    mkdirs(path);
+    let channels = 2u16;
+    // ALACSpecificConfig.
+    let mut cookie = Vec::new();
+    cookie.extend_from_slice(&4096u32.to_be_bytes()); // frame length
+    cookie.extend_from_slice(&[0, bits, 40, 10, 14, channels as u8]);
+    cookie.extend_from_slice(&255u16.to_be_bytes()); // max run
+    cookie.extend_from_slice(&0u32.to_be_bytes()); // max frame bytes
+    cookie.extend_from_slice(&0u32.to_be_bytes()); // average bit rate
+    cookie.extend_from_slice(&rate.to_be_bytes());
+
+    let mut entry = vec![0u8; 6];
+    entry.extend_from_slice(&1u16.to_be_bytes()); // data reference index
+    entry.extend_from_slice(&[0; 8]); // version, revision, vendor
+    entry.extend_from_slice(&channels.to_be_bytes());
+    entry.extend_from_slice(&u16::from(bits).to_be_bytes());
+    entry.extend_from_slice(&[0; 4]); // compression id, packet size
+    entry.extend_from_slice(&((rate.min(65_535)) << 16).to_be_bytes());
+    entry.extend(full_box(b"alac", &cookie));
+    entry.extend(mp4_box(b"free", &[0; 89]));
+
+    let mut stsd = 1u32.to_be_bytes().to_vec();
+    stsd.extend(mp4_box(b"alac", &entry));
+    let empty_table = 0u32.to_be_bytes();
+    let mut stsz = 0u32.to_be_bytes().to_vec(); // sample size
+    stsz.extend_from_slice(&0u32.to_be_bytes()); // count
+    let stbl = [
+        full_box(b"stsd", &stsd),
+        full_box(b"stts", &empty_table),
+        full_box(b"stsc", &empty_table),
+        full_box(b"stsz", &stsz),
+        full_box(b"stco", &empty_table),
+    ]
+    .concat();
+    let dinf = mp4_box(
+        b"dinf",
+        &full_box(
+            b"dref",
+            &[0, 0, 0, 1, 0, 0, 0, 12, b'u', b'r', b'l', b' ', 0, 0, 0, 1],
+        ),
+    );
+    let minf = [full_box(b"smhd", &[0; 4]), dinf, mp4_box(b"stbl", &stbl)].concat();
+
+    let mut mdhd = vec![0u8; 8]; // creation, modification
+    mdhd.extend_from_slice(&rate.to_be_bytes()); // timescale
+    mdhd.extend_from_slice(&0u32.to_be_bytes()); // duration
+    mdhd.extend_from_slice(&[0x55, 0xc4, 0, 0]); // language "und", quality
+    let mut hdlr = vec![0u8; 4];
+    hdlr.extend_from_slice(b"soun");
+    hdlr.extend_from_slice(&[0; 13]);
+    let mdia = [
+        full_box(b"mdhd", &mdhd),
+        full_box(b"hdlr", &hdlr),
+        mp4_box(b"minf", &minf),
+    ]
+    .concat();
+
+    let mut tkhd = vec![0u8; 8];
+    tkhd.extend_from_slice(&1u32.to_be_bytes()); // track id
+    tkhd.extend_from_slice(&[0; 4 + 4 + 8 + 2 + 2 + 2 + 2]);
+    for v in [0x0001_0000u32, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000] {
+        tkhd.extend_from_slice(&v.to_be_bytes());
+    }
+    tkhd.extend_from_slice(&[0; 8]); // width, height
+    let trak = mp4_box(
+        b"trak",
+        &[full_box(b"tkhd", &tkhd), mp4_box(b"mdia", &mdia)].concat(),
+    );
+
+    let mut mvhd = vec![0u8; 8];
+    mvhd.extend_from_slice(&1000u32.to_be_bytes());
+    mvhd.extend_from_slice(&0u32.to_be_bytes());
+    mvhd.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // rate
+    mvhd.extend_from_slice(&[0x01, 0x00, 0, 0]); // volume, reserved
+    mvhd.extend_from_slice(&[0; 8]);
+    for v in [0x0001_0000u32, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000] {
+        mvhd.extend_from_slice(&v.to_be_bytes());
+    }
+    mvhd.extend_from_slice(&[0; 24]);
+    mvhd.extend_from_slice(&2u32.to_be_bytes()); // next track id
+
+    let mut ftyp = b"M4A ".to_vec();
+    ftyp.extend_from_slice(&0u32.to_be_bytes());
+    ftyp.extend_from_slice(b"M4A mp42isom");
+    let file = [
+        mp4_box(b"ftyp", &ftyp),
+        mp4_box(b"moov", &[full_box(b"mvhd", &mvhd), trak].concat()),
+        mp4_box(b"mdat", &[]),
+    ]
+    .concat();
+    fs::write(path, file).unwrap();
+}

@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Phase 2: Engine, gapless and OS backends"
-status: todo
+status: in-progress
 priority: P1
 effort: "2w"
 dependencies: [1]
@@ -36,15 +36,15 @@ macOS and Linux.
 
 ## Requirements
 
-- [ ] `sonder-engine`: `Player` with commands play/pause/stop/seek/next/prev/enqueue/clear, state events (position, track, format, underruns) over a crossbeam channel.
-- [ ] Gapless transitions for same-format tracks; reopen on format change.
-- [ ] `Stage` trait (interleaved f64): `fn configure(&mut self, input: StreamFormat) -> StreamFormat; fn max_out(&self, in_frames: usize) -> usize; fn process(&mut self, input: &[f64], out: &mut [f64]) -> usize; fn flush(&mut self, out: &mut [f64]) -> usize; fn reset(&mut self)` — allocation only in `configure`; variable output size returned as a count.
-- [ ] Device error channel from every backend: device removed (`AUDCLNT_E_DEVICE_INVALIDATED`, ALSA `ENODEV`), exclusive access denied (`AUDCLNT_E_DEVICE_IN_USE`), xrun (ALSA `EPIPE`), sleep/resume. Policy: pause + emit `DeviceLost`/`DeviceBusy` event; recover xruns in place; retry open on device re-appearance. Device add/remove notifications feed the `devices changed` event used by phase 4.
-- [ ] Unsupported output format with DSP off: refuse with a clear error (phase 6 adds SRC fallback).
-- [ ] Integer passthrough fast path when the stage list is empty (no f64 conversion at all).
-- [ ] `CoreAudioHog` backend (macOS) and `AlsaHw` backend (Linux) behind `cfg(target_os)`.
-- [ ] Software volume is a `Stage` (off by default) so bit-perfect stays the default.
-- [ ] GitHub Actions CI: fmt, clippy, test on windows/macos/ubuntu (no audio device; backends tested via a `NullBackend` that records written bytes).
+- [x] `sonder-engine`: `Player` with commands play/pause/stop/seek/next/prev/enqueue/clear, state events (position, track, format, underruns) over a crossbeam channel.
+- [x] Gapless transitions for same-format tracks; reopen on format change.
+- [x] `Stage` trait (interleaved f64): `fn configure(&mut self, input: StreamFormat) -> StreamFormat; fn max_out(&self, in_frames: usize) -> usize; fn process(&mut self, input: &[f64], out: &mut [f64]) -> usize; fn flush(&mut self, out: &mut [f64]) -> usize; fn reset(&mut self)` — allocation only in `configure`; variable output size returned as a count.
+- [x] Device error channel from every backend: device removed (`AUDCLNT_E_DEVICE_INVALIDATED`, ALSA `ENODEV`), exclusive access denied (`AUDCLNT_E_DEVICE_IN_USE`), xrun (ALSA `EPIPE`), sleep/resume. Policy: pause + emit `DeviceLost`/`DeviceBusy` event; recover xruns in place; retry open on device re-appearance. Device add/remove notifications feed the `devices changed` event used by phase 4.
+- [x] Unsupported output format with DSP off: refuse with a clear error (phase 6 adds SRC fallback).
+- [x] Integer passthrough fast path when the stage list is empty (no f64 conversion at all).
+- [x] `CoreAudioHog` backend (macOS) and `AlsaHw` backend (Linux) behind `cfg(target_os)`.
+- [x] Software volume is a `Stage` (off by default) so bit-perfect stays the default.
+- [x] GitHub Actions CI: fmt, clippy, test on windows/macos/ubuntu (no audio device; backends tested via a `NullBackend` that records written bytes).
 
 ## Architecture
 
@@ -71,14 +71,17 @@ NullBackend: records bytes to Vec for tests
 
 ## Todo
 
-- [ ] Device error channel + recovery policy; NullBackend can inject each error and tests assert the policy
-- [ ] Player + commands + events
-- [ ] Queue, gapless, seek
-- [ ] Stage pipeline + passthrough fast path
-- [ ] NullBackend + byte-equality tests
-- [ ] CoreAudio hog backend
-- [ ] ALSA hw backend
-- [ ] CI workflow
+- [x] Device error channel + recovery policy; NullBackend can inject each error and tests assert the policy
+- [x] Player + commands + events
+- [x] Queue, gapless, seek
+- [x] Stage pipeline + passthrough fast path
+- [x] NullBackend + byte-equality tests
+- [x] CoreAudio hog backend
+- [x] ALSA hw backend
+- [x] CI workflow
+- [ ] Manual: Windows album gapless by ear + 44.1→96 kHz reopen on a real DAC
+- [ ] Manual: CoreAudio and ALSA on real hardware (compile-checked only; tracked in phase 8)
+- [ ] CI green on all three OSes (workflow not yet run)
 
 ## Success Criteria
 
@@ -94,6 +97,33 @@ NullBackend: records bytes to Vec for tests
 ## Security Considerations
 
 - No network surface. Hog mode must be released on crash: register drop guard and a panic hook that releases hog.
+
+## Implementation Notes
+
+- One engine thread (`player.rs`) owns queue, decoder, DSP worker and stream; it decodes into a
+  small feed of `TrackStart` / samples / `End` items and pushes them into the existing `rtrb`
+  ring. Format boundaries are feed markers: a track whose post-DSP spec does not fit the open
+  device format drops the producer (end of input), the stream drains and closes, and the next
+  stream opens. Epochs are a flush generation on `StreamHandle`: the render thread discards the
+  queue and acknowledges; `frames_consumed` (written + discarded) maps device progress back to
+  track positions.
+- Gapless also covers a narrower track after a wider one at the same rate (16-bit in an open
+  24-bit container is still bit-perfect).
+- Policy: `DeviceLost`/`DeviceNotFound` → pause + `DeviceLost`, retry when the device is listed
+  again (presence, rate-limited, so sleep/resume without a list change also recovers);
+  `DeviceInUse` → pause + `DeviceBusy`, play retries; xruns counted in place; unsupported format
+  → `TrackFailed` and skip. Hot-plug is detected by polling `OutputBackend::device_ids`.
+- After the queue plays to the end, play starts at the first track enqueued afterwards; with
+  nothing added it starts the queue over. A seek within the playing track does not emit
+  `TrackChanged`.
+- ALSA opens `hw:` non-blocking (a blocking open of a busy device waits in the kernel instead
+  of failing) and waits on `EAGAIN` itself.
+- ALSA exposes S16 / S24_3LE / S32 only (ALSA `S24_LE` is LSB-aligned); 24-bit sources fall back
+  to S32 unchanged.
+- CoreAudio: hog mode + integer physical format; the IOProc writes Float32 (the HAL has had no
+  integer virtual format since 10.6), exact for ≤24-bit sources. True 32-bit sources lose the
+  low 8 bits on macOS — revisit in phase 8.
+- macOS and Linux backends are type-checked (`cargo clippy --target …`) but untested on hardware.
 
 ## Next Steps
 

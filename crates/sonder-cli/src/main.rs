@@ -1,4 +1,5 @@
-//! Command-line harness: list exclusive-mode devices and play files or folders bit-perfect.
+//! Command-line harness: list exclusive-mode devices, play files or folders bit-perfect, and
+//! scan folders into a library database.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -47,6 +48,20 @@ enum Command {
         #[arg(long, conflicts_with = "volume")]
         verify_hash: bool,
     },
+    /// Add folders to a library database and scan every library folder, printing timings.
+    Scan {
+        /// Folders to add as library roots (none: rescan the existing roots).
+        paths: Vec<PathBuf>,
+        /// Library database file.
+        #[arg(long, default_value = "sonder-library.db")]
+        db: PathBuf,
+        /// Cover thumbnail cache folder (default: `art` next to the database).
+        #[arg(long)]
+        art: Option<PathBuf>,
+        /// Follow symbolic links inside the added folders, even when they lead outside.
+        #[arg(long)]
+        follow_symlinks: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -58,7 +73,46 @@ fn main() -> Result<()> {
             volume,
             verify_hash,
         } => play(paths, device, volume, verify_hash),
+        Command::Scan {
+            paths,
+            db,
+            art,
+            follow_symlinks,
+        } => scan(paths, db, art, follow_symlinks),
     }
+}
+
+fn scan(
+    paths: Vec<PathBuf>,
+    db: PathBuf,
+    art: Option<PathBuf>,
+    follow_symlinks: bool,
+) -> Result<()> {
+    let art = art.unwrap_or_else(|| db.with_file_name("art"));
+    let mut library = sonder_library::Library::open(&db, &art)
+        .with_context(|| format!("opening {}", db.display()))?;
+    for path in &paths {
+        library
+            .add_root(path, follow_symlinks)
+            .with_context(|| format!("adding {}", path.display()))?;
+    }
+    let report = library.scan()?;
+    for failure in &report.failed {
+        eprintln!("skipped {}: {}", failure.path.display(), failure.reason);
+    }
+    let albums = library.albums(sonder_library::AlbumSort::Title)?;
+    let tracks: u32 = albums.iter().map(|a| a.track_count).sum();
+    println!(
+        "{} added, {} updated, {} removed, {} unchanged, {} failed in {:.2?}",
+        report.added,
+        report.updated,
+        report.removed,
+        report.unchanged,
+        report.failed.len(),
+        report.elapsed
+    );
+    println!("library: {} albums, {tracks} tracks", albums.len());
+    Ok(())
 }
 
 #[cfg(windows)]

@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Phase 3: Library scanner"
-status: in-progress
+status: completed
 priority: P1
 effort: "1w"
 dependencies: [2]
@@ -53,8 +53,8 @@ tags, technical format. Incremental rescans and a file watcher keep it current.
 - [x] Cover art + thumbnails
 - [x] Query + FTS search
 - [x] File watcher
-- [ ] CI green on all three OSes (watcher test is the one most likely to differ on macOS/Linux)
-- [ ] Manual: `sonder-cli scan <music folder>` on a real ~10k-track library; record full and no-change times below
+- [x] CI green on all three OSes (PR #2, 8/8 checks)
+- [x] Manual: `sonder-cli scan <music folder>` on a real library; full and no-change times recorded below (the real library has 476 tracks, not 10k)
 
 ## Success Criteria
 
@@ -76,8 +76,8 @@ tags, technical format. Incremental rescans and a file watcher keep it current.
   property reading off, the only public entry to its ID3v2 parser, so all formats share one
   tag mapping. A DFF without ID3 falls back to `DIIN`/`DITI`/`DIAR`; any file without a title
   or track number falls back to the file name (`03 - Title`, `1-03 Title`).
-- MP4 is indexed only when the codec is ALAC; AAC files are reported as unsupported. ALAC has
-  no generated fixture (needs an encoder) and relies on lofty's MP4 support.
+- MP4 is indexed only when the codec is ALAC; AAC files are reported as unsupported. ALAC is
+  covered by a sample-less fixture with a padded sample entry (see the real-library note).
 - Album identity (`group.rs`): MusicBrainz release id → (album artist, title) → (title, album
   folder) when there is no album artist → folder when there is no album tag. Disc folders
   (`CD1`, `Disc 2`) collapse to their parent; disc suffixes (`(Disc 1)`, `[CD2]`) are stripped
@@ -99,8 +99,17 @@ tags, technical format. Incremental rescans and a file watcher keep it current.
 - Measured on Windows 11, release build, 10 000 generated FLAC tracks (1 000 albums, each with
   its own 600 px embedded cover), via `cargo test --release -p sonder-library --test scale --
   --ignored --nocapture`: full scan 3.86 s (includes 1 000 cover decodes and 2 000 thumbnails),
-  no-change rescan 85 ms, album list 4 ms, search 2 ms. Generated files are header-only, so a
-  real library's numbers (larger files, slower disks) are still to be recorded.
+  no-change rescan 85 ms, album list 4 ms, search 2 ms. Generated files are header-only.
+- Real library (a music folder on a local disk, 25 GB: 478 files, 476 audio tracks in 43
+  albums; FLAC, ALAC, WAV and DSD64/128 DSF up to 24/96), `sonder-cli scan`: full scan
+  1.76 s, no-change rescan 3.5–5 ms over three runs. OS file cache was warm (an earlier scan
+  had read the same files), so a cold first scan will be slower. The 2 skipped files are HEVC
+  videos without an audio track. No ~10k-track real library was available; scale rests on the
+  synthetic 10k measurement above.
+- The first real-library scan skipped 116 ALAC files: their encoder pads the ALAC sample entry
+  with a `free` box, and lofty only names the codec for the exact standard entry size. When
+  lofty cannot name an MP4 codec, the format now comes from `sonder-decode`, so a file is
+  indexed exactly when the player can open it.
 
 ## Next Steps
 

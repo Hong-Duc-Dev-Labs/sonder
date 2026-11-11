@@ -7,3 +7,7 @@ polyphase_*
 *.csv
 filters_manifest.json
 *.decrypted
+
+# Default output of `sonder-cli scan` when run from the repository root
+/sonder-library.db*
+/art/

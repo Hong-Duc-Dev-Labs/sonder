@@ -255,19 +255,32 @@ fn full_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
 }
 
 /// An ALAC `.m4a` with no audio samples whose sample entry carries a `free` padding box
-/// after the `alac` config, as some encoders write it. lofty cannot name its codec.
-pub fn alac_m4a_padded(path: &Path, rate: u32, bits: u8) {
-    mkdirs(path);
-    let channels = 2u16;
+/// after the `alac` config, as some encoders write it. lofty cannot name its codec. The track
+/// header claims `seconds` of audio.
+pub fn alac_m4a_padded(path: &Path, rate: u32, bits: u8, seconds: u32) {
     // ALACSpecificConfig.
     let mut cookie = Vec::new();
     cookie.extend_from_slice(&4096u32.to_be_bytes()); // frame length
-    cookie.extend_from_slice(&[0, bits, 40, 10, 14, channels as u8]);
+    cookie.extend_from_slice(&[0, bits, 40, 10, 14, 2]);
     cookie.extend_from_slice(&255u16.to_be_bytes()); // max run
     cookie.extend_from_slice(&0u32.to_be_bytes()); // max frame bytes
     cookie.extend_from_slice(&0u32.to_be_bytes()); // average bit rate
     cookie.extend_from_slice(&rate.to_be_bytes());
+    let extra = [full_box(b"alac", &cookie), mp4_box(b"free", &[0; 89])].concat();
+    m4a(path, b"alac", &extra, rate, bits, seconds);
+}
 
+/// A 16-bit little-endian PCM (`sowt`) `.m4a` with no audio samples. lofty cannot name its
+/// codec either, but it is not ALAC.
+pub fn pcm_m4a(path: &Path, rate: u32, seconds: u32) {
+    m4a(path, b"sowt", &[], rate, 16, seconds);
+}
+
+/// A stereo `.m4a` with one audio track of sample entry `kind` (with `extra` child boxes)
+/// and no samples.
+fn m4a(path: &Path, kind: &[u8; 4], extra: &[u8], rate: u32, bits: u8, seconds: u32) {
+    mkdirs(path);
+    let channels = 2u16;
     let mut entry = vec![0u8; 6];
     entry.extend_from_slice(&1u16.to_be_bytes()); // data reference index
     entry.extend_from_slice(&[0; 8]); // version, revision, vendor
@@ -275,11 +288,10 @@ pub fn alac_m4a_padded(path: &Path, rate: u32, bits: u8) {
     entry.extend_from_slice(&u16::from(bits).to_be_bytes());
     entry.extend_from_slice(&[0; 4]); // compression id, packet size
     entry.extend_from_slice(&((rate.min(65_535)) << 16).to_be_bytes());
-    entry.extend(full_box(b"alac", &cookie));
-    entry.extend(mp4_box(b"free", &[0; 89]));
+    entry.extend_from_slice(extra);
 
     let mut stsd = 1u32.to_be_bytes().to_vec();
-    stsd.extend(mp4_box(b"alac", &entry));
+    stsd.extend(mp4_box(kind, &entry));
     let empty_table = 0u32.to_be_bytes();
     let mut stsz = 0u32.to_be_bytes().to_vec(); // sample size
     stsz.extend_from_slice(&0u32.to_be_bytes()); // count
@@ -302,7 +314,7 @@ pub fn alac_m4a_padded(path: &Path, rate: u32, bits: u8) {
 
     let mut mdhd = vec![0u8; 8]; // creation, modification
     mdhd.extend_from_slice(&rate.to_be_bytes()); // timescale
-    mdhd.extend_from_slice(&0u32.to_be_bytes()); // duration
+    mdhd.extend_from_slice(&(rate * seconds).to_be_bytes()); // duration in timescale units
     mdhd.extend_from_slice(&[0x55, 0xc4, 0, 0]); // language "und", quality
     let mut hdlr = vec![0u8; 4];
     hdlr.extend_from_slice(b"soun");

@@ -157,7 +157,7 @@ fn read_mp4(path: &Path) -> Result<FileMeta, TagError> {
         // lofty names the codec only when the ALAC sample entry has exactly the standard
         // size; encoders that pad it (a `free` box after the `alac` config) leave it unknown.
         // The player's decoder decides then: what it can open is what the player can play.
-        None => decoder_audio_info(path)?,
+        None => decoder_audio_info(path, tagged.properties().duration())?,
         Some(other) => {
             return Err(TagError::Unsupported(format!(
                 "MP4 audio is {other:?}, not ALAC"
@@ -170,23 +170,28 @@ fn read_mp4(path: &Path) -> Result<FileMeta, TagError> {
     })
 }
 
-/// Format of an MP4 whose codec lofty could not name, from the playback decoder. Of the
-/// codecs the decoder is built with, only ALAC is stored in MP4 by real encoders.
-fn decoder_audio_info(path: &Path) -> Result<AudioInfo, TagError> {
+/// Format of an MP4 whose codec lofty could not name, from the playback decoder. The decoder
+/// also opens PCM and FLAC in MP4, so it must confirm the stream is ALAC. `container_duration`
+/// (lofty's, from the track header) is used when the decoder reports no frame count.
+fn decoder_audio_info(
+    path: &Path,
+    container_duration: std::time::Duration,
+) -> Result<AudioInfo, TagError> {
     let decoder = sonder_decode::Decoder::open(path)
-        .map_err(|e| TagError::Unsupported(format!("MP4 audio is not ALAC ({e})")))?;
-    let format = decoder.format();
-    if format.rate == 0 || format.channels == 0 {
-        return Err(TagError::Parse("MP4 audio track has no format".into()));
+        .map_err(|e| TagError::Unsupported(format!("cannot open MP4 audio: {e}")))?;
+    if !decoder.is_alac() {
+        return Err(TagError::Unsupported("MP4 audio is not ALAC".into()));
     }
+    let format = decoder.format();
     Ok(AudioInfo {
         codec: Codec::Alac,
         rate: format.rate,
         bits: Some(format.bits),
         channels: format.channels,
-        duration_ms: decoder.total_frames().map_or(0, |frames| {
-            frames.saturating_mul(1000) / u64::from(format.rate)
-        }),
+        duration_ms: match decoder.total_frames().filter(|frames| *frames > 0) {
+            Some(frames) => frames.saturating_mul(1000) / u64::from(format.rate),
+            None => container_duration.as_millis() as u64,
+        },
     })
 }
 

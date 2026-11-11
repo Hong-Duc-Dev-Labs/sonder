@@ -62,6 +62,7 @@ pub struct Decoder {
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
     format: SourceFormat,
+    is_alac: bool,
     /// Track timebase when it is not simply one tick per frame.
     time_base: Option<TimeBase>,
     /// Timestamp of the first playable frame.
@@ -152,6 +153,7 @@ impl Decoder {
                 bits,
                 channels,
             },
+            is_alac: params.codec == CODEC_ID_ALAC,
             time_base,
             start_ts,
             total_frames,
@@ -163,6 +165,11 @@ impl Decoder {
 
     pub fn format(&self) -> SourceFormat {
         self.format
+    }
+
+    /// Whether the stream is Apple Lossless (as opposed to FLAC or PCM).
+    pub fn is_alac(&self) -> bool {
+        self.is_alac
     }
 
     /// Playable frames in the track (encoder delay and padding excluded), if known.

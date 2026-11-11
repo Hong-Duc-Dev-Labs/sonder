@@ -623,20 +623,35 @@ fn missing_paths_do_not_need_to_exist_to_be_ignored() {
 fn alac_with_a_padded_sample_entry_is_indexed() {
     let env = Env::new();
     let path = env.path("Album/01 Padded.m4a");
-    fixtures::alac_m4a_padded(&path, 96_000, 24);
+    fixtures::alac_m4a_padded(&path, 96_000, 24, 2);
     // The case being covered: lofty reads the file but cannot name its codec.
-    {
-        use lofty::file::AudioFile;
-        let mut file = fs::File::open(&path).unwrap();
-        let mp4 =
-            lofty::mp4::Mp4File::read_from(&mut file, lofty::config::ParseOptions::new()).unwrap();
-        assert_eq!(mp4.properties().codec(), None);
-    }
+    assert_eq!(lofty_mp4_codec(&path), None);
     let meta = sonder_library::read_file(&path).unwrap();
     assert_eq!(meta.audio.codec, Codec::Alac);
     assert_eq!(
         (meta.audio.rate, meta.audio.bits, meta.audio.channels),
         (96_000, Some(24), 2)
     );
+    // The file has no samples, so the duration comes from the track header.
+    assert_eq!(meta.audio.duration_ms, 2_000);
     assert_eq!(meta.tags.title.as_deref(), Some("Padded"));
+}
+
+#[test]
+fn pcm_in_mp4_is_not_indexed_as_alac() {
+    let env = Env::new();
+    let path = env.path("Album/01 Pcm.m4a");
+    fixtures::pcm_m4a(&path, 48_000, 1);
+    assert_eq!(lofty_mp4_codec(&path), None);
+    let err = sonder_library::read_file(&path).unwrap_err();
+    assert!(err.to_string().contains("not ALAC"), "{err}");
+}
+
+fn lofty_mp4_codec(path: &Path) -> Option<lofty::mp4::Mp4Codec> {
+    use lofty::file::AudioFile;
+    let mut file = fs::File::open(path).unwrap();
+    lofty::mp4::Mp4File::read_from(&mut file, lofty::config::ParseOptions::new())
+        .unwrap()
+        .properties()
+        .codec()
 }

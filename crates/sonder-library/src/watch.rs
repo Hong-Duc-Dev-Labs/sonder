@@ -2,14 +2,20 @@
 //!
 //! File-system events from every root are debounced, coalesced and handed to
 //! [`Library::scan_paths`] on a worker thread that owns its own [`Library`] connection.
+//!
+//! Only the changed paths matter, never the kind of change: `scan_paths` compares disk with
+//! the index itself. The debouncer therefore reports every touched path as is. A debouncer
+//! that interprets events is unsafe here: one that drops a path created and then removed in
+//! the same window loses deletions on macOS, where FSEvents can report a path's earlier
+//! creation together with its removal.
 
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender, select};
-use notify_debouncer_full::notify::{EventKind, RecommendedWatcher, RecursiveMode};
-use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
+use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
+use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 
 use crate::{Library, LibraryError, ScanReport};
 
@@ -27,7 +33,7 @@ pub enum WatchEvent {
 
 /// Watches every library root and rescans what changes. Dropping it stops watching.
 pub struct LibraryWatcher {
-    debouncer: Option<Debouncer<RecommendedWatcher, RecommendedCache>>,
+    debouncer: Option<Debouncer<RecommendedWatcher>>,
     stop: Option<Sender<()>>,
     worker: Option<JoinHandle<()>>,
 }
@@ -41,29 +47,22 @@ impl LibraryWatcher {
         let (paths_tx, paths_rx) = crossbeam_channel::unbounded::<Vec<PathBuf>>();
         let errors = events.clone();
         let mut debouncer =
-            new_debouncer(
-                DEBOUNCE,
-                None,
-                move |result: DebounceEventResult| match result {
-                    Ok(batch) => {
-                        let paths: Vec<PathBuf> = batch
-                            .into_iter()
-                            .filter(|e| !matches!(e.kind, EventKind::Access(_)))
-                            .flat_map(|e| e.event.paths)
-                            .collect();
-                        if !paths.is_empty() {
-                            let _ = paths_tx.send(paths);
-                        }
+            new_debouncer(DEBOUNCE, move |result: DebounceEventResult| match result {
+                Ok(batch) => {
+                    let paths: Vec<PathBuf> = batch.into_iter().map(|e| e.path).collect();
+                    if !paths.is_empty() {
+                        let _ = paths_tx.send(paths);
                     }
-                    Err(errs) => {
-                        for err in errs {
-                            let _ = errors.send(WatchEvent::Error(err.to_string()));
-                        }
-                    }
-                },
-            )?;
+                }
+                Err(err) => {
+                    let _ = errors.send(WatchEvent::Error(err.to_string()));
+                }
+            })?;
         for root in &roots {
-            if let Err(err) = debouncer.watch(&root.path, RecursiveMode::Recursive) {
+            if let Err(err) = debouncer
+                .watcher()
+                .watch(&root.path, RecursiveMode::Recursive)
+            {
                 let _ = events.send(WatchEvent::Error(format!(
                     "cannot watch {}: {err}",
                     root.path.display()
@@ -85,7 +84,7 @@ impl LibraryWatcher {
     /// Starts watching a root added after [`start`](Self::start).
     pub fn watch_root(&mut self, path: &Path) -> Result<(), LibraryError> {
         if let Some(d) = self.debouncer.as_mut() {
-            d.watch(path, RecursiveMode::Recursive)?;
+            d.watcher().watch(path, RecursiveMode::Recursive)?;
         }
         Ok(())
     }
@@ -93,7 +92,7 @@ impl LibraryWatcher {
     /// Stops watching a removed root.
     pub fn unwatch_root(&mut self, path: &Path) -> Result<(), LibraryError> {
         if let Some(d) = self.debouncer.as_mut() {
-            d.unwatch(path)?;
+            d.watcher().unwatch(path)?;
         }
         Ok(())
     }
@@ -101,9 +100,8 @@ impl LibraryWatcher {
 
 impl Drop for LibraryWatcher {
     fn drop(&mut self) {
-        if let Some(d) = self.debouncer.take() {
-            d.stop();
-        }
+        // Dropping the debouncer stops it and releases the event callback.
+        drop(self.debouncer.take());
         drop(self.stop.take());
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();

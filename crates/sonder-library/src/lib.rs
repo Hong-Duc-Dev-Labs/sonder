@@ -54,7 +54,7 @@ pub enum LibraryError {
     #[error("{} overlaps the library folder {}", .path.display(), .existing.display())]
     RootOverlaps { path: PathBuf, existing: PathBuf },
     #[error("file watcher error: {0}")]
-    Watch(#[from] notify_debouncer_full::notify::Error),
+    Watch(#[from] notify_debouncer_mini::notify::Error),
 }
 
 /// A folder the library indexes.

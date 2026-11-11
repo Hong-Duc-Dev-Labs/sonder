@@ -91,7 +91,9 @@ tags, technical format. Incremental rescans and a file watcher keep it current.
   other (10 s busy timeout) instead of failing on a stale read snapshot.
 - Watcher: 2 s debounce, events coalesced on one worker thread that owns its own `Library`.
   Event paths are mapped back to the root's spelling (macOS reports `/private/var/...` for
-  `/var/...`).
+  `/var/...`). Uses `notify-debouncer-mini` (every touched path, no interpretation), not
+  `-full`: the full debouncer drops a path that was created and removed within one window,
+  which lost deletions on macOS CI.
 - Known gap: a changed folder image (`cover.jpg`) is picked up only when a track in that folder
   changes or is rescanned after an edit.
 - Measured on Windows 11, release build, 10 000 generated FLAC tracks (1 000 albums, each with

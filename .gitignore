@@ -1,0 +1,9 @@
+# Build output
+/target/
+node_modules/
+
+# Third-party filter tables and decrypted material must never be committed
+polyphase_*
+*.csv
+filters_manifest.json
+*.decrypted

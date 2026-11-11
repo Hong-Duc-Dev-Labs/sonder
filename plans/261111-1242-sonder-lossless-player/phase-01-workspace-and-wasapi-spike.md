@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Phase 1: Workspace and WASAPI exclusive spike"
-status: todo
+status: in-progress
 priority: P1
 effort: "1w"
 dependencies: []
@@ -27,13 +27,13 @@ Also lay down the cargo workspace every later phase builds on.
 
 ## Requirements
 
-- [ ] Cargo workspace `D:\Dev\Sonder` with crates: `sonder-decode`, `sonder-output`, `sonder-engine` (empty shell), `sonder-cli`.
-- [ ] `git init`, `.gitignore` (target, node_modules, `polyphase_*`, `*.csv`, `filters_manifest.json`, `*.decrypted`), `rustfmt.toml`, MIT/Apache licence choice left to user.
-- [ ] CI guard from day one: a script fails if `git ls-files` lists any `polyphase_*`, `*.csv` under a filters path, or `*.decrypted`; verify with `git check-ignore -v polyphase_2x_linear_phase_precise.csv`.
-- [ ] If the device does not support the source rate/format, refuse with a clear message listing supported formats (automatic SRC fallback arrives in phase 6).
-- [ ] `sonder-decode`: wrap `symphonia` (features: flac, alac, wav, aiff, isomp4) into `Decoder` yielding interleaved `i32`/`f64` frames plus `SourceFormat { rate, bits, channels }`.
-- [ ] `sonder-output`: `OutputBackend` trait + `WasapiExclusive` impl: enumerate devices, query supported formats, open at source rate, event-driven render loop fed from a lock-free SPSC ring buffer (`rtrb`).
-- [ ] `sonder-cli play <file> [--device N]` plays one file exclusively; `sonder-cli devices` lists devices + supported rates.
+- [x] Cargo workspace `D:\Dev\Sonder` with crates: `sonder-decode`, `sonder-output`, `sonder-engine` (empty shell), `sonder-cli`.
+- [x] `git init`, `.gitignore` (target, node_modules, `polyphase_*`, `*.csv`, `filters_manifest.json`, `*.decrypted`), `rustfmt.toml`, MIT/Apache licence choice left to user.
+- [x] CI guard from day one: a script fails if `git ls-files` lists any `polyphase_*`, `*.csv` under a filters path, or `*.decrypted`; verify with `git check-ignore -v polyphase_2x_linear_phase_precise.csv`.
+- [x] If the device does not support the source rate/format, refuse with a clear message listing supported formats (automatic SRC fallback arrives in phase 6).
+- [x] `sonder-decode`: wrap `symphonia` (features: flac, alac, wav, aiff, isomp4) into `Decoder` yielding interleaved `i32`/`f64` frames plus `SourceFormat { rate, bits, channels }`.
+- [x] `sonder-output`: `OutputBackend` trait + `WasapiExclusive` impl: enumerate devices, query supported formats, open at source rate, event-driven render loop fed from a lock-free SPSC ring buffer (`rtrb`).
+- [x] `sonder-cli play <file> [--device N]` plays one file exclusively; `sonder-cli devices` lists devices + supported rates.
 
 ## Architecture
 
@@ -67,11 +67,11 @@ pub struct DeviceFormat { rate: u32, container: SampleContainer, channels: u16 }
 
 ## Todo
 
-- [ ] Workspace + git + gitignore
-- [ ] symphonia decoder wrapper + tests
-- [ ] sample packing + tests
-- [ ] WASAPI exclusive backend
-- [ ] CLI play/devices
+- [x] Workspace + git + gitignore
+- [x] symphonia decoder wrapper + tests
+- [x] sample packing + tests
+- [x] WASAPI exclusive backend
+- [x] CLI play/devices
 - [ ] Manual DAC test at three rates
 
 ## Success Criteria
@@ -93,3 +93,14 @@ pub struct DeviceFormat { rate: u32, container: SampleContainer, channels: u16 }
 ## Next Steps
 
 - Phase 2 generalises the engine and adds CoreAudio + ALSA backends.
+
+## Implementation Notes
+
+- Done and verified on 2026-11-11: `cargo test --workspace` (27 tests), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, and `scripts/check-forbidden-files.sh` (also proven to fail on a tracked `filters/*.csv`).
+- Hardware check without a USB DAC (Realtek onboard, NVIDIA HDMI): `play --verify-hash` matched hashes with 0 underruns at 16/44.1, 24/96 and 24/192; HDMI fell back from packed 24 to 24-in-32 and still matched; 352.8 kHz was refused with the supported-format list.
+- EPZ TP35 USB DAC (exclusive: 16-bit, packed 24-bit, 32-bit up to 384 kHz): `--verify-hash` matched with 0 underruns at 44.1, 96, 192, 352.8 and 384 kHz, for a 32-bit WAV and for ALAC. A 10-minute 24/192 run played 115,200,000 frames with 0 underruns and matching hashes.
+- Float PCM is refused by codec id; the MP4/MOV reader reports float LPCM as 32-bit with no sample format, which had let it through as integer.
+- Still open: confirming the TP35 display shows each source rate, listening for a click at track end (two silent drain periods), and the licence choice.
+- `OutputBackend` differs from the sketch: methods take `&self`, `open` also takes the `SampleSource` (render side of the `rtrb` queue) and `StreamOptions` (optional `WriteTap` used by `--verify-hash`), and `is_supported`/`supported_formats` plus a free `negotiate()` hold the container fallback.
+- `--verify-hash` also fails if any decoded sample has bits set below the source depth, because packing would otherwise hide a decoder that does not left-justify. ALAC (bit depth read from the magic cookie) and AIFF were verified the same way; the ALAC hash matched the FLAC hash of the same audio.
+- Decoder output is left-justified `i32` (16-bit `s` arrives as `s << 16`); floating-point PCM sources are refused for now.

@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+[workspace.dependencies]
+sonder-decode = { path = "crates/sonder-decode" }
+sonder-output = { path = "crates/sonder-output" }
+sonder-engine = { path = "crates/sonder-engine" }
+anyhow = "1.0.104"
+thiserror = "2.0.21"
+clap = { version = "4.6.7", features = ["derive"] }
+rtrb = "0.4.1"
+sha2 = "0.11.1"
+hound = "3.5.1"
+symphonia = { version = "0.6.1", default-features = false, features = ["flac", "alac", "wav", "aiff", "isomp4", "pcm"] }
+symphonia-common = "0.6.1"
+wasapi = "0.27.0"
+windows = "0.62.2"

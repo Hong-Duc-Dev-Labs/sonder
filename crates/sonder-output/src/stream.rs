@@ -11,8 +11,14 @@ use crate::format::DeviceFormat;
 pub(crate) struct StreamShared {
     pub(crate) end_of_input: AtomicBool,
     pub(crate) stop: AtomicBool,
+    pub(crate) paused: AtomicBool,
+    /// Flush generation requested by the producer; the render thread discards everything
+    /// queued and stores the generation in `flush_done` to acknowledge.
+    pub(crate) flush_requested: AtomicU64,
+    pub(crate) flush_done: AtomicU64,
     pub(crate) underruns: AtomicU64,
     pub(crate) frames_written: AtomicU64,
+    pub(crate) frames_discarded: AtomicU64,
 }
 
 /// Cheap, cloneable view of a running (or about to run) stream.
@@ -33,7 +39,17 @@ impl StreamHandle {
         self.0.stop.load(Ordering::Acquire)
     }
 
-    /// Times the ring buffer ran dry while the producer had not finished.
+    /// Keeps the device open but plays silence without consuming queued audio.
+    pub fn set_paused(&self, paused: bool) {
+        self.0.paused.store(paused, Ordering::Release);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.0.paused.load(Ordering::Acquire)
+    }
+
+    /// Times the queue ran dry while the producer had not finished, plus device xruns the
+    /// backend recovered from in place.
     pub fn underruns(&self) -> u64 {
         self.0.underruns.load(Ordering::Relaxed)
     }
@@ -41,6 +57,17 @@ impl StreamHandle {
     /// Audio frames (not silence) handed to the device so far.
     pub fn frames_written(&self) -> u64 {
         self.0.frames_written.load(Ordering::Relaxed)
+    }
+
+    /// Frames taken off the queue: written to the device or discarded by a flush.
+    ///
+    /// This counts in the same index space as the frames pushed by the producer, so the
+    /// feeding side can tell which of its frames the device has reached.
+    pub fn frames_consumed(&self) -> u64 {
+        // Read the discard count first: a flush adds to it before the frames it removed could
+        // ever have been counted as written, so this never over-reports.
+        let discarded = self.0.frames_discarded.load(Ordering::Acquire);
+        discarded + self.frames_written()
     }
 }
 

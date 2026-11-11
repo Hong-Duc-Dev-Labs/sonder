@@ -429,6 +429,16 @@ mod dsd {
         TagError::Parse(msg.to_string())
     }
 
+    /// Offset of the chunk after one whose body starts at `body` and holds `len` bytes (plus
+    /// a pad byte when odd). `None` when that overflows or runs past `end`, which ends the walk.
+    /// Sizes come from the file, so this is the only way chunk loops advance: the result is
+    /// always past `body`, so a corrupt size can never send a walk backwards or in a circle.
+    pub(super) fn next_chunk(body: u64, len: u64, end: u64) -> Option<u64> {
+        body.checked_add(len)?
+            .checked_add(len & 1)
+            .filter(|next| *next <= end)
+    }
+
     pub(super) fn read_dsf(path: &Path) -> Result<FileMeta, TagError> {
         let mut f = File::open(path)?;
         let file_len = f.metadata()?.len();
@@ -474,7 +484,9 @@ mod dsd {
         if &head[0..4] != b"FRM8" || &head[12..16] != b"DSD " {
             return Err(bad("not a DSDIFF file"));
         }
-        let form_end = (12 + u64::from_be_bytes(head[4..12].try_into().unwrap())).min(file_len);
+        let form_end = u64::from_be_bytes(head[4..12].try_into().unwrap())
+            .saturating_add(12)
+            .min(file_len);
 
         let mut rate = 0u32;
         let mut channels = 0u16;
@@ -487,21 +499,29 @@ mod dsd {
         while pos + 12 <= form_end {
             let (id, size) = chunk_header(&mut f, pos)?;
             let data = pos + 12;
+            // A size past the end of the form is clamped: the last chunk of a truncated
+            // download is still worth reading.
+            let len = size.min(form_end.saturating_sub(data));
             match &id {
-                b"PROP" => read_prop(&mut f, data, size, &mut rate, &mut channels)?,
-                b"DSD " => sound_bytes = Some(size),
-                b"DST " => dst_frames = read_dst_info(&mut f, data, size)?,
-                b"DIIN" => read_diin(&mut f, data, size, &mut native)?,
-                b"ID3 " => id3 = read_id3_at(&mut f, data, size)?,
+                b"PROP" => read_prop(&mut f, data, len, &mut rate, &mut channels)?,
+                b"DSD " => sound_bytes = Some(len),
+                b"DST " => dst_frames = read_dst_info(&mut f, data, len)?,
+                b"DIIN" => read_diin(&mut f, data, len, &mut native)?,
+                b"ID3 " => id3 = read_id3_at(&mut f, data, len)?,
                 _ => {}
             }
-            pos = data + size + (size & 1);
+            match next_chunk(data, size, form_end) {
+                Some(next) => pos = next,
+                None => break,
+            }
         }
         if rate == 0 || channels == 0 {
             return Err(bad("DSDIFF property chunk is missing or invalid"));
         }
         let duration_ms = match (sound_bytes, dst_frames) {
-            (Some(bytes), _) => bytes * 8 * 1000 / u64::from(rate) / u64::from(channels),
+            (Some(bytes), _) => {
+                bytes.saturating_mul(8 * 1000) / u64::from(rate) / u64::from(channels)
+            }
             (None, Some((frames, fps))) if fps > 0 => u64::from(frames) * 1000 / u64::from(fps),
             _ => 0,
         };
@@ -565,7 +585,10 @@ mod dsd {
                 }
                 _ => {}
             }
-            pos = body + len + (len & 1);
+            match next_chunk(body, len, end) {
+                Some(next) => pos = next,
+                None => break,
+            }
         }
         Ok(())
     }
@@ -606,7 +629,10 @@ mod dsd {
                     }
                 }
             }
-            pos = pos + 12 + len + (len & 1);
+            match next_chunk(pos + 12, len, end) {
+                Some(next) => pos = next,
+                None => break,
+            }
         }
         Ok(())
     }
@@ -657,5 +683,90 @@ mod tests {
         assert!(is_audio_file(Path::new("a/b.dsf")));
         assert!(!is_audio_file(Path::new("a/b.mp3")));
         assert!(!is_audio_file(Path::new("a/cover.jpg")));
+    }
+
+    fn chunk(id: &[u8; 4], size: u64, body: &[u8]) -> Vec<u8> {
+        let mut out = id.to_vec();
+        out.extend_from_slice(&size.to_be_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn form(chunks: &[Vec<u8>]) -> Vec<u8> {
+        let body: Vec<u8> = chunks.concat();
+        let mut out = b"FRM8".to_vec();
+        out.extend_from_slice(&(4 + body.len() as u64).to_be_bytes());
+        out.extend_from_slice(b"DSD ");
+        out.extend_from_slice(&body);
+        out
+    }
+
+    fn snd_prop(rate: u32) -> Vec<u8> {
+        let mut prop = b"SND ".to_vec();
+        prop.extend(chunk(b"FS  ", 4, &rate.to_be_bytes()));
+        prop.extend(chunk(b"CHNL", 10, b"\x00\x02SLFTSRGT"));
+        chunk(b"PROP", prop.len() as u64, &prop)
+    }
+
+    /// Parses `bytes` as a DFF on another thread and fails instead of hanging.
+    fn read_dff_bytes(bytes: Vec<u8>) -> Result<FileMeta, String> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.dff");
+        std::fs::write(&path, bytes).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_file(&path).map_err(|e| e.to_string()));
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("DFF parse did not finish (loop on a corrupt chunk size?)")
+    }
+
+    #[test]
+    fn next_chunk_always_moves_forward() {
+        assert_eq!(dsd::next_chunk(28, 4, 100), Some(32));
+        assert_eq!(dsd::next_chunk(28, 5, 100), Some(34));
+        assert_eq!(dsd::next_chunk(28, 72, 100), Some(100));
+        assert_eq!(dsd::next_chunk(28, 73, 100), None);
+        assert_eq!(dsd::next_chunk(28, u64::MAX - 11, u64::MAX), None);
+        assert_eq!(dsd::next_chunk(28, u64::MAX, u64::MAX), None);
+    }
+
+    #[test]
+    fn dff_chunk_size_that_wraps_to_itself_is_an_error_not_a_hang() {
+        // A chunk whose size wraps the next offset back onto itself (28 + size = 2^64 + 16).
+        let mut bytes = b"FRM8".to_vec();
+        bytes.extend_from_slice(&16u64.to_be_bytes());
+        bytes.extend_from_slice(b"DSD ");
+        bytes.extend(chunk(b"XXXX", u64::MAX - 11, &[]));
+        assert!(read_dff_bytes(bytes).is_err());
+    }
+
+    #[test]
+    fn dff_corrupt_sub_chunk_sizes_are_contained() {
+        // PROP whose FS sub-chunk claims nearly 2^64 bytes.
+        let mut prop = b"SND ".to_vec();
+        prop.extend(chunk(b"FS  ", u64::MAX - 3, &2_822_400u32.to_be_bytes()));
+        let bytes = form(&[chunk(b"PROP", prop.len() as u64, &prop)]);
+        assert!(read_dff_bytes(bytes).is_err());
+
+        // DIIN whose DITI sub-chunk wraps.
+        let diin = chunk(b"DITI", u64::MAX - 1, b"\0\0\0\x04Name");
+        let bytes = form(&[
+            snd_prop(2_822_400),
+            chunk(b"DIIN", diin.len() as u64, &diin),
+        ]);
+        let meta = read_dff_bytes(bytes).unwrap();
+        assert_eq!(meta.audio.rate, 2_822_400);
+    }
+
+    #[test]
+    fn dff_sound_chunk_larger_than_the_file_is_clamped() {
+        let bytes = form(&[
+            snd_prop(2_822_400),
+            chunk(b"DSD ", u64::MAX / 2, &[0x69; 705_600]),
+        ]);
+        let meta = read_dff_bytes(bytes).unwrap();
+        // 705 600 bytes of stereo DSD64 is one second; the claimed size is ignored.
+        assert_eq!(meta.audio.duration_ms, 1_000);
     }
 }

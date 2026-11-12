@@ -127,7 +127,10 @@ impl AppState {
         let found = devices.list().unwrap_or_default();
         let device = resolve_device(settings.output_device.as_deref(), &found);
 
-        let (player, events) = Player::spawn(backend(), PlayerConfig::new(device.clone()))?;
+        let mut config = PlayerConfig::new(device.clone());
+        config.dsd_modes = settings.engine_dsd_modes();
+        config.dsd_pcm_rate = settings.dsd_pcm_rate.into();
+        let (player, events) = Player::spawn(backend(), config)?;
         if settings.volume_db.is_some() {
             player.set_volume(settings.volume_db);
         }

@@ -107,6 +107,7 @@ pub struct NullBackend {
     formats: Option<Vec<DeviceFormat>>,
     period_frames: usize,
     period: Duration,
+    busy_probes: bool,
 }
 
 impl Default for NullBackend {
@@ -123,6 +124,7 @@ impl NullBackend {
             formats: None,
             period_frames: 512,
             period: Duration::from_millis(1),
+            busy_probes: false,
         }
     }
 
@@ -147,9 +149,27 @@ impl NullBackend {
         DeviceId(NULL_DEVICE_ID.into())
     }
 
+    /// Format probes fail with [`OutputError::DeviceInUse`] while a stream is open, as ALSA
+    /// `hw:` devices do (probing reopens the device, which the stream holds exclusively).
+    pub fn with_busy_probes(mut self) -> Self {
+        self.busy_probes = true;
+        self
+    }
+
     fn present(&self, device: &DeviceId) -> Result<(), OutputError> {
         if device.0 != NULL_DEVICE_ID || self.control.state().unplugged {
             return Err(OutputError::DeviceNotFound(device.0.clone()));
+        }
+        Ok(())
+    }
+
+    /// [`present`](Self::present), plus the busy answer of [`with_busy_probes`].
+    ///
+    /// [`with_busy_probes`]: Self::with_busy_probes
+    fn probe_ready(&self, device: &DeviceId) -> Result<(), OutputError> {
+        self.present(device)?;
+        if self.busy_probes && self.control.state().open_streams > 0 {
+            return Err(OutputError::DeviceInUse);
         }
         Ok(())
     }
@@ -184,7 +204,7 @@ impl OutputBackend for NullBackend {
     }
 
     fn is_supported(&self, device: &DeviceId, format: DeviceFormat) -> Result<bool, OutputError> {
-        self.present(device)?;
+        self.probe_ready(device)?;
         Ok(self.accepts(format))
     }
 
@@ -193,7 +213,7 @@ impl OutputBackend for NullBackend {
         device: &DeviceId,
         channels: u16,
     ) -> Result<Vec<DeviceFormat>, OutputError> {
-        self.present(device)?;
+        self.probe_ready(device)?;
         let mut formats = Vec::new();
         for rate in COMMON_RATES {
             for container in SampleContainer::ALL {
@@ -249,7 +269,8 @@ impl OutputBackend for NullBackend {
         let thread = thread::Builder::new()
             .name("sonder-null-render".into())
             .spawn(move || {
-                let renderer = Renderer::new(source, format, period_frames, options.tap);
+                let renderer =
+                    Renderer::new(source, format, period_frames, options.tap, options.dop);
                 let result = render(renderer, &control, period_frames, period);
                 control.state().open_streams -= 1;
                 result
@@ -286,8 +307,15 @@ fn render(
             None => {}
         }
         let fill = renderer.fill(period_frames);
-        if fill.payload_frames > 0 {
-            let bytes = renderer.bytes(fill.payload_frames);
+        // A DSD stream must record its idle frames too: an underrun or pause is exactly where
+        // a zero frame would drop the DAC out of DSD mode.
+        let recorded = if renderer.is_dsd() {
+            period_frames
+        } else {
+            fill.payload_frames
+        };
+        if recorded > 0 {
+            let bytes = renderer.bytes(recorded);
             if let Some(session) = control.state().sessions.last_mut() {
                 session.bytes.extend_from_slice(bytes);
             }

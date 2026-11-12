@@ -18,6 +18,12 @@ pub enum SampleContainer {
     S24In32,
     /// 32 bits in 4 bytes.
     S32,
+    /// Native DSD on ALSA: four DSD bytes per channel in a big-endian word.
+    ///
+    /// Each frame carries 32 consecutive DSD bits, already MSB-first; the container is not a
+    /// PCM integer and is never produced by [`SampleContainer::candidates`]. The word's
+    /// 32-bit value written by [`pack`] carries byte 0 in bits 31..24.
+    DsdU32Be,
 }
 
 impl SampleContainer {
@@ -28,12 +34,15 @@ impl SampleContainer {
         SampleContainer::S32,
     ];
 
+    /// Containers that carry PCM integers, for negotiation and probing.
+    pub const PCM: [SampleContainer; 4] = Self::ALL;
+
     /// Bytes one sample occupies in the device buffer.
     pub const fn bytes(self) -> usize {
         match self {
             SampleContainer::S16 => 2,
             SampleContainer::S24Packed => 3,
-            SampleContainer::S24In32 | SampleContainer::S32 => 4,
+            SampleContainer::S24In32 | SampleContainer::S32 | SampleContainer::DsdU32Be => 4,
         }
     }
 
@@ -42,13 +51,16 @@ impl SampleContainer {
         match self {
             SampleContainer::S16 => 16,
             SampleContainer::S24Packed | SampleContainer::S24In32 => 24,
-            SampleContainer::S32 => 32,
+            SampleContainer::S32 | SampleContainer::DsdU32Be => 32,
         }
     }
 
     /// Whether a source with `source_bits` valid bits survives this container unchanged.
+    ///
+    /// Always false for [`DsdU32Be`](Self::DsdU32Be): native DSD is a different signal path,
+    /// never a lossless PCM container.
     pub const fn holds(self, source_bits: u32) -> bool {
-        source_bits <= self.valid_bits()
+        !matches!(self, SampleContainer::DsdU32Be) && source_bits <= self.valid_bits()
     }
 
     /// Containers able to carry `source_bits` losslessly, in order of preference.
@@ -71,6 +83,7 @@ impl fmt::Display for SampleContainer {
             SampleContainer::S24Packed => "24-bit packed",
             SampleContainer::S24In32 => "24-bit in 32",
             SampleContainer::S32 => "32-bit",
+            SampleContainer::DsdU32Be => "DSD 32-bit BE",
         })
     }
 }
@@ -134,6 +147,11 @@ pub fn pack(container: SampleContainer, src: &[i32], dst: &mut [u8]) {
                 *out = s.to_le_bytes();
             }
         }
+        SampleContainer::DsdU32Be => {
+            for (s, out) in src.iter().zip(dst.as_chunks_mut::<4>().0) {
+                *out = s.to_be_bytes();
+            }
+        }
     }
 }
 
@@ -160,6 +178,11 @@ pub fn unpack(container: SampleContainer, src: &[u8], dst: &mut [i32]) {
         SampleContainer::S24In32 | SampleContainer::S32 => {
             for (b, out) in src.as_chunks::<4>().0.iter().zip(dst.iter_mut()) {
                 *out = i32::from_le_bytes(*b);
+            }
+        }
+        SampleContainer::DsdU32Be => {
+            for (b, out) in src.as_chunks::<4>().0.iter().zip(dst.iter_mut()) {
+                *out = i32::from_be_bytes(*b);
             }
         }
     }
@@ -278,6 +301,19 @@ mod tests {
         assert!(!SampleContainer::S16.holds(24));
         assert!(!SampleContainer::S24In32.holds(32));
         assert!(SampleContainer::S32.holds(24));
+    }
+
+    #[test]
+    fn dsd_word_is_big_endian_and_never_a_pcm_candidate() {
+        let src = [0x0102_0304, 0x0506_0708];
+        let mut bytes = [0u8; 8];
+        pack(SampleContainer::DsdU32Be, &src, &mut bytes);
+        assert_eq!(bytes, [1, 2, 3, 4, 5, 6, 7, 8]);
+        let mut back = [0i32; 2];
+        unpack(SampleContainer::DsdU32Be, &bytes, &mut back);
+        assert_eq!(back, src);
+        assert!(!SampleContainer::candidates(32).contains(&SampleContainer::DsdU32Be));
+        assert!(!SampleContainer::DsdU32Be.holds(1));
     }
 
     #[test]

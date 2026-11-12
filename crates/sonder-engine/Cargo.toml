@@ -8,7 +8,9 @@ publish.workspace = true
 [dependencies]
 sonder-decode.workspace = true
 sonder-output.workspace = true
+sonder-dsp.workspace = true
 crossbeam-channel.workspace = true
 
 [dev-dependencies]
+
 hound.workspace = true

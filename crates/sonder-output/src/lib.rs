@@ -27,6 +27,9 @@ pub const COMMON_RATES: [u32; 10] = [
     44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000, 705_600, 768_000,
 ];
 
+/// Containers DoP may use: a 24-bit word in a 32-bit slot, or a plain 32-bit slot.
+pub const DOP_CONTAINERS: [SampleContainer; 2] = [SampleContainer::S24In32, SampleContainer::S32];
+
 /// Opaque, backend-specific device identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DeviceId(pub String);
@@ -36,7 +39,8 @@ pub struct DeviceInfo {
     pub id: DeviceId,
     pub name: String,
     pub is_default: bool,
-    /// Stereo formats the device accepts in exclusive mode, from [`COMMON_RATES`].
+    /// Stereo formats the device accepts in exclusive mode: [`COMMON_RATES`] × the PCM
+    /// containers, plus native-DSD formats on ALSA devices that expose them.
     pub formats: Vec<DeviceFormat>,
 }
 
@@ -104,6 +108,61 @@ pub fn negotiate(
             .supported_formats(device, channels)
             .unwrap_or_default(),
     })
+}
+
+/// Picks a DoP carrier format for the carrier `rate` (DSD rate / 16).
+///
+/// DoP needs a 24-in-32 or 32-bit container. Returns the exact format to open; callers fall
+/// back to DSD→PCM when this fails.
+pub fn negotiate_dop(
+    backend: &dyn OutputBackend,
+    device: &DeviceId,
+    rate: u32,
+    channels: u16,
+) -> Result<DeviceFormat, OutputError> {
+    for container in DOP_CONTAINERS {
+        let format = DeviceFormat {
+            rate,
+            container,
+            channels,
+        };
+        if backend.is_supported(device, format)? {
+            return Ok(format);
+        }
+    }
+    Err(OutputError::UnsupportedFormat {
+        requested: format!("DoP {rate} Hz, {channels} ch"),
+        supported: backend
+            .supported_formats(device, channels)
+            .unwrap_or_default(),
+    })
+}
+
+/// Picks the native-DSD format for the word `rate` (DSD rate / 32).
+///
+/// Native DSD needs a backend that advertises [`SampleContainer::DsdU32Be`]; ALSA does on
+/// Linux when the DAC exposes it. Callers fall back to DoP or PCM when this fails.
+pub fn negotiate_native(
+    backend: &dyn OutputBackend,
+    device: &DeviceId,
+    rate: u32,
+    channels: u16,
+) -> Result<DeviceFormat, OutputError> {
+    let format = DeviceFormat {
+        rate,
+        container: SampleContainer::DsdU32Be,
+        channels,
+    };
+    if backend.is_supported(device, format)? {
+        Ok(format)
+    } else {
+        Err(OutputError::UnsupportedFormat {
+            requested: format!("native DSD {rate} Hz, {channels} ch"),
+            supported: backend
+                .supported_formats(device, channels)
+                .unwrap_or_default(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -180,5 +239,45 @@ mod tests {
         let dev = DeviceId("d".into());
         let backend = FakeBackend(vec![fmt(44_100, SampleContainer::S16)]);
         assert!(negotiate(&backend, &dev, 44_100, 24, 2).is_err());
+    }
+
+    #[test]
+    fn dop_prefers_24_in_32_and_falls_back_to_32() {
+        let dev = DeviceId("d".into());
+        let both = FakeBackend(vec![
+            fmt(352_800, SampleContainer::S32),
+            fmt(352_800, SampleContainer::S24In32),
+        ]);
+        assert_eq!(
+            negotiate_dop(&both, &dev, 352_800, 2).unwrap(),
+            fmt(352_800, SampleContainer::S24In32)
+        );
+        let only32 = FakeBackend(vec![fmt(352_800, SampleContainer::S32)]);
+        assert_eq!(
+            negotiate_dop(&only32, &dev, 352_800, 2).unwrap().container,
+            SampleContainer::S32
+        );
+        let none = FakeBackend(vec![fmt(352_800, SampleContainer::S16)]);
+        assert!(negotiate_dop(&none, &dev, 352_800, 2).is_err());
+    }
+
+    #[test]
+    fn native_dsd_needs_the_alsa_word_format() {
+        let dev = DeviceId("d".into());
+        let native = FakeBackend(vec![DeviceFormat {
+            rate: 88_200,
+            container: SampleContainer::DsdU32Be,
+            channels: 2,
+        }]);
+        assert_eq!(
+            negotiate_native(&native, &dev, 88_200, 2).unwrap(),
+            DeviceFormat {
+                rate: 88_200,
+                container: SampleContainer::DsdU32Be,
+                channels: 2
+            }
+        );
+        let pcm_only = FakeBackend(vec![fmt(88_200, SampleContainer::S32)]);
+        assert!(negotiate_native(&pcm_only, &dev, 88_200, 2).is_err());
     }
 }

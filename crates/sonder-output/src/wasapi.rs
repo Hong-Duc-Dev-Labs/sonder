@@ -38,6 +38,8 @@ const EVENT_WAIT_MS: u32 = 100;
 const MAX_MISSED_EVENTS: u32 = 20;
 /// Silent periods written after the last audio so the device plays it out before stopping.
 const DRAIN_PERIODS: u32 = 2;
+/// Device periods of DSD idle played after a stop before the stream halts.
+const DSD_STOP_IDLE_PERIODS: u32 = 2;
 
 #[derive(Debug, Default)]
 pub struct WasapiExclusive;
@@ -206,28 +208,30 @@ fn find_device(id: &DeviceId) -> Result<Device, OutputError> {
         .map_err(|_| OutputError::DeviceNotFound(id.0.clone()))
 }
 
-fn wave_format(format: DeviceFormat) -> WaveFormat {
+fn wave_format(format: DeviceFormat) -> Option<WaveFormat> {
     let (store_bits, valid_bits) = match format.container {
         SampleContainer::S16 => (16, 16),
         SampleContainer::S24Packed => (24, 24),
         SampleContainer::S24In32 => (32, 24),
         SampleContainer::S32 => (32, 32),
+        // WASAPI has no native-DSD sample format; DoP is the only DSD path here.
+        SampleContainer::DsdU32Be => return None,
     };
-    WaveFormat::new(
+    Some(WaveFormat::new(
         store_bits,
         valid_bits,
         SampleType::Int,
         format.rate as usize,
         usize::from(format.channels),
         None,
-    )
+    ))
 }
 
 /// The exact `WaveFormat` the driver accepts for `format` in exclusive mode, if any.
 /// Tries the channel-mask variants some drivers insist on.
 fn accepted_format(client: &AudioClient, format: DeviceFormat) -> Option<WaveFormat> {
     client
-        .is_supported_exclusive_with_quirks(&wave_format(format))
+        .is_supported_exclusive_with_quirks(&wave_format(format)?)
         .ok()
 }
 
@@ -364,7 +368,7 @@ fn run_stream(
         }
     };
 
-    let mut renderer = Renderer::new(source, format, buffer_frames, options.tap);
+    let mut renderer = Renderer::new(source, format, buffer_frames, options.tap, options.dop);
     let _mmcss = Mmcss::enter();
 
     // Let the decoder get ahead before the device clock starts.
@@ -427,6 +431,28 @@ fn run_stream(
             render_client
                 .write_to_device(renderer.bytes(frames), None)
                 .map_err(stream_error)?;
+        }
+        if renderer.handle().is_stopping() && renderer.is_dsd() {
+            // A stopped DSD stream must end on idle frames, not mid-music. Exclusive event
+            // mode holds one period, so let it play and answer the next device requests with
+            // DSD idle; the device has taken that idle before the stream stops. Writing idle
+            // into whatever space is free right now would usually write nothing.
+            for _ in 0..DSD_STOP_IDLE_PERIODS {
+                if event.wait_for_event(EVENT_WAIT_MS).is_err() {
+                    break;
+                }
+                let frames = client.get_available_space_in_frames().unwrap_or(0) as usize;
+                let frames = frames.min(buffer_frames);
+                if frames > 0 {
+                    renderer.silence(frames);
+                    if render_client
+                        .write_to_device(renderer.bytes(frames), None)
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
         }
         Ok(())
     })();

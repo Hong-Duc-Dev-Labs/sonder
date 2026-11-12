@@ -6,6 +6,8 @@
     events,
     type CoverStyle,
     type Device,
+    type DsdMode,
+    type DsdPcmRate,
     type GlassQuality,
     type RootFolder,
   } from "../lib/bindings";
@@ -80,6 +82,22 @@
 
   function setVolume(db: number | null) {
     app.run(commands.playerSetVolume(db));
+  }
+
+  const dsdModes: { value: DsdMode; label: string; hint: string }[] = [
+    { value: "dop", label: "DoP", hint: "Bit-perfect DSD over PCM; converted to PCM if the device does not take DoP" },
+    { value: "native", label: "Native", hint: "Native DSD where the driver offers it (Linux ALSA), else DoP, else PCM" },
+    { value: "pcm", label: "PCM", hint: "Always converted to PCM" },
+  ];
+  const dsdRates: { value: DsdPcmRate; label: string }[] = [
+    { value: "hz176400", label: rate(176400) },
+    { value: "hz352800", label: rate(352800) },
+  ];
+  let dsdMode = $derived<DsdMode>((selected && app.settings.dsdModes?.[selected.id]) || "dop");
+
+  function setDsdMode(mode: DsdMode) {
+    if (!selected) return;
+    app.saveSettings({ ...app.settings, dsdModes: { ...app.settings.dsdModes, [selected.id]: mode } });
   }
 
   function formatsSummary(d: Device): string {
@@ -173,6 +191,51 @@
             </label>
           {/each}
         {/if}
+      </div>
+    </section>
+
+    <section aria-labelledby="dsd-title">
+      <div class="group-head"><h3 id="dsd-title">DSD playback</h3></div>
+      <div class="card soft">
+        <div class="row">
+          <span class="icon"><Icon name="speaker" size={18} /></span>
+          <span class="info">
+            <span class="name" id="dsd-mode-label">DSD on {selected?.name ?? "this device"}</span>
+            <span class="dim small">{dsdModes.find((m) => m.value === dsdMode)?.hint}</span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="dsd-mode-label">
+            {#each dsdModes as mode (mode.value)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={dsdMode === mode.value}
+                disabled={!selected}
+                onclick={() => setDsdMode(mode.value)}
+              >
+                {mode.label}
+              </button>
+            {/each}
+          </div>
+        </div>
+        <div class="row">
+          <span class="icon"><Icon name="volume" size={18} /></span>
+          <span class="info">
+            <span class="name" id="dsd-rate-label">PCM conversion rate</span>
+            <span class="dim small">Used when DSD is converted to PCM</span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="dsd-rate-label">
+            {#each dsdRates as r (r.value)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(app.settings.dsdPcmRate ?? "hz176400") === r.value}
+                onclick={() => app.saveSettings({ ...app.settings, dsdPcmRate: r.value })}
+              >
+                {r.label}
+              </button>
+            {/each}
+          </div>
+        </div>
       </div>
     </section>
 
@@ -635,5 +698,9 @@
   .segmented .chip[aria-checked="true"] {
     background: var(--ink);
     color: #050506;
+  }
+  .segmented .chip:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 </style>

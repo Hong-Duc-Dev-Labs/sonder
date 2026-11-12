@@ -1,12 +1,13 @@
 //! Drives the player against the null backend and checks the exact bytes it would have
 //! written to the device.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use sonder_decode::Decoder;
-use sonder_engine::{PlaybackState, Player, PlayerConfig, PlayerEvent};
+use sonder_engine::{DsdMode, DsdPcmRate, PlaybackState, Player, PlayerConfig, PlayerEvent};
 use sonder_output::format::{pack, unpack};
 use sonder_output::null::{NullBackend, NullControl};
 use sonder_output::{DeviceFormat, SampleContainer};
@@ -55,8 +56,14 @@ fn packed(container: SampleContainer, samples: &[i32]) -> Vec<u8> {
 }
 
 fn start(backend: NullBackend) -> (Player, Receiver<PlayerEvent>, NullControl) {
+    start_with(PlayerConfig::new(NullBackend::device_id()), backend)
+}
+
+fn start_with(
+    mut config: PlayerConfig,
+    backend: NullBackend,
+) -> (Player, Receiver<PlayerEvent>, NullControl) {
     let control = backend.control();
-    let mut config = PlayerConfig::new(NullBackend::device_id());
     config.device_poll = Duration::from_millis(20);
     let (player, events) = Player::spawn(Box::new(backend), config).unwrap();
     (player, events, control)
@@ -770,4 +777,511 @@ fn queue_edits_while_paused_report_the_moved_current_entry() {
     wait_for(&events, |e| {
         matches!(e, PlayerEvent::Position { index: 0, .. })
     });
+}
+
+// ----- DSD fixtures and DoP verification -----
+
+const DSD64: u32 = 2_822_400;
+
+/// Deterministic interleaved DSD bytes with no 0x69 byte, so 0x6969 can only be DoP idle.
+fn dsd_bytes(frames: usize, seed: u32) -> Vec<u8> {
+    (0..frames * 2)
+        .map(|i| {
+            let byte = ((i as u32 * 37 + seed * 101 + 11) % 251) as u8;
+            if byte == 0x69 { 0x6A } else { byte }
+        })
+        .collect()
+}
+
+/// Writes a DSF whose audio is `interleaved` (channel-interleaved MSB-first bytes),
+/// stored as channel-major blocks as the format requires.
+fn dsf(name: &str, interleaved: &[u8]) -> PathBuf {
+    let path = temp_dir().join(name);
+    let channels = 2usize;
+    let block = 512usize;
+    let frames = interleaved.len() / channels;
+    let groups = frames.div_ceil(block);
+    let data_len = (groups * block * channels) as u64;
+
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(b"DSD ").unwrap();
+    file.write_all(&28u64.to_le_bytes()).unwrap();
+    file.write_all(&(28 + 52 + 12 + data_len).to_le_bytes())
+        .unwrap();
+    file.write_all(&0u64.to_le_bytes()).unwrap();
+    file.write_all(b"fmt ").unwrap();
+    file.write_all(&52u64.to_le_bytes()).unwrap();
+    file.write_all(&1u32.to_le_bytes()).unwrap(); // version
+    file.write_all(&0u32.to_le_bytes()).unwrap(); // raw DSD
+    file.write_all(&2u32.to_le_bytes()).unwrap(); // stereo
+    file.write_all(&2u32.to_le_bytes()).unwrap();
+    file.write_all(&DSD64.to_le_bytes()).unwrap();
+    file.write_all(&8u32.to_le_bytes()).unwrap(); // MSB first
+    file.write_all(&((frames as u64) * 8).to_le_bytes())
+        .unwrap();
+    file.write_all(&(block as u32).to_le_bytes()).unwrap();
+    file.write_all(&0u32.to_le_bytes()).unwrap();
+    file.write_all(b"data").unwrap();
+    file.write_all(&(12 + data_len).to_le_bytes()).unwrap();
+    for group in 0..groups {
+        let start = group * block;
+        for channel in 0..channels {
+            for frame in start..start + block {
+                let at = frame * channels + channel;
+                file.write_all(&[interleaved.get(at).copied().unwrap_or(0)])
+                    .unwrap();
+            }
+        }
+    }
+    path
+}
+
+fn chunk(out: &mut Vec<u8>, id: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(id);
+    out.extend_from_slice(&(data.len() as u64).to_be_bytes());
+    out.extend_from_slice(data);
+    if data.len() % 2 == 1 {
+        out.push(0);
+    }
+}
+
+/// Writes an uncompressed DSDIFF file holding `interleaved` bytes.
+fn dff(name: &str, interleaved: &[u8]) -> PathBuf {
+    let path = temp_dir().join(name);
+    let mut prop = Vec::new();
+    prop.extend_from_slice(b"SND ");
+    chunk(&mut prop, b"FS  ", &DSD64.to_be_bytes());
+    let mut chnl = Vec::new();
+    chnl.extend_from_slice(&2u16.to_be_bytes());
+    chnl.extend_from_slice(b"SLFTSRGT");
+    chunk(&mut prop, b"CHNL", &chnl);
+    chunk(&mut prop, b"CMPR", b"DSD ");
+
+    let mut body = Vec::new();
+    body.extend_from_slice(b"DSD ");
+    chunk(&mut body, b"FVER", &0x0105_0000u32.to_be_bytes());
+    chunk(&mut body, b"PROP", &prop);
+    chunk(&mut body, b"DSD ", interleaved);
+
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(b"FRM8").unwrap();
+    file.write_all(&(body.len() as u64).to_be_bytes()).unwrap();
+    file.write_all(&body).unwrap();
+    path
+}
+
+/// Decodes a recorded DoP session, asserting marker alternation and no zero words, and
+/// returning the source DSD bytes (idle frames dropped) plus the idle-frame count.
+fn decode_dop(bytes: &[u8], channels: usize) -> (Vec<u8>, usize) {
+    let words: Vec<u32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect();
+    assert_eq!(words.len() % channels, 0, "partial carrier frame");
+    let frames = words.len() / channels;
+    let mut out = Vec::new();
+    let mut idle = 0;
+    for frame in 0..frames {
+        let expected = if frame % 2 == 0 { 0x05 } else { 0xFA };
+        let mut payloads = Vec::with_capacity(channels);
+        for channel in 0..channels {
+            let word = words[frame * channels + channel];
+            assert_ne!(word, 0, "DoP stream contains a zero word");
+            assert_eq!(word >> 24, expected, "marker at frame {frame}");
+            payloads.push(((word >> 8) & 0xFFFF) as u16);
+        }
+        if payloads.iter().all(|&p| p == 0x6969) {
+            idle += 1;
+            continue;
+        }
+        for byte in [0u16, 1] {
+            for &payload in &payloads {
+                out.push((payload >> (8 * (1 - byte as u32))) as u8);
+            }
+        }
+    }
+    (out, idle)
+}
+
+/// The null device paced at 64k frames/s (128k frames/s for stereo), slower than any DSD
+/// carrier so decoding keeps up instead of injecting underruns.
+fn dsd_device() -> NullBackend {
+    NullBackend::new().with_period(512, Duration::from_millis(8))
+}
+
+#[test]
+fn dop_playback_roundtrips_the_source_dsd_bytes() {
+    let expected = dsd_bytes(20_000, 1);
+    let track = dsf("dop.dsf", &expected);
+    let (player, events, control) = start(dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    let seen = wait_end(&events);
+
+    assert!(
+        seen.iter().any(|e| matches!(
+            e,
+            PlayerEvent::DsdMode {
+                mode: DsdMode::Dop,
+                reason: None
+            }
+        )),
+        "events: {seen:#?}"
+    );
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 1, "one DoP stream");
+    assert_eq!(
+        sessions[0].format,
+        DeviceFormat {
+            rate: 176_400,
+            container: SampleContainer::S24In32,
+            channels: 2
+        }
+    );
+    let (payload, idle) = decode_dop(&sessions[0].bytes, 2);
+    assert_eq!(payload, expected, "idle frames: {idle}");
+}
+
+#[test]
+fn dop_marker_phase_continues_across_gapless_tracks() {
+    let first = dsd_bytes(12_000, 2);
+    let second = dsd_bytes(10_000, 3);
+    let a = dsf("dop-gapless-a.dsf", &first);
+    let b = dsf("dop-gapless-b.dsf", &second);
+    let (player, events, control) = start(dsd_device());
+    player.enqueue(vec![a, b]);
+    player.play();
+    wait_end(&events);
+
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 1, "same-rate DSD stays on one stream");
+    let (payload, idle) = decode_dop(&sessions[0].bytes, 2);
+    let mut expected = first;
+    expected.extend_from_slice(&second);
+    assert_eq!(payload, expected, "idle frames: {idle}");
+}
+
+#[test]
+fn dff_plays_through_dop_with_the_same_bytes() {
+    let expected = dsd_bytes(8_000, 4);
+    let track = dff("dop.dff", &expected);
+    let (player, events, control) = start(dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    wait_end(&events);
+
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 1);
+    let (payload, idle) = decode_dop(&sessions[0].bytes, 2);
+    assert_eq!(payload, expected, "idle frames: {idle}");
+}
+
+#[test]
+fn native_dsd_sends_four_source_bytes_per_word() {
+    let expected = dsd_bytes(8_000, 5);
+    let track = dsf("native.dsf", &expected);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.default_dsd_mode = DsdMode::Native;
+    let (player, events, control) = start_with(config, dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    let seen = wait_end(&events);
+
+    assert!(seen.iter().any(|e| matches!(
+        e,
+        PlayerEvent::DsdMode {
+            mode: DsdMode::Native,
+            ..
+        }
+    )));
+    let sessions = control.sessions();
+    assert_eq!(
+        sessions[0].format,
+        DeviceFormat {
+            rate: 88_200,
+            container: SampleContainer::DsdU32Be,
+            channels: 2
+        }
+    );
+    let mut audio = Vec::new();
+    for group in sessions[0].bytes.as_chunks::<8>().0 {
+        if group.iter().all(|&b| b == 0x69) {
+            continue;
+        }
+        for byte in 0..4 {
+            audio.push(group[byte]);
+            audio.push(group[4 + byte]);
+        }
+    }
+    assert_eq!(audio, expected);
+}
+
+#[test]
+fn dsd_mode_pcm_converts_instead_of_packing() {
+    let expected = dsd_bytes(8_000, 6);
+    let track = dsf("pcm.dsf", &expected);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.default_dsd_mode = DsdMode::Pcm;
+    config.dsd_pcm_rate = DsdPcmRate::R352_8;
+    let (player, events, control) = start_with(config, dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    let seen = wait_end(&events);
+
+    assert!(seen.iter().any(|e| matches!(
+        e,
+        PlayerEvent::DsdMode {
+            mode: DsdMode::Pcm,
+            reason: None
+        }
+    )));
+    let sessions = control.sessions();
+    assert_eq!(sessions[0].format.rate, 352_800);
+    assert_eq!(sessions[0].format.container, SampleContainer::S24Packed);
+
+    // The device bytes are exactly the converter's output, down to the frame.
+    let mut converter = sonder_dsp::DsdToPcm::new(DSD64, 352_800, 2).unwrap();
+    let mut pcm = Vec::new();
+    converter.process(&expected, &mut pcm);
+    let samples: Vec<i32> = pcm
+        .iter()
+        .map(|&s| {
+            (s * 2_147_483_648.0)
+                .round()
+                .clamp(-2_147_483_648.0, 2_147_483_647.0) as i32
+        })
+        .collect();
+    assert_eq!(
+        sessions[0].bytes,
+        packed(SampleContainer::S24Packed, &samples)
+    );
+}
+
+#[test]
+fn a_pcm_stage_forces_dsd_to_pcm_with_a_reason() {
+    let expected = dsd_bytes(8_000, 7);
+    let track = dsf("fallback.dsf", &expected);
+    let (player, events, control) = start(dsd_device());
+    player.set_volume(Some(-6.0));
+    player.enqueue(vec![track]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let reason = seen.iter().find_map(|e| match e {
+        PlayerEvent::DsdMode {
+            mode: DsdMode::Pcm,
+            reason,
+        } => reason.clone(),
+        _ => None,
+    });
+    let reason = reason.expect("PCM fallback announced");
+    assert!(reason.contains("DSP"), "{reason}");
+    // DoP would be 24-in-32; the converted stream is plain 24-bit PCM at 176.4 kHz.
+    assert_eq!(
+        control.sessions()[0].format.container,
+        SampleContainer::S24Packed
+    );
+}
+
+#[test]
+fn per_device_dsd_mode_overrides_the_default() {
+    let expected = dsd_bytes(4_000, 8);
+    let track = dsf("per-device.dsf", &expected);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.default_dsd_mode = DsdMode::Dop;
+    config
+        .dsd_modes
+        .insert(NullBackend::device_id(), DsdMode::Pcm);
+    let (player, events, control) = start_with(config, dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    let seen = wait_end(&events);
+
+    assert!(seen.iter().any(|e| matches!(
+        e,
+        PlayerEvent::DsdMode {
+            mode: DsdMode::Pcm,
+            ..
+        }
+    )));
+    assert_eq!(control.sessions()[0].format.rate, 176_400);
+    assert_eq!(
+        control.sessions()[0].format.container,
+        SampleContainer::S24Packed
+    );
+}
+
+fn dsd_modes(events: &[PlayerEvent]) -> Vec<(DsdMode, Option<String>)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            PlayerEvent::DsdMode { mode, reason } => Some((*mode, reason.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An exclusive device answers "busy" to format probes while our stream holds it; the next
+/// DoP track must still reuse the open DoP stream instead of falling back to PCM.
+#[test]
+fn gapless_dop_survives_a_device_busy_with_our_own_stream() {
+    let first = dsd_bytes(12_000, 9);
+    let second = dsd_bytes(10_000, 10);
+    let a = dsf("dop-busy-a.dsf", &first);
+    let b = dsf("dop-busy-b.dsf", &second);
+    let (player, events, control) = start(dsd_device().with_busy_probes());
+    player.enqueue(vec![a, b]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let modes = dsd_modes(&seen);
+    assert_eq!(modes, vec![(DsdMode::Dop, None); 2], "events: {seen:#?}");
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 1, "same-rate DSD stays on one DoP stream");
+    let (payload, idle) = decode_dop(&sessions[0].bytes, 2);
+    let mut expected = first;
+    expected.extend_from_slice(&second);
+    assert_eq!(payload, expected, "idle frames: {idle}");
+}
+
+#[test]
+fn seek_within_a_dop_track_keeps_the_dop_stream() {
+    let source = dsd_bytes(200_000, 11);
+    let track = dsf("dop-busy-seek.dsf", &source);
+    let (player, events, control) = start(dsd_device().with_busy_probes());
+    player.enqueue(vec![track]);
+    player.play();
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if !elapsed.is_zero()),
+    );
+    player.seek(Duration::from_millis(400));
+    let seen = wait_end(&events);
+
+    let modes = dsd_modes(&seen);
+    assert!(
+        !modes.is_empty() && modes.iter().all(|m| *m == (DsdMode::Dop, None)),
+        "events: {seen:#?}"
+    );
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 1, "a seek must not reopen the device");
+    // The output ends with the source from the seek target, still as DoP.
+    let (payload, _) = decode_dop(&sessions[0].bytes, 2);
+    let target = 2 * (DSD64 as usize / 8) * 400 / 1000;
+    assert!(payload.ends_with(&source[target..]));
+}
+
+/// The DoP answer is unknown while a PCM stream holds the device; once that stream drains,
+/// the engine must learn the device rejects DoP and convert the track instead of skipping it.
+#[test]
+fn dsd_after_pcm_on_a_busy_device_falls_back_to_pcm_once_known() {
+    let pcm = wav("busy-before-dsd.wav", 44_100, 16, 20_000, 12);
+    let dsd = dsf("busy-after-pcm.dsf", &dsd_bytes(8_000, 13));
+    let backend = dsd_device()
+        .with_formats(vec![
+            DeviceFormat {
+                rate: 44_100,
+                container: SampleContainer::S16,
+                channels: 2,
+            },
+            DeviceFormat {
+                rate: 176_400,
+                container: SampleContainer::S24Packed,
+                channels: 2,
+            },
+        ])
+        .with_busy_probes();
+    let (player, events, control) = start(backend);
+    player.enqueue(vec![pcm, dsd]);
+    player.play();
+    let seen = wait_end(&events);
+
+    assert!(
+        !seen
+            .iter()
+            .any(|e| matches!(e, PlayerEvent::TrackFailed { .. })),
+        "events: {seen:#?}"
+    );
+    assert!(
+        matches!(dsd_modes(&seen).last(), Some((DsdMode::Pcm, Some(_)))),
+        "events: {seen:#?}"
+    );
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions[1].format.rate, 176_400);
+    assert!(!sessions[1].bytes.is_empty());
+}
+
+/// Changing the DSD mode while a DSD track plays switches it from the current position.
+#[test]
+fn set_dsd_switches_a_playing_dop_track_to_pcm() {
+    let track = dsf("dsd-switch.dsf", &dsd_bytes(200_000, 14));
+    let (player, events, control) = start(dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if !elapsed.is_zero()),
+    );
+    player.set_dsd(
+        DsdMode::Pcm,
+        std::collections::HashMap::new(),
+        DsdPcmRate::R352_8,
+    );
+    let seen = wait_end(&events);
+
+    assert!(
+        matches!(dsd_modes(&seen).last(), Some((DsdMode::Pcm, None))),
+        "events: {seen:#?}"
+    );
+    let formats: Vec<_> = control.sessions().iter().map(|s| s.format).collect();
+    assert_eq!(formats.len(), 2, "{formats:?}");
+    assert_eq!(formats[0].container, SampleContainer::S24In32);
+    assert_eq!(formats[1].rate, 352_800);
+    assert_eq!(formats[1].container, SampleContainer::S24Packed);
+}
+
+/// The same settings sent again do not restart playback.
+#[test]
+fn unchanged_dsd_settings_are_a_noop() {
+    let track = dsf("dsd-noop.dsf", &dsd_bytes(100_000, 15));
+    let (player, events, control) = start(dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if !elapsed.is_zero()),
+    );
+    player.set_dsd(
+        DsdMode::Dop,
+        std::collections::HashMap::new(),
+        DsdPcmRate::R176_4,
+    );
+    let seen = wait_end(&events);
+    assert!(dsd_modes(&seen).is_empty(), "events: {seen:#?}");
+    assert_eq!(control.sessions().len(), 1);
+}
+
+/// A change that does not reach the playing DoP track (another device's mode, the PCM rate)
+/// leaves it alone.
+#[test]
+fn dsd_changes_for_other_devices_or_the_pcm_rate_keep_dop_playing() {
+    let track = dsf("dsd-unrelated.dsf", &dsd_bytes(100_000, 16));
+    let (player, events, control) = start(dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if !elapsed.is_zero()),
+    );
+    let other = std::collections::HashMap::from([(
+        sonder_output::DeviceId("another".into()),
+        DsdMode::Pcm,
+    )]);
+    player.set_dsd(DsdMode::Dop, other, DsdPcmRate::R352_8);
+    let seen = wait_end(&events);
+    assert!(dsd_modes(&seen).is_empty(), "events: {seen:#?}");
+    assert_eq!(control.sessions().len(), 1);
 }

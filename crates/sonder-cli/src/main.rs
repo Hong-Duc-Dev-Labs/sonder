@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use sha2::{Digest, Sha256};
 use sonder_decode::Decoder;
-use sonder_engine::{Player, PlayerConfig, PlayerEvent};
+use sonder_engine::{DsdMode, DsdPcmRate, Player, PlayerConfig, PlayerEvent};
 use sonder_output::format::pack;
 use sonder_output::{DeviceFormat, DeviceInfo, OutputBackend, SampleContainer, WriteTap};
 
@@ -47,6 +47,13 @@ enum Command {
         /// samples packed into the same container. Needs every track to share one stream.
         #[arg(long, conflicts_with = "volume")]
         verify_hash: bool,
+        /// How DSD files (DSF, DFF) reach the device. `dop` and `native` fall back to the
+        /// next option the device accepts, ending at PCM conversion.
+        #[arg(long, value_enum, default_value_t = DsdArg::Dop)]
+        dsd_mode: DsdArg,
+        /// Output rate when DSD is converted to PCM.
+        #[arg(long, value_enum, default_value_t = DsdRateArg::R176400)]
+        dsd_pcm_rate: DsdRateArg,
     },
     /// Add folders to a library database and scan every library folder, printing timings.
     Scan {
@@ -64,6 +71,43 @@ enum Command {
     },
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum DsdArg {
+    /// DSD over PCM (DoP), else PCM conversion.
+    Dop,
+    /// Native DSD (ALSA DSD_U32_BE), else DoP, else PCM conversion.
+    Native,
+    /// Always convert to PCM.
+    Pcm,
+}
+
+impl From<DsdArg> for DsdMode {
+    fn from(arg: DsdArg) -> Self {
+        match arg {
+            DsdArg::Dop => DsdMode::Dop,
+            DsdArg::Native => DsdMode::Native,
+            DsdArg::Pcm => DsdMode::Pcm,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum DsdRateArg {
+    #[value(name = "176400")]
+    R176400,
+    #[value(name = "352800")]
+    R352800,
+}
+
+impl From<DsdRateArg> for DsdPcmRate {
+    fn from(arg: DsdRateArg) -> Self {
+        match arg {
+            DsdRateArg::R176400 => DsdPcmRate::R176_4,
+            DsdRateArg::R352800 => DsdPcmRate::R352_8,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Devices => list_devices(),
@@ -72,7 +116,16 @@ fn main() -> Result<()> {
             device,
             volume,
             verify_hash,
-        } => play(paths, device, volume, verify_hash),
+            dsd_mode,
+            dsd_pcm_rate,
+        } => play(
+            paths,
+            device,
+            volume,
+            verify_hash,
+            dsd_mode.into(),
+            dsd_pcm_rate.into(),
+        ),
         Command::Scan {
             paths,
             db,
@@ -234,6 +287,8 @@ fn play(
     device: Option<usize>,
     volume: Option<f64>,
     verify_hash: bool,
+    dsd_mode: DsdMode,
+    dsd_pcm_rate: DsdPcmRate,
 ) -> Result<()> {
     let tracks = collect_tracks(&paths)?;
     let backend = backend()?;
@@ -242,6 +297,8 @@ fn play(
     eprintln!("Device: {} (exclusive)", device.name);
 
     let mut config = PlayerConfig::new(device.id.clone());
+    config.default_dsd_mode = dsd_mode;
+    config.dsd_pcm_rate = dsd_pcm_rate;
     let digests: Digests = Arc::default();
     if verify_hash {
         let digests = digests.clone();
@@ -299,6 +356,12 @@ fn play(
                 let _ = std::io::stderr().flush();
             }
             PlayerEvent::Underruns(total) => underruns = total,
+            PlayerEvent::DsdMode { mode, reason } => {
+                eprintln!(
+                    "\nDSD: {mode:?}{}",
+                    reason.map(|r| format!(" ({r})")).unwrap_or_default()
+                );
+            }
             PlayerEvent::TrackFailed { path, error, .. } => {
                 failures += 1;
                 eprintln!("\nSkipped {}: {error}", path.display());

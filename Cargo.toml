@@ -12,6 +12,7 @@ publish = false
 sonder-decode = { path = "crates/sonder-decode" }
 sonder-output = { path = "crates/sonder-output" }
 sonder-engine = { path = "crates/sonder-engine" }
+sonder-dsp = { path = "crates/sonder-dsp" }
 sonder-library = { path = "crates/sonder-library" }
 sonder-lyrics = { path = "crates/sonder-lyrics" }
 anyhow = "1.0.104"

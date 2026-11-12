@@ -9,21 +9,23 @@
 //! DSP) fits the open device format; the next track's samples follow the previous ones in the
 //! same ring. A different format drains the stream, closes it and opens a new one.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
-use sonder_decode::{DecodeError, Decoder, SourceFormat};
+use sonder_decode::{
+    DSD_SOURCE_BITS, DecodeError, DsdFormat, SourceDecoder, SourceFormat, TrackFormat,
+};
 use sonder_output::{
     DeviceFormat, DeviceId, OutputBackend, OutputError, SampleProducer, Stream, StreamHandle,
-    StreamOptions, WriteTap, negotiate, sample_ring,
+    StreamOptions, WriteTap, negotiate, negotiate_dop, negotiate_native, sample_ring,
 };
 
 use crate::queue::Queue;
 use crate::stage::{Stage, Volume};
-use crate::worker::{DecodeWorker, OutputSpec};
+use crate::worker::{DecodeWorker, DsdMode, OutputMode, OutputSpec};
 
 /// How long a seek waits for the render thread to drop queued audio before reopening instead.
 const FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
@@ -61,6 +63,15 @@ pub enum Command {
     /// Plays on another device from now on. Playback continues on it from the current
     /// position; a stopped player just opens it on the next play.
     SetDevice(DeviceId),
+    /// Replaces the DSD handling (see [`PlayerConfig::default_dsd_mode`],
+    /// [`dsd_modes`](PlayerConfig::dsd_modes), [`dsd_pcm_rate`](PlayerConfig::dsd_pcm_rate)).
+    /// A playing DSD track switches from its current position; anything else picks it up on
+    /// its next open.
+    SetDsd {
+        default_mode: DsdMode,
+        modes: HashMap<DeviceId, DsdMode>,
+        pcm_rate: DsdPcmRate,
+    },
     Shutdown,
 }
 
@@ -104,11 +115,34 @@ pub enum PlayerEvent {
     OutputFailed(String),
     /// The set of present devices changed.
     DevicesChanged(Vec<DeviceId>),
+    /// How a DSD track is being played, with the reason when the requested mode was not
+    /// possible (DoP unsupported, DSP stages active, no native DSD).
+    DsdMode {
+        mode: DsdMode,
+        reason: Option<String>,
+    },
     EndOfQueue,
 }
 
 /// Builds a tap for each stream the player opens (bit-perfect verification).
 pub type TapFactory = Box<dyn FnMut(DeviceFormat) -> Box<dyn WriteTap> + Send>;
+
+/// The PCM rate DSD→PCM conversion targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DsdPcmRate {
+    #[default]
+    R176_4,
+    R352_8,
+}
+
+impl DsdPcmRate {
+    pub const fn rate(self) -> u32 {
+        match self {
+            Self::R176_4 => 176_400,
+            Self::R352_8 => 352_800,
+        }
+    }
+}
 
 pub struct PlayerConfig {
     pub device: DeviceId,
@@ -120,6 +154,12 @@ pub struct PlayerConfig {
     /// How often position events are sent while playing.
     pub position_interval: Duration,
     pub tap: Option<TapFactory>,
+    /// DSD handling for devices not listed in [`dsd_modes`](Self::dsd_modes).
+    pub default_dsd_mode: DsdMode,
+    /// Per-device DSD handling, keyed by [`DeviceId`].
+    pub dsd_modes: HashMap<DeviceId, DsdMode>,
+    /// Output rate for DSD→PCM conversion.
+    pub dsd_pcm_rate: DsdPcmRate,
 }
 
 impl PlayerConfig {
@@ -130,7 +170,18 @@ impl PlayerConfig {
             device_poll: Duration::from_secs(2),
             position_interval: Duration::from_millis(100),
             tap: None,
+            default_dsd_mode: DsdMode::Dop,
+            dsd_modes: HashMap::new(),
+            dsd_pcm_rate: DsdPcmRate::R176_4,
         }
+    }
+
+    /// DSD handling for `device`: its entry, else the default.
+    pub fn dsd_mode_for(&self, device: &DeviceId) -> DsdMode {
+        self.dsd_modes
+            .get(device)
+            .copied()
+            .unwrap_or(self.default_dsd_mode)
     }
 }
 
@@ -216,6 +267,21 @@ impl Player {
     pub fn set_volume(&self, db: Option<f64>) {
         self.send(Command::SetVolume(db));
     }
+
+    /// Changes DSD handling: the mode for devices without an entry in `modes`, per-device
+    /// modes, and the DSD→PCM output rate. Unchanged values are a no-op.
+    pub fn set_dsd(
+        &self,
+        default_mode: DsdMode,
+        modes: HashMap<DeviceId, DsdMode>,
+        pcm_rate: DsdPcmRate,
+    ) {
+        self.send(Command::SetDsd {
+            default_mode,
+            modes,
+            pcm_rate,
+        });
+    }
 }
 
 impl Drop for Player {
@@ -295,6 +361,8 @@ struct Output {
     producer: Option<SampleProducer>,
     handle: StreamHandle,
     format: DeviceFormat,
+    /// How the ring's samples are laid out (PCM, DoP payload or native DSD words).
+    mode: OutputMode,
     /// Frames pushed into the ring so far.
     pushed: u64,
     segments: Vec<Segment>,
@@ -302,7 +370,7 @@ struct Output {
 
 struct Decoding {
     index: usize,
-    decoder: Decoder,
+    decoder: SourceDecoder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -359,6 +427,9 @@ struct Engine {
     devices: Vec<DeviceId>,
     last_poll: Instant,
     last_retry: Instant,
+    /// Track whose assumed DSD mode was rejected when its stream opened and that was decoded
+    /// again with the device free; a second rejection is a normal output failure.
+    dsd_reprobe: Option<usize>,
 }
 
 impl Engine {
@@ -394,6 +465,7 @@ impl Engine {
             devices,
             last_poll: Instant::now(),
             last_retry: Instant::now(),
+            dsd_reprobe: None,
         }
     }
 
@@ -489,6 +561,11 @@ impl Engine {
             }
             Command::SetVolume(db) => self.set_volume(db),
             Command::SetDevice(device) => self.set_device(device),
+            Command::SetDsd {
+                default_mode,
+                modes,
+                pcm_rate,
+            } => self.set_dsd(default_mode, modes, pcm_rate),
             Command::Shutdown => return false,
         }
         true
@@ -761,6 +838,42 @@ impl Engine {
         }
     }
 
+    fn set_dsd(
+        &mut self,
+        default_mode: DsdMode,
+        modes: HashMap<DeviceId, DsdMode>,
+        pcm_rate: DsdPcmRate,
+    ) {
+        let config = &mut self.config;
+        if config.default_dsd_mode == default_mode
+            && config.dsd_modes == modes
+            && config.dsd_pcm_rate == pcm_rate
+        {
+            return;
+        }
+        let mode_before = config.dsd_mode_for(&config.device);
+        let rate_changed = config.dsd_pcm_rate != pcm_rate;
+        config.default_dsd_mode = default_mode;
+        config.dsd_modes = modes;
+        config.dsd_pcm_rate = pcm_rate;
+        // Re-decode a playing DSD track from its position, like a volume change, but only
+        // when the change reaches it: its device's mode, or the rate while it is converted.
+        let mode_changed = config.dsd_mode_for(&config.device) != mode_before;
+        let converting = self.out.as_ref().is_some_and(|o| o.mode == OutputMode::Pcm);
+        if (mode_changed || (rate_changed && converting))
+            && self.state != PlaybackState::Stopped
+            && self.hold.is_none()
+            && let Some(now) = self.now_playing()
+            && now.segment.source.bits == DSD_SOURCE_BITS
+        {
+            let at = (
+                now.segment.index,
+                Pos::frames(now.frame, now.segment.source.rate),
+            );
+            self.restart(at.0, at.1);
+        }
+    }
+
     fn set_device(&mut self, device: DeviceId) {
         if device == self.config.device {
             return;
@@ -880,6 +993,86 @@ impl Engine {
         self.open_track(index, pos, false);
     }
 
+    /// Picks how a DSD track reaches the current device, with a reason when the configured
+    /// mode cannot be used.
+    ///
+    /// DoP and native DSD are bit-perfect: any active PCM stage would corrupt them, so the
+    /// engine refuses DoP there and converts to PCM instead (the same fallback used when the
+    /// device does not accept DoP).
+    ///
+    /// The track is chosen while the current stream may still hold the device (gapless
+    /// prefetch, seek, volume change). An open DSD stream that already carries this rate is
+    /// reused without asking the device again. A probe that fails for any reason other than
+    /// an unsupported format (an exclusive device answers "busy") leaves the answer unknown:
+    /// the requested mode is assumed and [`open_output`](Self::open_output) re-decides once
+    /// the device is free.
+    fn choose_dsd_mode(&self, dsd: DsdFormat) -> (DsdMode, Option<String>) {
+        let requested = self.config.dsd_mode_for(&self.config.device);
+        if requested == DsdMode::Pcm {
+            return (DsdMode::Pcm, None);
+        }
+        if !self.worker.pipeline_is_empty() {
+            return (
+                DsdMode::Pcm,
+                Some("PCM DSP stages are active; DSD is converted to PCM".into()),
+            );
+        }
+        let dop_reason = || {
+            (requested == DsdMode::Native)
+                .then(|| "native DSD is not available; using DoP".to_string())
+        };
+        if let Some(out) = &self.out
+            && out.format.channels == dsd.channels
+        {
+            match out.mode {
+                OutputMode::NativeDsd
+                    if requested == DsdMode::Native && out.format.rate == dsd.rate / 32 =>
+                {
+                    return (DsdMode::Native, None);
+                }
+                OutputMode::Dop if out.format.rate == dsd.rate / 16 => {
+                    return (DsdMode::Dop, dop_reason());
+                }
+                _ => {}
+            }
+        }
+
+        let backend = self.backend.as_ref();
+        let device = &self.config.device;
+        let dop = || probe(negotiate_dop(backend, device, dsd.rate / 16, dsd.channels));
+        let to_pcm = |what: &str| {
+            (
+                DsdMode::Pcm,
+                Some(format!(
+                    "the device accepts {what} at {} Hz; converting DSD to PCM",
+                    dsd.rate / 16
+                )),
+            )
+        };
+        let native = || {
+            probe(negotiate_native(
+                backend,
+                device,
+                dsd.rate / 32,
+                dsd.channels,
+            ))
+        };
+        if requested == DsdMode::Native {
+            match native() {
+                Probe::Yes | Probe::Unknown => (DsdMode::Native, None),
+                Probe::No => match dop() {
+                    Probe::Yes | Probe::Unknown => (DsdMode::Dop, dop_reason()),
+                    Probe::No => to_pcm("neither native DSD nor DoP"),
+                },
+            }
+        } else {
+            match dop() {
+                Probe::Yes | Probe::Unknown => (DsdMode::Dop, None),
+                Probe::No => to_pcm("no DoP"),
+            }
+        }
+    }
+
     /// Opens track `index` (skipping unplayable files) and queues its start marker.
     ///
     /// `continuous` is true when the track follows the previous one gaplessly, so stage
@@ -898,9 +1091,21 @@ impl Engine {
             };
             match open_decoder(&path, pos) {
                 Ok(decoder) => {
-                    let source = decoder.format();
+                    let source = decoder.source_format();
                     let mut tail = Vec::new();
-                    let spec = self.worker.prepare(source, &mut tail);
+                    let spec = match decoder.format() {
+                        TrackFormat::Pcm(_) => self.worker.prepare(source, &mut tail),
+                        TrackFormat::Dsd(dsd) => {
+                            let (mode, reason) = self.choose_dsd_mode(dsd);
+                            self.emit(PlayerEvent::DsdMode { mode, reason });
+                            self.worker.prepare_dsd(
+                                dsd,
+                                mode,
+                                self.config.dsd_pcm_rate.rate(),
+                                &mut tail,
+                            )
+                        }
+                    };
                     if continuous {
                         self.push_samples(tail);
                     } else {
@@ -912,7 +1117,7 @@ impl Engine {
                         offset: decoder.position(),
                         source,
                         spec,
-                        duration: decoder.total_frames(),
+                        duration: decoder.total(),
                     });
                     self.decoding = Some(Decoding { index, decoder });
                     return;
@@ -952,6 +1157,8 @@ impl Engine {
         let mut block = Vec::new();
         match self.worker.decode(&mut decoding.decoder, &mut block) {
             Ok(0) => {
+                // A DSD packer may have appended one padded frame on end of stream.
+                self.push_samples(block);
                 self.decoding = None;
                 self.open_track(index + 1, Pos::ZERO, true);
             }
@@ -996,7 +1203,7 @@ impl Engine {
                     match &mut self.out {
                         // Draining towards a format change: wait for the stream to finish.
                         Some(out) if out.producer.is_none() => return progress,
-                        Some(out) if !reusable(out.format, spec) => {
+                        Some(out) if !reusable(out.format, out.mode, spec) => {
                             out.producer = None;
                             return true;
                         }
@@ -1056,19 +1263,31 @@ impl Engine {
     }
 
     fn open_output(&mut self, spec: OutputSpec, index: usize, pos: Pos) -> bool {
-        let format = match negotiate(
-            self.backend.as_ref(),
-            &self.config.device,
-            spec.rate,
-            spec.bits,
-            spec.channels,
-        ) {
+        let backend = self.backend.as_ref();
+        let device = &self.config.device;
+        let format = match spec.mode {
+            OutputMode::Pcm => negotiate(backend, device, spec.rate, spec.bits, spec.channels),
+            OutputMode::Dop => negotiate_dop(backend, device, spec.rate, spec.channels),
+            OutputMode::NativeDsd => negotiate_native(backend, device, spec.rate, spec.channels),
+        };
+        let format = match format {
             Ok(format) => format,
+            Err(OutputError::UnsupportedFormat { .. })
+                if spec.mode != OutputMode::Pcm && self.dsd_reprobe != Some(index) =>
+            {
+                // The DSD mode was assumed while the device was busy; now that it is free,
+                // decode the track again so `choose_dsd_mode` gets a real answer. Once only,
+                // so a device that contradicts its own probe cannot loop.
+                self.dsd_reprobe = Some(index);
+                self.restart(index, pos);
+                return false;
+            }
             Err(error) => {
                 self.output_failed(error, index, pos);
                 return false;
             }
         };
+        self.dsd_reprobe = None;
         let frames = (u128::from(spec.rate) * self.config.ring.as_millis() / 1000) as usize;
         let (producer, source) = sample_ring(frames.max(MIN_RING_FRAMES), spec.channels);
         source
@@ -1076,6 +1295,7 @@ impl Engine {
             .set_paused(self.state != PlaybackState::Playing);
         let options = StreamOptions {
             tap: self.config.tap.as_mut().map(|make| make(format)),
+            dop: spec.mode == OutputMode::Dop,
         };
         match self
             .backend
@@ -1087,6 +1307,7 @@ impl Engine {
                     stream,
                     producer: Some(producer),
                     format,
+                    mode: spec.mode,
                     pushed: 0,
                     segments: Vec::new(),
                 });
@@ -1273,18 +1494,36 @@ fn now_in(
     Some(Now { segment, frame })
 }
 
+/// What a format probe says about the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Probe {
+    Yes,
+    No,
+    /// The device could not be asked, typically because our own stream holds it.
+    Unknown,
+}
+
+fn probe(result: Result<DeviceFormat, OutputError>) -> Probe {
+    match result {
+        Ok(_) => Probe::Yes,
+        Err(OutputError::UnsupportedFormat { .. }) => Probe::No,
+        Err(_) => Probe::Unknown,
+    }
+}
+
 /// Whether an open stream in `current` can carry `spec` unchanged (same rate and channels, and
 /// a container wide enough for the bits). A 16-bit track after a 24-bit one stays bit-perfect
 /// in the 24-bit container, so it plays gapless.
-fn reusable(current: DeviceFormat, spec: OutputSpec) -> bool {
-    current.rate == spec.rate
+fn reusable(current: DeviceFormat, mode: OutputMode, spec: OutputSpec) -> bool {
+    mode == spec.mode
+        && current.rate == spec.rate
         && current.channels == spec.channels
         && current.container.holds(spec.bits)
 }
 
-fn open_decoder(path: &Path, pos: Pos) -> Result<Decoder, DecodeError> {
-    let mut decoder = Decoder::open(path)?;
-    let frame = pos.frames_at(decoder.format().rate);
+fn open_decoder(path: &Path, pos: Pos) -> Result<SourceDecoder, DecodeError> {
+    let mut decoder = SourceDecoder::open(path)?;
+    let frame = pos.frames_at(decoder.source_format().rate);
     if frame > 0 {
         decoder.seek(frame)?;
     }
@@ -1322,10 +1561,13 @@ mod tests {
             rate,
             bits,
             channels: 2,
+            mode: OutputMode::Pcm,
         };
-        assert!(reusable(s24, spec(44_100, 16)));
-        assert!(reusable(s24, spec(44_100, 24)));
-        assert!(!reusable(s24, spec(44_100, 32)));
-        assert!(!reusable(s24, spec(48_000, 16)));
+        assert!(reusable(s24, OutputMode::Pcm, spec(44_100, 16)));
+        assert!(reusable(s24, OutputMode::Pcm, spec(44_100, 24)));
+        assert!(!reusable(s24, OutputMode::Pcm, spec(44_100, 32)));
+        assert!(!reusable(s24, OutputMode::Pcm, spec(48_000, 16)));
+        // A DoP stream can never carry PCM samples, even at the same rate and container.
+        assert!(!reusable(s24, OutputMode::Dop, spec(44_100, 24)));
     }
 }

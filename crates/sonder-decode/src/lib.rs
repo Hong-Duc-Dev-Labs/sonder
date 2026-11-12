@@ -1,12 +1,17 @@
-//! Audio file decoding over symphonia.
+//! Audio file decoding: integer PCM over symphonia, plus DSF and DSDIFF through [`dsd`].
 //!
 //! [`Decoder`] yields interleaved frames. Integer output is *left-justified* `i32`: a 16-bit
 //! source sample `s` arrives as `s << 16`, a 24-bit one as `s << 8`. The valid bit count is
 //! reported in [`SourceFormat::bits`], so later stages can pack samples into a device container
-//! without changing their value.
+//! without changing their value. [`SourceDecoder`] adds DSD, whose readers emit interleaved
+//! MSB-first bytes (eight 1-bit samples per channel per byte).
 
 use std::fs::File;
 use std::path::Path;
+
+pub mod dsd;
+
+pub use dsd::{DSD_RATES, DsdDecoder, DsdFormat};
 
 use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::audio::conv::ConvertibleSample;
@@ -35,6 +40,96 @@ pub struct SourceFormat {
     pub bits: u32,
     /// Interleaved channel count.
     pub channels: u16,
+}
+
+/// [`SourceFormat::bits`] of a DSD stream on the engine timeline (one bit per sample). No
+/// PCM source reports it, so it identifies DSD tracks.
+pub const DSD_SOURCE_BITS: u32 = 1;
+
+/// What a file contains: integer PCM through symphonia, or DSD through
+/// [`dsd::DsdDecoder`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackFormat {
+    Pcm(SourceFormat),
+    Dsd(DsdFormat),
+}
+
+/// A decoder for either signal family.
+///
+/// Position and seek units are the source's own: PCM frames for PCM, byte frames (eight DSD
+/// bits per channel) for DSD. [`source_format`](Self::source_format) turns both into the
+/// timeline the engine reports, where a DSD byte frame is one "sample" at the byte rate.
+pub enum SourceDecoder {
+    Pcm(Decoder),
+    Dsd(DsdDecoder),
+}
+
+impl SourceDecoder {
+    /// Opens `path`, sniffing the container's magic before falling back to symphonia.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, DecodeError> {
+        let path = path.as_ref();
+        let mut magic = [0u8; 4];
+        let head = {
+            use std::io::Read;
+            File::open(path).and_then(|mut file| {
+                file.read_exact(&mut magic)?;
+                Ok(magic)
+            })
+        };
+        match head {
+            Ok(m) if &m == b"DSD " || &m == b"FRM8" => Ok(Self::Dsd(DsdDecoder::open(path)?)),
+            _ => Ok(Self::Pcm(Decoder::open(path)?)),
+        }
+    }
+
+    pub fn format(&self) -> TrackFormat {
+        match self {
+            Self::Pcm(d) => TrackFormat::Pcm(d.format()),
+            Self::Dsd(d) => TrackFormat::Dsd(d.format()),
+        }
+    }
+
+    /// The timeline view used by the engine: sample rate, valid bits and channels.
+    ///
+    /// A DSD stream is reported as 1-bit samples at its byte rate, so frame positions and
+    /// durations line up with the byte frames the reader returns.
+    pub fn source_format(&self) -> SourceFormat {
+        match self {
+            Self::Pcm(d) => d.format(),
+            Self::Dsd(d) => {
+                let dsd = d.format();
+                SourceFormat {
+                    rate: dsd.byte_rate(),
+                    bits: DSD_SOURCE_BITS,
+                    channels: dsd.channels,
+                }
+            }
+        }
+    }
+
+    /// Source units read so far.
+    pub fn position(&self) -> u64 {
+        match self {
+            Self::Pcm(d) => d.position(),
+            Self::Dsd(d) => d.position(),
+        }
+    }
+
+    /// Source units in the track, if known.
+    pub fn total(&self) -> Option<u64> {
+        match self {
+            Self::Pcm(d) => d.total_frames(),
+            Self::Dsd(d) => d.total_bytes(),
+        }
+    }
+
+    /// Moves to source unit `unit`.
+    pub fn seek(&mut self, unit: u64) -> Result<(), DecodeError> {
+        match self {
+            Self::Pcm(d) => d.seek(unit),
+            Self::Dsd(d) => d.seek_bytes(unit),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

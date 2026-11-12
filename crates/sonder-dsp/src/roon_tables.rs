@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
 
@@ -30,10 +30,13 @@ struct ManifestEntry {
     sum: Option<f64>,
 }
 
-/// Roon tables in `dir`, loaded lazily per ratio.
+/// Roon tables in `dir`, loaded lazily per ratio and kept in memory once parsed, so a plan
+/// change (44.1k and 48k tracks in turn) does not read the CSV again.
 pub struct RoonTables {
     dir: PathBuf,
     manifest: OnceLock<HashMap<String, ManifestEntry>>,
+    /// Parsed tables, and `None` for a spec whose file is missing or invalid.
+    tables: Mutex<HashMap<FilterSpec, Option<Arc<FilterTable>>>>,
 }
 
 impl RoonTables {
@@ -50,6 +53,7 @@ impl RoonTables {
         Ok(Self {
             dir,
             manifest: OnceLock::new(),
+            tables: Mutex::new(HashMap::new()),
         })
     }
 
@@ -139,6 +143,14 @@ impl FilterSource for RoonTables {
     }
 
     fn get(&self, spec: FilterSpec) -> Option<Arc<FilterTable>> {
+        if let Some(known) = self
+            .tables
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&spec)
+        {
+            return known.clone();
+        }
         let phase = match spec.phase {
             FilterPhase::Linear => "linear_phase",
             FilterPhase::Minimum => "minimum_phase",
@@ -149,7 +161,12 @@ impl FilterSource for RoonTables {
             phase,
             spec.variant.as_str()
         );
-        self.parse(spec, &file).map(Arc::new)
+        let table = self.parse(spec, &file).map(Arc::new);
+        self.tables
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(spec, table.clone());
+        table
     }
 }
 
@@ -195,6 +212,11 @@ mod tests {
         assert!((table.phases()[k] - 0.2 * 2.0).abs() < 1e-12);
         assert!((table.branch_gain(0) + table.branch_gain(1) - 2.0).abs() < 1e-12);
         assert_eq!(table.source(), FilterSourceKind::Roon);
+
+        // Parsed once: a later request is served from memory, even with the file gone.
+        fs::remove_file(dir.join("polyphase_2x_linear_phase_precise.csv")).unwrap();
+        let again = roon.get(spec(2, 1)).expect("cached table");
+        assert!(Arc::ptr_eq(&table, &again));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -213,8 +235,10 @@ mod tests {
         assert!(roon.get(spec).is_none(), "manifest tap count must match");
 
         fs::write(dir.join(file), "index,coefficient\n0,0.5\n1,NaN\n").unwrap();
+        // A fresh loader: the first one remembers its earlier rejection.
+        let fresh = RoonTables::new(&dir).unwrap();
         assert!(
-            roon.get(spec).is_none(),
+            fresh.get(spec).is_none(),
             "non-finite coefficients are invalid"
         );
         let _ = fs::remove_dir_all(&dir);

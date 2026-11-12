@@ -13,6 +13,7 @@
   import { onMount } from "svelte";
   import { artUrl } from "../lib/art";
   import { attachSpin } from "../lib/spin.svelte";
+  import { drawVinylSurface } from "../lib/vinylSurface";
 
   let {
     art,
@@ -21,8 +22,14 @@
   }: { art: string | null | undefined; title?: string; paused?: boolean } = $props();
 
   const pathId = `vinyl-ring-${nextId++}`;
-  /** Ring text radius in the 1000-unit box: in the dead wax just outside the label (220). */
-  const RING_R = 240;
+  /**
+   * The dead wax runs from the label's edge (radius 220 in the 1000-unit box) to the run-out
+   * line (51 % of 500 = 255). The title's centre line sits midway, and the text is set with a
+   * central baseline so its glyphs straddle that line instead of standing on it.
+   */
+  const LABEL_R = 220;
+  const RUN_OUT_R = 255;
+  const RING_R = (LABEL_R + RUN_OUT_R) / 2;
   const RING_LENGTH = 2 * Math.PI * RING_R;
 
   let spinner: HTMLDivElement;
@@ -43,13 +50,34 @@
     return piece.repeat(repeats);
   });
 
-  onMount(() => attachSpin(spinner));
+  // The still surface is painted into a canvas at device resolution: once per album, and again
+  // only when the record is resized.
+  let surface: HTMLCanvasElement;
+  let seedText = $derived(title);
+  $effect(() => {
+    void seedText;
+    if (surface) drawVinylSurface(surface, seedText);
+  });
+
+  onMount(() => {
+    const stopSpin = attachSpin(spinner);
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => drawVinylSurface(surface, seedText));
+    });
+    observer.observe(surface);
+    return () => {
+      stopSpin();
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  });
 </script>
 
 <div class="disc" class:paused>
-  <div class="surface"></div>
-  <div class="grooves"></div>
-  <div class="sheen"></div>
+  <div class="shadow"></div>
+  <canvas class="surface" bind:this={surface} aria-hidden="true"></canvas>
   <div class="spinner" bind:this={spinner}>
     <div class="label">
       {#if src && !failed}
@@ -63,14 +91,15 @@
         <defs>
           <path id={pathId} d="M 500 {500 - RING_R} a {RING_R} {RING_R} 0 1 1 -0.01 0" />
         </defs>
-        <text textLength={RING_LENGTH.toFixed(0)} lengthAdjust="spacing">
+        <text textLength={RING_LENGTH.toFixed(0)} lengthAdjust="spacing" dominant-baseline="central">
           <textPath href="#{pathId}">{ringText}</textPath>
         </text>
       </svg>
     {/if}
   </div>
   <div class="label-light"></div>
-  <div class="spindle"></div>
+  <!-- The centre hole punched through the label, and the platter's spindle standing in it. -->
+  <div class="hub" aria-hidden="true"><span class="pin"></span></div>
 </div>
 
 <style>
@@ -83,102 +112,23 @@
     contain: layout style;
   }
 
-  /* Body and zones, still. Percentages are of the radius (closest-side). */
-  .surface {
+  /* The record's shadow on the platter, under the canvas. */
+  .shadow {
     position: absolute;
     inset: 0;
     border-radius: 50%;
     box-shadow:
       0 28px 56px rgb(0 0 0 / 0.6),
       0 6px 14px rgb(0 0 0 / 0.5);
-    background:
-      /* run-out: one bright spiral line where the stylus stops */
-      radial-gradient(
-        circle closest-side,
-        transparent 50.6%,
-        rgb(255 255 255 / 0.12) 51%,
-        rgb(0 0 0 / 0.6) 51.5%,
-        transparent 52%
-      ),
-      /* lead-in: a smooth glossy band just inside the rim */
-      radial-gradient(
-        circle closest-side,
-        transparent 91.6%,
-        rgb(255 255 255 / 0.05) 92%,
-        rgb(255 255 255 / 0.02) 94.6%,
-        transparent 95%
-      ),
-      radial-gradient(
-        circle closest-side,
-        #141418 0 44%,
-        #101013 44.5% 50.5%,
-        #08080a 51% 96.2%,
-        #2c2c32 97.4%,
-        #121215 98.8%,
-        #050506 100%
-      );
   }
-
-  /* The programme area's grooves, visible only where the light catches them. */
-  .grooves {
+  /* The still surface: painted by drawVinylSurface. */
+  .surface {
     position: absolute;
     inset: 0;
+    width: 100%;
+    height: 100%;
     border-radius: 50%;
-    background:
-      repeating-radial-gradient(circle at center, rgb(255 255 255 / 0.04) 0 0.6px, transparent 0.6px 1.8px),
-      repeating-radial-gradient(circle at center, rgb(0 0 0 / 0.25) 0 1px, transparent 1px 4.2px);
-    -webkit-mask-image:
-      radial-gradient(circle closest-side, transparent 51.5%, #000 52% 91.6%, transparent 92%),
-      conic-gradient(
-        from -70deg,
-        #000 0deg 8deg,
-        rgb(0 0 0 / 0.35) 30deg,
-        rgb(0 0 0 / 0.15) 90deg,
-        #000 180deg 188deg,
-        rgb(0 0 0 / 0.35) 210deg,
-        rgb(0 0 0 / 0.15) 270deg,
-        #000 360deg
-      );
-    -webkit-mask-composite: source-in;
-    mask-image:
-      radial-gradient(circle closest-side, transparent 51.5%, #000 52% 91.6%, transparent 92%),
-      conic-gradient(
-        from -70deg,
-        #000 0deg 8deg,
-        rgb(0 0 0 / 0.35) 30deg,
-        rgb(0 0 0 / 0.15) 90deg,
-        #000 180deg 188deg,
-        rgb(0 0 0 / 0.35) 210deg,
-        rgb(0 0 0 / 0.15) 270deg,
-        #000 360deg
-      );
-    mask-composite: intersect;
-  }
-
-  /* Two light lobes from a fixed light up and to the left, with a narrow hot core and a faint
-     warm/cool fringe at their edges. */
-  .sheen {
-    position: absolute;
-    inset: 0;
-    border-radius: 50%;
-    background: conic-gradient(
-      from -70deg,
-      transparent 0deg,
-      rgb(255 210 170 / 0.04) 14deg,
-      rgb(255 255 255 / 0.12) 21deg,
-      rgb(255 255 255 / 0.22) 24deg,
-      rgb(255 255 255 / 0.12) 27deg,
-      rgb(170 200 255 / 0.04) 34deg,
-      transparent 50deg 180deg,
-      rgb(255 210 170 / 0.03) 194deg,
-      rgb(255 255 255 / 0.08) 201deg,
-      rgb(255 255 255 / 0.16) 204deg,
-      rgb(255 255 255 / 0.08) 207deg,
-      rgb(170 200 255 / 0.03) 214deg,
-      transparent 230deg
-    );
-    -webkit-mask-image: radial-gradient(circle closest-side, transparent 44%, #000 44.5%);
-    mask-image: radial-gradient(circle closest-side, transparent 44%, #000 44.5%);
+    background: #0b0b0d;
   }
 
   /* Everything that turns: the label and the title printed round it. */
@@ -240,13 +190,33 @@
   .paused .label-light {
     opacity: 0.85;
   }
-  .spindle {
+  /* Real proportions: an LP's centre hole is about 2.4 % of its diameter and the spindle fills
+     most of it. The hole shows as a thin dark gap with the paper's cut edge around it. */
+  .hub {
     position: absolute;
-    inset: 46.2%;
+    left: 50%;
+    top: 50%;
+    width: 2.9%;
+    aspect-ratio: 1;
+    transform: translate(-50%, -50%);
     border-radius: 50%;
-    background: radial-gradient(circle at 36% 30%, #f4f5f7 0 10%, #a7a9ae 32%, #44464b 62%, #151517 100%);
+    background: radial-gradient(circle, #030304 0 62%, #111114 74%, rgb(255 255 255 / 0.18) 84%, transparent 92%);
+    box-shadow: inset 0 1px 1.5px rgb(0 0 0 / 0.8);
+  }
+  /* The spindle seen from above: a flat machined top with circular tooling marks, a bevelled
+     rim catching the light up and to the left, and a small shadow cast down-right. */
+  .pin {
+    position: absolute;
+    inset: 16%;
+    border-radius: 50%;
+    background:
+      radial-gradient(circle, rgb(0 0 0 / 0.3) 0 12%, transparent 16%),
+      radial-gradient(circle at 34% 28%, rgb(255 255 255 / 0.75) 0 4%, transparent 26%),
+      repeating-radial-gradient(circle, rgb(255 255 255 / 0.08) 0 0.6px, transparent 0.6px 1.4px),
+      conic-gradient(from 200deg, #9a9da3, #d9dbdf 70deg, #b4b7bc 140deg, #7d8086 220deg, #8c8f95 300deg, #9a9da3);
     box-shadow:
-      0 0 0 1px rgb(0 0 0 / 0.6),
-      0 2px 3px rgb(0 0 0 / 0.55);
+      inset 0.6px 0.6px 0.8px rgb(255 255 255 / 0.7),
+      inset -0.8px -0.8px 1px rgb(0 0 0 / 0.55),
+      1px 1.5px 2px rgb(0 0 0 / 0.75);
   }
 </style>

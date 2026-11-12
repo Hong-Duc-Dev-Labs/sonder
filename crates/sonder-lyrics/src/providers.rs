@@ -78,29 +78,6 @@ impl Online {
     }
 
     fn lrclib(&self, q: &Query) -> Result<Option<Lyrics>> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Record {
-            #[serde(default)]
-            instrumental: bool,
-            plain_lyrics: Option<String>,
-            synced_lyrics: Option<String>,
-            duration: Option<f64>,
-        }
-        fn lyrics(r: &Record) -> Option<Lyrics> {
-            if r.instrumental {
-                return Some(Lyrics::instrumental("LRCLIB"));
-            }
-            r.synced_lyrics
-                .as_deref()
-                .and_then(|t| lrc::parse(t, "LRCLIB"))
-                .or_else(|| {
-                    r.plain_lyrics
-                        .as_deref()
-                        .and_then(|t| Lyrics::plain("LRCLIB", t))
-                })
-        }
-
         let mut params = vec![("track_name", q.title.clone())];
         if let Some(a) = &q.artist {
             params.push(("artist_name", a.clone()));
@@ -113,32 +90,19 @@ impl Online {
             }
             exact.push(("duration", (q.duration_ms / 1000).to_string()));
             if let Some(body) = self.get(&format!("{LRCLIB}/get"), &exact)? {
-                let found = lyrics(&serde_json::from_str(&body)?);
+                let found = reply::lrclib_get(&body)?;
                 if found.is_some() {
                     return Ok(found);
                 }
             }
         }
-        let Some(body) = self.get(&format!("{LRCLIB}/search"), &params)? else {
-            return Ok(None);
-        };
-        let records: Vec<Record> = serde_json::from_str(&body)?;
-        let matching: Vec<&Record> = records
-            .iter()
-            .filter(|r| r.duration.is_some_and(|d| near(q, (d * 1000.0) as u64)))
-            .collect();
-        Ok(matching
-            .iter()
-            .find(|r| r.synced_lyrics.is_some())
-            .or(matching.first())
-            .and_then(|r| lyrics(r)))
+        match self.get(&format!("{LRCLIB}/search"), &params)? {
+            Some(body) => reply::lrclib_search(&body, q),
+            None => Ok(None),
+        }
     }
 
     fn better_lyrics(&self, q: &Query) -> Result<Option<Lyrics>> {
-        #[derive(Deserialize)]
-        struct Reply {
-            ttml: Option<String>,
-        }
         let Some(artist) = &q.artist else {
             return Ok(None);
         };
@@ -150,29 +114,13 @@ impl Online {
         if let Some(al) = &q.album {
             params.push(("al", al.clone()));
         }
-        let Some(body) = self.get(BETTER_LYRICS, &params)? else {
-            return Ok(None);
-        };
-        let reply: Reply = serde_json::from_str(&body)?;
-        Ok(reply
-            .ttml
-            .as_deref()
-            .and_then(|t| ttml::parse(t, "BetterLyrics")))
+        match self.get(BETTER_LYRICS, &params)? {
+            Some(body) => reply::better_lyrics(&body),
+            None => Ok(None),
+        }
     }
 
     fn lyrics_plus(&self, q: &Query) -> Result<Option<Lyrics>> {
-        #[derive(Deserialize)]
-        struct Reply {
-            #[serde(default)]
-            lyrics: Vec<Item>,
-        }
-        #[derive(Deserialize)]
-        struct Item {
-            #[serde(default)]
-            time: u32,
-            #[serde(default)]
-            text: String,
-        }
         let Some(artist) = &q.artist else {
             return Ok(None);
         };
@@ -189,25 +137,7 @@ impl Online {
         for base in LYRICS_PLUS {
             match self.get(base, &params) {
                 Ok(None) => return Ok(None),
-                Ok(Some(body)) => {
-                    let reply: Reply = serde_json::from_str(&body)?;
-                    let lines: Vec<crate::Line> = reply
-                        .lyrics
-                        .into_iter()
-                        .map(|i| crate::Line {
-                            start_ms: i.time,
-                            text: i.text.trim().to_string(),
-                        })
-                        .collect();
-                    if lines.is_empty() {
-                        return Ok(None);
-                    }
-                    if lines.iter().all(|l| l.start_ms == 0) {
-                        let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
-                        return Ok(Lyrics::plain("LyricsPlus", &text.join("\n")));
-                    }
-                    return Ok(Some(Lyrics::synced("LyricsPlus", lines)));
-                }
+                Ok(Some(body)) => return reply::lyrics_plus(&body),
                 Err(e) => last_err = Some(e),
             }
         }
@@ -215,23 +145,6 @@ impl Online {
     }
 
     fn kugou(&self, q: &Query) -> Result<Option<Lyrics>> {
-        #[derive(Deserialize)]
-        struct Search {
-            #[serde(default)]
-            candidates: Vec<Candidate>,
-        }
-        #[derive(Deserialize)]
-        struct Candidate {
-            id: String,
-            accesskey: String,
-            #[serde(default)]
-            duration: u64,
-        }
-        #[derive(Deserialize)]
-        struct Download {
-            content: Option<String>,
-        }
-
         let keyword = match &q.artist {
             Some(a) => format!("{a} - {}", q.title),
             None => q.title.clone(),
@@ -246,13 +159,7 @@ impl Online {
         let Some(body) = self.get(KUGOU_SEARCH, &params)? else {
             return Ok(None);
         };
-        let search: Search = serde_json::from_str(&body)?;
-        let Some(best) = search
-            .candidates
-            .iter()
-            .filter(|c| near(q, c.duration))
-            .min_by_key(|c| c.duration.abs_diff(q.duration_ms))
-        else {
+        let Some((id, accesskey)) = reply::kugou_pick(&body, q)? else {
             return Ok(None);
         };
         let params = [
@@ -260,13 +167,139 @@ impl Online {
             ("charset", "utf8".to_string()),
             ("client", "pc".to_string()),
             ("ver", "1".to_string()),
-            ("id", best.id.clone()),
-            ("accesskey", best.accesskey.clone()),
+            ("id", id),
+            ("accesskey", accesskey),
         ];
-        let Some(body) = self.get(KUGOU_DOWNLOAD, &params)? else {
+        match self.get(KUGOU_DOWNLOAD, &params)? {
+            Some(body) => reply::kugou_lyrics(&body, q),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Reading each service's reply, kept apart from the requests so it can be tested offline.
+mod reply {
+    use super::*;
+    use crate::Line;
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LrclibRecord {
+        #[serde(default)]
+        instrumental: bool,
+        plain_lyrics: Option<String>,
+        synced_lyrics: Option<String>,
+        duration: Option<f64>,
+    }
+
+    fn lrclib_lyrics(r: &LrclibRecord) -> Option<Lyrics> {
+        if r.instrumental {
+            return Some(Lyrics::instrumental("LRCLIB"));
+        }
+        r.synced_lyrics
+            .as_deref()
+            .and_then(|t| lrc::parse(t, "LRCLIB"))
+            .or_else(|| {
+                r.plain_lyrics
+                    .as_deref()
+                    .and_then(|t| Lyrics::plain("LRCLIB", t))
+            })
+    }
+
+    /// `/api/get`: one record.
+    pub fn lrclib_get(body: &str) -> Result<Option<Lyrics>> {
+        Ok(lrclib_lyrics(&serde_json::from_str(body)?))
+    }
+
+    /// `/api/search`: records of any length; the first of the right length, synced first.
+    pub fn lrclib_search(body: &str, q: &Query) -> Result<Option<Lyrics>> {
+        let records: Vec<LrclibRecord> = serde_json::from_str(body)?;
+        let matching: Vec<&LrclibRecord> = records
+            .iter()
+            .filter(|r| r.duration.is_some_and(|d| near(q, (d * 1000.0) as u64)))
+            .collect();
+        Ok(matching
+            .iter()
+            .find(|r| r.synced_lyrics.is_some())
+            .or(matching.first())
+            .and_then(|r| lrclib_lyrics(r)))
+    }
+
+    pub fn better_lyrics(body: &str) -> Result<Option<Lyrics>> {
+        #[derive(Deserialize)]
+        struct Reply {
+            ttml: Option<String>,
+        }
+        let reply: Reply = serde_json::from_str(body)?;
+        Ok(reply
+            .ttml
+            .as_deref()
+            .and_then(|t| ttml::parse(t, "BetterLyrics")))
+    }
+
+    pub fn lyrics_plus(body: &str) -> Result<Option<Lyrics>> {
+        #[derive(Deserialize)]
+        struct Reply {
+            #[serde(default)]
+            lyrics: Vec<Item>,
+        }
+        #[derive(Deserialize)]
+        struct Item {
+            #[serde(default)]
+            time: u32,
+            #[serde(default)]
+            text: String,
+        }
+        let reply: Reply = serde_json::from_str(body)?;
+        let mut lines: Vec<Line> = reply
+            .lyrics
+            .into_iter()
+            .map(|i| Line {
+                start_ms: i.time,
+                text: i.text.trim().to_string(),
+            })
+            .collect();
+        if lines.is_empty() {
             return Ok(None);
-        };
-        let download: Download = serde_json::from_str(&body)?;
+        }
+        if lines.iter().all(|l| l.start_ms == 0) {
+            let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+            return Ok(Lyrics::plain("LyricsPlus", &text.join("\n")));
+        }
+        lines.sort_by_key(|l| l.start_ms);
+        Ok(Some(Lyrics::synced("LyricsPlus", lines)))
+    }
+
+    /// The search candidate closest in length, within the slack: its id and access key.
+    pub fn kugou_pick(body: &str, q: &Query) -> Result<Option<(String, String)>> {
+        #[derive(Deserialize)]
+        struct Search {
+            #[serde(default)]
+            candidates: Vec<Candidate>,
+        }
+        #[derive(Deserialize)]
+        struct Candidate {
+            id: String,
+            accesskey: String,
+            #[serde(default)]
+            duration: u64,
+        }
+        let search: Search = serde_json::from_str(body)?;
+        Ok(search
+            .candidates
+            .into_iter()
+            .filter(|c| near(q, c.duration))
+            .min_by_key(|c| c.duration.abs_diff(q.duration_ms))
+            .map(|c| (c.id, c.accesskey)))
+    }
+
+    /// The download reply: base64 LRC, credits dropped.
+    pub fn kugou_lyrics(body: &str, q: &Query) -> Result<Option<Lyrics>> {
+        #[derive(Deserialize)]
+        struct Download {
+            content: Option<String>,
+        }
+        let download: Download = serde_json::from_str(body)?;
         let Some(content) = download.content else {
             return Ok(None);
         };
@@ -348,6 +381,92 @@ mod tests {
             .map(|l| l.text)
             .collect();
         assert_eq!(texts, vec!["First real line", "Time: 3:00"]);
+    }
+
+    // Replies below are trimmed copies of what each service returned for a real track, so a
+    // change in their shape fails here rather than silently finding nothing.
+
+    #[test]
+    fn lrclib_reply_prefers_synced_and_reads_instrumental() {
+        let one = r#"{"id":1,"trackName":"Song","duration":200.0,"instrumental":false,
+            "plainLyrics":"Hello\nWorld","syncedLyrics":"[00:01.00] Hello\n[00:02.50] World"}"#;
+        let l = reply::lrclib_get(one).unwrap().unwrap();
+        assert!(l.synced);
+        assert_eq!(l.lines[1].start_ms, 2500);
+        let plain = r#"{"instrumental":false,"plainLyrics":"Hello","syncedLyrics":null}"#;
+        assert!(!reply::lrclib_get(plain).unwrap().unwrap().synced);
+        let none = r#"{"instrumental":true,"plainLyrics":null,"syncedLyrics":null}"#;
+        assert!(reply::lrclib_get(none).unwrap().unwrap().instrumental);
+    }
+
+    #[test]
+    fn lrclib_search_keeps_only_the_right_length() {
+        let body = r#"[
+            {"duration":260.0,"instrumental":false,"plainLyrics":null,"syncedLyrics":"[00:01.00]Wrong"},
+            {"duration":201.0,"instrumental":false,"plainLyrics":"Plain","syncedLyrics":null},
+            {"duration":199.5,"instrumental":false,"plainLyrics":null,"syncedLyrics":"[00:01.00]Right"}
+        ]"#;
+        let l = reply::lrclib_search(body, &query()).unwrap().unwrap();
+        assert_eq!(l.lines[0].text, "Right");
+        assert!(reply::lrclib_search("[]", &query()).unwrap().is_none());
+    }
+
+    #[test]
+    fn better_lyrics_reply_is_ttml() {
+        let body = r#"{"ttml":"<tt><body><div><p begin=\"9.731\" end=\"12.1\"><span>The</span> <span>club</span></p></div></body></tt>"}"#;
+        let l = reply::better_lyrics(body).unwrap().unwrap();
+        assert_eq!(
+            (l.lines[0].start_ms, l.lines[0].text.as_str()),
+            (9731, "The club")
+        );
+        assert!(reply::better_lyrics(r#"{"ttml":null}"#).unwrap().is_none());
+    }
+
+    #[test]
+    fn lyrics_plus_reply_reads_line_times() {
+        let body = r#"{"type":"Word","metadata":{"source":"x"},"lyrics":[
+            {"time":12234,"duration":2009,"text":"So the bar is where I go","syllabus":[]},
+            {"time":9845,"duration":2260,"text":"The club isn't the best place ","syllabus":[{"time":9845,"text":"The "}]}
+        ]}"#;
+        let l = reply::lyrics_plus(body).unwrap().unwrap();
+        assert!(l.synced);
+        assert_eq!(l.lines[0].text, "The club isn't the best place");
+        assert_eq!(l.lines[1].start_ms, 12234);
+        let unsynced = r#"{"lyrics":[{"time":0,"text":"A"},{"time":0,"text":"B"}]}"#;
+        assert!(!reply::lyrics_plus(unsynced).unwrap().unwrap().synced);
+        assert!(reply::lyrics_plus(r#"{"lyrics":[]}"#).unwrap().is_none());
+    }
+
+    #[test]
+    fn kugou_replies_pick_by_length_and_decode_base64() {
+        let search = r#"{"status":200,"candidates":[
+            {"id":"1","accesskey":"far","duration":260000,"song":"Song"},
+            {"id":"2","accesskey":"near","duration":201200,"song":"Song"},
+            {"id":"3","accesskey":"nearest","duration":200300,"song":"Song"}
+        ]}"#;
+        assert_eq!(
+            reply::kugou_pick(search, &query()).unwrap(),
+            Some(("3".to_string(), "nearest".to_string()))
+        );
+        assert_eq!(
+            reply::kugou_pick(r#"{"candidates":[]}"#, &query()).unwrap(),
+            None
+        );
+        let download = r#"{"status":200,"fmt":"lrc","content":"W3RpOnhdDQpbMDA6MDAuMDBdU29uZyAtIEFydGlzdA0KWzAwOjAyLjAwXUx5cmljcyBiee+8mlNvbWVvbmUNClswMDowOS41MF1GaXJzdCBsaW5lDQpbMDA6MTIuMDBdU2Vjb25kIGxpbmUNCg=="}"#;
+        let l = reply::kugou_lyrics(download, &query()).unwrap().unwrap();
+        let got: Vec<(u32, &str)> = l
+            .lines
+            .iter()
+            .map(|x| (x.start_ms, x.text.as_str()))
+            .collect();
+        assert_eq!(got, vec![(9500, "First line"), (12000, "Second line")]);
+    }
+
+    #[test]
+    fn malformed_replies_are_errors_not_panics() {
+        assert!(reply::lrclib_get("<html>").is_err());
+        assert!(reply::lyrics_plus("error code: 1033").is_err());
+        assert!(reply::kugou_lyrics(r#"{"content":"%%%"}"#, &query()).is_err());
     }
 
     /// Asks the real services; run with `cargo test -p sonder-lyrics -- --ignored`.

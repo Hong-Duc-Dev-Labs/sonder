@@ -46,7 +46,8 @@ pub fn parse(text: &str, source: &str) -> Option<Lyrics> {
         let lines = timed
             .into_iter()
             .map(|(ms, text)| Line {
-                start_ms: (ms - offset_ms).max(0) as u32,
+                // Stamps and offset come from the file or a server: clamp, never overflow.
+                start_ms: ms.saturating_sub(offset_ms).clamp(0, i64::from(u32::MAX)) as u32,
                 text,
             })
             .collect();
@@ -76,7 +77,11 @@ fn timestamp(tag: &str) -> Option<i64> {
         2 => frac.parse::<i64>().ok()? * 10,
         _ => frac[..3].parse::<i64>().ok()?,
     };
-    (min >= 0 && sec < 60).then_some(min * 60_000 + sec * 1000 + frac_ms)
+    if min < 0 || sec >= 60 {
+        return None;
+    }
+    let ms = min.checked_mul(60_000)?.checked_add(sec * 1000 + frac_ms)?;
+    (ms <= i64::from(u32::MAX)).then_some(ms)
 }
 
 /// `[ar:…]`, `[ti:…]`, `[by:…]`, `[length:…]` and the like.
@@ -149,6 +154,24 @@ mod tests {
     fn metadata_only_is_nothing() {
         assert!(parse("[ar:Someone]\n[ti:Song]\n\n", "t").is_none());
         assert!(parse("", "t").is_none());
+    }
+
+    #[test]
+    fn absurd_stamps_and_offsets_do_not_overflow() {
+        let l = parse(
+            "[offset:-9223372036854775808]
+[00:01.00]A
+[99999999999999:00]B",
+            "t",
+        )
+        .unwrap();
+        let got: Vec<(u32, &str)> = l
+            .lines
+            .iter()
+            .map(|x| (x.start_ms, x.text.as_str()))
+            .collect();
+        // The impossible stamp is not a stamp; the offset pushes the real one to the end.
+        assert_eq!(got, vec![(u32::MAX, "A")]);
     }
 
     #[test]

@@ -1213,3 +1213,53 @@ fn dsd_after_pcm_on_a_busy_device_falls_back_to_pcm_once_known() {
     assert_eq!(sessions[1].format.rate, 176_400);
     assert!(!sessions[1].bytes.is_empty());
 }
+
+/// Changing the DSD mode while a DSD track plays switches it from the current position.
+#[test]
+fn set_dsd_switches_a_playing_dop_track_to_pcm() {
+    let track = dsf("dsd-switch.dsf", &dsd_bytes(200_000, 14));
+    let (player, events, control) = start(dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if !elapsed.is_zero()),
+    );
+    player.set_dsd(
+        DsdMode::Pcm,
+        std::collections::HashMap::new(),
+        DsdPcmRate::R352_8,
+    );
+    let seen = wait_end(&events);
+
+    assert!(
+        matches!(dsd_modes(&seen).last(), Some((DsdMode::Pcm, None))),
+        "events: {seen:#?}"
+    );
+    let formats: Vec<_> = control.sessions().iter().map(|s| s.format).collect();
+    assert_eq!(formats.len(), 2, "{formats:?}");
+    assert_eq!(formats[0].container, SampleContainer::S24In32);
+    assert_eq!(formats[1].rate, 352_800);
+    assert_eq!(formats[1].container, SampleContainer::S24Packed);
+}
+
+/// The same settings sent again do not restart playback.
+#[test]
+fn unchanged_dsd_settings_are_a_noop() {
+    let track = dsf("dsd-noop.dsf", &dsd_bytes(100_000, 15));
+    let (player, events, control) = start(dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if !elapsed.is_zero()),
+    );
+    player.set_dsd(
+        DsdMode::Dop,
+        std::collections::HashMap::new(),
+        DsdPcmRate::R176_4,
+    );
+    let seen = wait_end(&events);
+    assert!(dsd_modes(&seen).is_empty(), "events: {seen:#?}");
+    assert_eq!(control.sessions().len(), 1);
+}

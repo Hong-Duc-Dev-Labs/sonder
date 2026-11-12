@@ -15,7 +15,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
-use sonder_decode::{DecodeError, DsdFormat, SourceDecoder, SourceFormat, TrackFormat};
+use sonder_decode::{
+    DSD_SOURCE_BITS, DecodeError, DsdFormat, SourceDecoder, SourceFormat, TrackFormat,
+};
 use sonder_output::{
     DeviceFormat, DeviceId, OutputBackend, OutputError, SampleProducer, Stream, StreamHandle,
     StreamOptions, WriteTap, negotiate, negotiate_dop, negotiate_native, sample_ring,
@@ -61,6 +63,15 @@ pub enum Command {
     /// Plays on another device from now on. Playback continues on it from the current
     /// position; a stopped player just opens it on the next play.
     SetDevice(DeviceId),
+    /// Replaces the DSD handling (see [`PlayerConfig::default_dsd_mode`],
+    /// [`dsd_modes`](PlayerConfig::dsd_modes), [`dsd_pcm_rate`](PlayerConfig::dsd_pcm_rate)).
+    /// A playing DSD track switches from its current position; anything else picks it up on
+    /// its next open.
+    SetDsd {
+        default_mode: DsdMode,
+        modes: HashMap<DeviceId, DsdMode>,
+        pcm_rate: DsdPcmRate,
+    },
     Shutdown,
 }
 
@@ -255,6 +266,21 @@ impl Player {
 
     pub fn set_volume(&self, db: Option<f64>) {
         self.send(Command::SetVolume(db));
+    }
+
+    /// Changes DSD handling: the mode for devices without an entry in `modes`, per-device
+    /// modes, and the DSD→PCM output rate. Unchanged values are a no-op.
+    pub fn set_dsd(
+        &self,
+        default_mode: DsdMode,
+        modes: HashMap<DeviceId, DsdMode>,
+        pcm_rate: DsdPcmRate,
+    ) {
+        self.send(Command::SetDsd {
+            default_mode,
+            modes,
+            pcm_rate,
+        });
     }
 }
 
@@ -535,6 +561,11 @@ impl Engine {
             }
             Command::SetVolume(db) => self.set_volume(db),
             Command::SetDevice(device) => self.set_device(device),
+            Command::SetDsd {
+                default_mode,
+                modes,
+                pcm_rate,
+            } => self.set_dsd(default_mode, modes, pcm_rate),
             Command::Shutdown => return false,
         }
         true
@@ -804,6 +835,37 @@ impl Engine {
             && let Some((index, pos)) = self.current_pos()
         {
             self.restart(index, pos);
+        }
+    }
+
+    fn set_dsd(
+        &mut self,
+        default_mode: DsdMode,
+        modes: HashMap<DeviceId, DsdMode>,
+        pcm_rate: DsdPcmRate,
+    ) {
+        let config = &mut self.config;
+        if config.default_dsd_mode == default_mode
+            && config.dsd_modes == modes
+            && config.dsd_pcm_rate == pcm_rate
+        {
+            return;
+        }
+        config.default_dsd_mode = default_mode;
+        config.dsd_modes = modes;
+        config.dsd_pcm_rate = pcm_rate;
+        // Only a DSD track is affected; re-decode it from what is playing now, like a volume
+        // change, so the new mode is heard after one ring.
+        if self.state != PlaybackState::Stopped
+            && self.hold.is_none()
+            && let Some(now) = self.now_playing()
+            && now.segment.source.bits == DSD_SOURCE_BITS
+        {
+            let at = (
+                now.segment.index,
+                Pos::frames(now.frame, now.segment.source.rate),
+            );
+            self.restart(at.0, at.1);
         }
     }
 

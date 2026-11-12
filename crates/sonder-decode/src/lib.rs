@@ -42,6 +42,10 @@ pub struct SourceFormat {
     pub channels: u16,
 }
 
+/// [`SourceFormat::bits`] of a DSD stream on the engine timeline (one bit per sample). No
+/// PCM source reports it, so it identifies DSD tracks.
+pub const DSD_SOURCE_BITS: u32 = 1;
+
 /// What a file contains: integer PCM through symphonia, or DSD through
 /// [`dsd::DsdDecoder`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +100,7 @@ impl SourceDecoder {
                 let dsd = d.format();
                 SourceFormat {
                     rate: dsd.byte_rate(),
-                    bits: 1,
+                    bits: DSD_SOURCE_BITS,
                     channels: dsd.channels,
                 }
             }

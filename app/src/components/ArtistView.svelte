@@ -1,0 +1,154 @@
+<script lang="ts">
+  import { app } from "../lib/app.svelte";
+  import { commands, type ArtistInfo } from "../lib/bindings";
+  import { plural, shuffled } from "../lib/format";
+  import AlbumCard from "./AlbumCard.svelte";
+  import BlurredArt from "./BlurredArt.svelte";
+  import FrostFade from "./FrostFade.svelte";
+  import Icon from "./Icon.svelte";
+  import RecordAvatar from "./RecordAvatar.svelte";
+
+  let { id }: { id: number } = $props();
+  let info = $state<ArtistInfo | null | undefined>(undefined);
+
+  $effect(() => {
+    void app.libraryVersion;
+    const want = id;
+    app.run(commands.libraryArtist(want)).then((r) => {
+      if (want === id) info = r ?? null;
+    });
+  });
+
+  let covers = $derived(info ? [...info.albums, ...info.appearsOn].map((a) => a.art).filter(Boolean) : []);
+  let sections = $derived(
+    info
+      ? [
+          { title: "Albums", list: [...info.albums].reverse() },
+          { title: "Appears on", list: info.appearsOn },
+        ].filter((s) => s.list.length > 0)
+      : [],
+  );
+
+  $effect(() => {
+    const first = info ? [...info.albums, ...info.appearsOn].find((a) => a.artColors.length) : undefined;
+    app.pageWash = first?.artColors[0] ?? null;
+    return () => {
+      app.pageWash = null;
+    };
+  });
+
+  async function play(shuffle: boolean) {
+    const tracks = await app.run(commands.libraryArtistTracks(id));
+    if (!tracks?.length) return;
+    const ids = tracks.map((t) => t.id);
+    app.run(commands.playerPlayTracks(shuffle ? shuffled(ids) : ids, 0));
+  }
+</script>
+
+<div class="page-full scroll">
+  {#if info === null}
+    <p class="missing dim">This artist is no longer in the library.</p>
+  {:else if info}
+    <section class="hero">
+      <div class="backdrop" aria-hidden="true">
+        <BlurredArt hashes={covers} tilt={-6} />
+        <FrostFade height="70%" />
+      </div>
+      <div class="hero-inner">
+        <span class="avatar"><RecordAvatar art={info.artist.art} label={0.5} /></span>
+        <div class="meta">
+          <span class="kicker">Artist</span>
+          <h1 tabindex="-1" data-view-heading>{info.artist.name}</h1>
+          <span class="facts">
+            {[
+              info.albums.length ? plural(info.albums.length, "album") : null,
+              info.appearsOn.length ? `${info.appearsOn.length} appearances` : null,
+              plural(info.artist.trackCount, "track"),
+            ]
+              .filter(Boolean)
+              .join(" • ")}
+          </span>
+          <div class="actions">
+            <button class="btn primary" onclick={() => play(false)}><Icon name="play" size={18} /> Play all</button>
+            <button class="btn" onclick={() => play(true)}><Icon name="shuffle" size={18} /> Shuffle</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="body">
+      {#each sections as section (section.title)}
+        <h2>{section.title}</h2>
+        <div class="grid">
+          {#each section.list as album (album.id)}
+            <AlbumCard {album} />
+          {/each}
+        </div>
+      {/each}
+    </div>
+  {/if}
+</div>
+
+<style>
+  .page-full {
+    height: 100%;
+  }
+  .missing {
+    padding: 96px 40px;
+  }
+  .hero {
+    position: relative;
+    min-height: clamp(300px, 42vh, 420px);
+    display: flex;
+    align-items: flex-end;
+    padding: 84px 40px 32px;
+    overflow: hidden;
+  }
+  .backdrop {
+    position: absolute;
+    inset: 0;
+  }
+  .hero-inner {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    gap: 28px;
+  }
+  .avatar {
+    width: 136px;
+    flex: none;
+  }
+  .meta {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  h1 {
+    font-size: clamp(42px, 5.5vw, 76px);
+    line-height: 0.98;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    overflow-wrap: anywhere;
+  }
+  .facts {
+    color: var(--ink-2);
+  }
+  .actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .body {
+    padding: 8px 40px var(--dock-reserve);
+  }
+  h2 {
+    margin: 22px 0 18px;
+    font-size: 22px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+    gap: 28px;
+  }
+</style>

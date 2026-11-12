@@ -851,12 +851,17 @@ impl Engine {
         {
             return;
         }
+        let mode_before = config.dsd_mode_for(&config.device);
+        let rate_changed = config.dsd_pcm_rate != pcm_rate;
         config.default_dsd_mode = default_mode;
         config.dsd_modes = modes;
         config.dsd_pcm_rate = pcm_rate;
-        // Only a DSD track is affected; re-decode it from what is playing now, like a volume
-        // change, so the new mode is heard after one ring.
-        if self.state != PlaybackState::Stopped
+        // Re-decode a playing DSD track from its position, like a volume change, but only
+        // when the change reaches it: its device's mode, or the rate while it is converted.
+        let mode_changed = config.dsd_mode_for(&config.device) != mode_before;
+        let converting = self.out.as_ref().is_some_and(|o| o.mode == OutputMode::Pcm);
+        if (mode_changed || (rate_changed && converting))
+            && self.state != PlaybackState::Stopped
             && self.hold.is_none()
             && let Some(now) = self.now_playing()
             && now.segment.source.bits == DSD_SOURCE_BITS

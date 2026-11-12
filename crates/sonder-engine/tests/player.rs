@@ -1263,3 +1263,25 @@ fn unchanged_dsd_settings_are_a_noop() {
     assert!(dsd_modes(&seen).is_empty(), "events: {seen:#?}");
     assert_eq!(control.sessions().len(), 1);
 }
+
+/// A change that does not reach the playing DoP track (another device's mode, the PCM rate)
+/// leaves it alone.
+#[test]
+fn dsd_changes_for_other_devices_or_the_pcm_rate_keep_dop_playing() {
+    let track = dsf("dsd-unrelated.dsf", &dsd_bytes(100_000, 16));
+    let (player, events, control) = start(dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if !elapsed.is_zero()),
+    );
+    let other = std::collections::HashMap::from([(
+        sonder_output::DeviceId("another".into()),
+        DsdMode::Pcm,
+    )]);
+    player.set_dsd(DsdMode::Dop, other, DsdPcmRate::R352_8);
+    let seen = wait_end(&events);
+    assert!(dsd_modes(&seen).is_empty(), "events: {seen:#?}");
+    assert_eq!(control.sessions().len(), 1);
+}

@@ -1,5 +1,5 @@
-// Lyrics for the playing track: fetched once per track (and per online setting, so turning
-// lookups on retries tracks that had none), and the line that is being sung.
+// Lyrics for the playing track and the line that is being sung. Lyrics found are kept for the
+// session; "none" is not, so a .lrc added later or lookups turned on show up next time.
 
 import { commands, type Lyrics, type LyricsLine } from "./bindings";
 
@@ -15,11 +15,16 @@ export function loadLyrics(
   const key = `${trackId}:${online}`;
   let found = loaded.get(key);
   if (!found) {
-    found = commands.lyricsGet(trackId).catch(() => {
-      // A failure is not remembered: the next play of the track asks again.
-      loaded.delete(key);
-      return null;
-    });
+    found = commands.lyricsGet(trackId).then(
+      (lyrics) => {
+        if (!lyrics) loaded.delete(key);
+        return lyrics;
+      },
+      () => {
+        loaded.delete(key);
+        return null;
+      },
+    );
     loaded.set(key, found);
     if (loaded.size > KEEP) loaded.delete(loaded.keys().next().value!);
   }

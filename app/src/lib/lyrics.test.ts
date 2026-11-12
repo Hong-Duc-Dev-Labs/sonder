@@ -2,7 +2,26 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("./bindings", () => ({ commands: { lyricsGet: vi.fn() } }));
 
-import { activeLine } from "./lyrics";
+import { commands } from "./bindings";
+import { activeLine, loadLyrics } from "./lyrics";
+
+const lyricsGet = vi.mocked(commands.lyricsGet);
+
+describe("loadLyrics", () => {
+  it("keeps lyrics found but asks again after none or a failure", async () => {
+    const found = { source: "LRCLIB", synced: true, instrumental: false, lines: [] };
+    lyricsGet.mockResolvedValueOnce(found);
+    expect(await loadLyrics(1, true)).toBe(found);
+    expect(await loadLyrics(1, true)).toBe(found);
+    expect(lyricsGet).toHaveBeenCalledTimes(1);
+
+    lyricsGet.mockResolvedValueOnce(null).mockRejectedValueOnce("offline").mockResolvedValueOnce(found);
+    expect(await loadLyrics(2, true)).toBeNull();
+    expect(await loadLyrics(2, true)).toBeNull();
+    expect(await loadLyrics(2, true)).toBe(found);
+    expect(lyricsGet).toHaveBeenCalledTimes(4);
+  });
+});
 
 const lines = [0, 1000, 1000, 5000].map((startMs, i) => ({
   startMs,

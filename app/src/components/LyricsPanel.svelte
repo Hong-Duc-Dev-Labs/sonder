@@ -14,6 +14,9 @@
   const HOLD_MS = 4000;
 
   let item = $derived(app.current);
+  // A number, not the queue entry: the queue is replaced on every edit, and the lyrics must
+  // reload only when the track itself changes.
+  let trackId = $derived(app.current?.trackId);
   let online = $derived(app.settings.lyricsOnline ?? true);
   let lyrics = $state<Lyrics | null>(null);
   let loading = $state(false);
@@ -22,7 +25,7 @@
   let heldUntil = 0;
 
   $effect(() => {
-    const id = item?.trackId;
+    const id = trackId;
     const on = online;
     lyrics = null;
     active = -1;
@@ -36,7 +39,6 @@
       if (!current) return;
       lyrics = found;
       loading = false;
-      scroller?.scrollTo({ top: 0 });
     });
     return () => {
       current = false;

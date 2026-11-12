@@ -3990,12 +3990,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonder-dsp"
+version = "0.1.0"
+
+[[package]]
 name = "sonder-engine"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "hound",
  "sonder-decode",
+ "sonder-dsp",
  "sonder-output",
 ]
 

@@ -1,6 +1,6 @@
 # Synced lyrics
 
-Status: implemented, awaiting an in-app visual check.
+Status: merged in PR #4; the in-app visual check is still open.
 
 ## Outcome
 

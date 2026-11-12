@@ -38,7 +38,7 @@ PEQ, levelling, PCM→DSD, dither. Source contract:
 | 1 | [Workspace and WASAPI exclusive spike](./phase-01-workspace-and-wasapi-spike.md) | In progress (manual DAC test open) |
 | 2 | [Engine, gapless and OS backends](./phase-02-engine-gapless-and-os-backends.md) | In progress (code + tests done; manual DAC and CI run open) |
 | 3 | [Library scanner](./phase-03-library-scanner.md) | Done |
-| 4 | [Tauri UI](./phase-04-tauri-ui.md) | In progress (code + tests done; manual click-through and CI run open) |
+| 4 | [Tauri UI](./phase-04-tauri-ui.md) | Done (PR #4; CI green on all three OSes; scripted DAC click-through not recorded) |
 | 5 | [DSD playback](./phase-05-dsd-playback.md) | Pending |
 | 6 | [Resampler and filter sources](./phase-06-resampler-and-filter-sources.md) | Pending |
 | 7 | [PEQ, dither and levelling](./phase-07-peq-dither-leveling.md) | Pending |

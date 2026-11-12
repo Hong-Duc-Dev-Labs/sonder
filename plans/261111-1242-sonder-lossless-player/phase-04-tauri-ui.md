@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Phase 4: Tauri UI"
-status: in-progress
+status: completed
 priority: P1
 effort: "2w"
 dependencies: [2, 3]
@@ -55,8 +55,13 @@ device, DSP).
 - [x] Screens
 - [x] Art URI scheme
 - [x] Media keys
-- [ ] Manual click-through on a real library and DAC (add root → scan → play album → seek → next → switch device)
-- [ ] CI green with the UI build steps (workflow not yet run)
+- [ ] Manual click-through on a real library and DAC (add root → scan → play album → seek → next → switch device). The app was run and used in development, but this full script, the device switch in particular, has not been recorded as passing. Carried forward: repeat it before the first release.
+- [x] CI green with the UI build steps (Windows, macOS, Ubuntu on PR #4)
+
+Closed with PR #4, which also brought the vinyl turntable, the glass refresh and synced
+lyrics; see [vinyl turntable](../261112-0144-vinyl-turntable-ui/plan.md),
+[glass refresh](../261112-0215-mochy-style-ui-refresh/plan.md) and
+[synced lyrics](../261112-1100-synced-lyrics/plan.md).
 
 ## Success Criteria
 

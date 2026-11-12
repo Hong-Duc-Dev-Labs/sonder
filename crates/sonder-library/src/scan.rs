@@ -16,6 +16,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use rayon::prelude::*;
@@ -48,6 +49,17 @@ impl ScanReport {
     pub fn changed(&self) -> bool {
         self.added + self.updated + self.removed > 0
     }
+}
+
+/// How far a running scan is, reported while it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanProgress {
+    /// Listing files under the scanned folders.
+    Walking,
+    /// Reading tags and cover art of new and changed files.
+    Reading { done: usize, total: usize },
+    /// Writing the changes to the index.
+    Writing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,15 +129,33 @@ type ReadResult = Result<(FileMeta, Option<ArtImage>), TagError>;
 impl Library {
     /// Rescans every root.
     pub fn scan(&mut self) -> Result<ScanReport, LibraryError> {
+        self.scan_with_progress(&|_| {})
+    }
+
+    /// Rescans every root, calling `progress` (from any thread) as the scan advances.
+    pub fn scan_with_progress(
+        &mut self,
+        progress: &(dyn Fn(ScanProgress) + Sync),
+    ) -> Result<ScanReport, LibraryError> {
         let paths: Vec<PathBuf> = self.roots()?.into_iter().map(|r| r.path).collect();
-        self.scan_paths(&paths)
+        self.scan_paths_with_progress(&paths, progress)
     }
 
     /// Rescans the given files and folders (and everything below the folders). Paths that no
     /// longer exist remove what was indexed at or below them; paths outside every root are
     /// ignored.
     pub fn scan_paths(&mut self, paths: &[PathBuf]) -> Result<ScanReport, LibraryError> {
+        self.scan_paths_with_progress(paths, &|_| {})
+    }
+
+    /// [`scan_paths`](Self::scan_paths), calling `progress` (from any thread) as it advances.
+    pub fn scan_paths_with_progress(
+        &mut self,
+        paths: &[PathBuf],
+        progress: &(dyn Fn(ScanProgress) + Sync),
+    ) -> Result<ScanReport, LibraryError> {
         let start = Instant::now();
+        progress(ScanProgress::Walking);
         let roots = self.roots()?;
         let mut report = ScanReport::default();
         let scopes = scopes(&roots, paths, &mut report);
@@ -174,9 +204,17 @@ impl Library {
 
         // 3. Read tags and art.
         let resolver = ArtResolver::new(&self.art, self.known_art()?);
+        let total = pending.len();
+        let done = AtomicUsize::new(0);
+        progress(ScanProgress::Reading { done: 0, total });
         let read: Vec<(Pending, ReadResult)> = pending
             .into_par_iter()
             .map(|p| {
+                let _done = CountDone {
+                    done: &done,
+                    total,
+                    progress,
+                };
                 let result = read_file(&p.file.path).map(|mut meta| {
                     let cover = meta.tags.cover.take();
                     let art = resolver.resolve(cover.as_deref(), &p.file.path);
@@ -192,6 +230,7 @@ impl Library {
             report.elapsed = start.elapsed();
             return Ok(report);
         }
+        progress(ScanProgress::Writing);
         let now = unix_now();
         let tx = self
             .conn
@@ -262,7 +301,9 @@ impl Library {
     }
 
     fn known_art(&self) -> Result<HashMap<String, ArtImage>, LibraryError> {
-        let mut stmt = self.conn.prepare("SELECT hash, width, height FROM art")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT hash, width, height, colors FROM art")?;
         let rows = stmt.query_map([], |row| {
             let hash: String = row.get(0)?;
             Ok((
@@ -271,10 +312,28 @@ impl Library {
                     hash,
                     width: row.get(1)?,
                     height: row.get(2)?,
+                    colors: row.get(3)?,
                 },
             ))
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+}
+
+/// Counts a read file as done when dropped, after its tags and art were handled.
+struct CountDone<'a> {
+    done: &'a AtomicUsize,
+    total: usize,
+    progress: &'a (dyn Fn(ScanProgress) + Sync),
+}
+
+impl Drop for CountDone<'_> {
+    fn drop(&mut self) {
+        let done = self.done.fetch_add(1, Ordering::Relaxed) + 1;
+        (self.progress)(ScanProgress::Reading {
+            done,
+            total: self.total,
+        });
     }
 }
 
@@ -459,11 +518,11 @@ fn write_track(
     let art_id: Option<i64> = match art {
         Some(a) => Some(
             tx.prepare_cached(
-                "INSERT INTO art (hash, width, height) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (hash) DO UPDATE SET hash = excluded.hash
+                "INSERT INTO art (hash, width, height, colors) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (hash) DO UPDATE SET colors = coalesce(excluded.colors, art.colors)
                  RETURNING id",
             )?
-            .query_row(params![a.hash, a.width, a.height], |r| r.get(0))?,
+            .query_row(params![a.hash, a.width, a.height, a.colors], |r| r.get(0))?,
         ),
         None => None,
     };

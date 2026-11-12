@@ -35,6 +35,69 @@ pub struct ArtImage {
     pub hash: String,
     pub width: u32,
     pub height: u32,
+    /// Up to four dominant vivid colours as comma-separated `#rrggbb`, most dominant first;
+    /// empty for art with none (greyscale, near-black). `None` when not computed yet.
+    pub colors: Option<String>,
+}
+
+/// Pixels whose chroma (max − min channel) is below this read as grey.
+const MIN_CHROMA: u8 = 28;
+/// A colour must cover at least this share of the sampled pixels to count as the cover's.
+const MIN_SHARE: f32 = 0.04;
+const HUE_BUCKETS: usize = 12;
+/// Most colours kept per cover.
+pub const MAX_COVER_COLORS: usize = 4;
+
+/// The dominant vivid colours of `image`, most dominant first, as comma-separated
+/// `#rrggbb` (empty when it has none). Samples a 32×32 downscale, groups vivid pixels by hue
+/// and ranks the groups by population × average chroma, so a small bright accent can outrank
+/// a large dull area but scattered noise cannot.
+pub fn cover_colors(image: &image::DynamicImage) -> String {
+    let small = image.resize_exact(32, 32, FilterType::Triangle).to_rgb8();
+    let total = (small.width() * small.height()) as f32;
+    // Per hue bucket: pixel count, summed chroma, summed r, g, b.
+    let mut buckets = [(0u32, 0u32, 0u32, 0u32, 0u32); HUE_BUCKETS];
+    for p in small.pixels() {
+        let [r, g, b] = p.0;
+        let max = r.max(g).max(b);
+        let chroma = max - r.min(g).min(b);
+        if chroma < MIN_CHROMA || max < 40 {
+            continue;
+        }
+        let e = &mut buckets[hue_bucket(r, g, b)];
+        e.0 += 1;
+        e.1 += u32::from(chroma);
+        e.2 += u32::from(r);
+        e.3 += u32::from(g);
+        e.4 += u32::from(b);
+    }
+    let mut ranked: Vec<_> = buckets
+        .iter()
+        .filter(|e| e.0 as f32 / total >= MIN_SHARE)
+        .collect();
+    // Summed chroma is population × average chroma.
+    ranked.sort_by_key(|e| std::cmp::Reverse(e.1));
+    ranked
+        .iter()
+        .take(MAX_COVER_COLORS)
+        .map(|&&(n, _, r, g, b)| format!("#{:02x}{:02x}{:02x}", r / n, g / n, b / n))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Which of [`HUE_BUCKETS`] equal hue sectors a vivid pixel falls in.
+fn hue_bucket(r: u8, g: u8, b: u8) -> usize {
+    let (r, g, b) = (f32::from(r), f32::from(g), f32::from(b));
+    let max = r.max(g).max(b);
+    let c = max - r.min(g).min(b);
+    let hue = if max == r {
+        ((g - b) / c).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / c + 2.0
+    } else {
+        (r - g) / c + 4.0
+    };
+    ((hue / 6.0 * HUE_BUCKETS as f32) as usize).min(HUE_BUCKETS - 1)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -117,6 +180,7 @@ impl ArtCache {
             hash: hash.to_string(),
             width,
             height,
+            colors: Some(cover_colors(&image)),
         })
     }
 

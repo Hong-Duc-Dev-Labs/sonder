@@ -11,7 +11,10 @@ use rusqlite::{Connection, TransactionBehavior};
 use crate::LibraryError;
 
 /// Migration scripts in order; script `i` upgrades the schema from version `i` to `i + 1`.
-const MIGRATIONS: &[&str] = &[include_str!("migrations/0001_initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/0001_initial.sql"),
+    include_str!("migrations/0002_art_colors.sql"),
+];
 
 /// Schema version this build creates and understands.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

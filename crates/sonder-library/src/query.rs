@@ -31,6 +31,8 @@ pub struct AlbumSummary {
     pub duration_ms: u64,
     /// Cover hash for [`ArtCache::thumbnail_path`](crate::ArtCache::thumbnail_path).
     pub art: Option<String>,
+    /// The cover's dominant vivid colours as `#rrggbb`, most dominant first (may be empty).
+    pub art_colors: Vec<String>,
     /// Unix seconds.
     pub added_at: i64,
 }
@@ -52,6 +54,8 @@ pub struct Track {
     pub replay_gain: ReplayGain,
     /// The track's own cover, else its album's.
     pub art: Option<String>,
+    /// That cover's dominant vivid colours as `#rrggbb`, most dominant first (may be empty).
+    pub art_colors: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,6 +74,8 @@ pub struct ArtistSummary {
     pub album_count: u32,
     /// Tracks with this artist as a track artist.
     pub track_count: u32,
+    /// A cover to show for the artist: their newest album's, else a guest track's.
+    pub art: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,7 +89,7 @@ pub struct ArtistDetail {
 
 const ALBUM_SELECT: &str = "
     SELECT a.id, a.title, a.artist, a.artist_id, a.year, count(t.id),
-           coalesce(sum(t.duration_ms), 0), art.hash, a.added_at
+           coalesce(sum(t.duration_ms), 0), art.hash, a.added_at, art.colors
     FROM albums a
     JOIN tracks t ON t.album_id = a.id
     LEFT JOIN art ON art.id = a.art_id";
@@ -91,7 +97,8 @@ const ALBUM_SELECT: &str = "
 const TRACK_SELECT: &str = "
     SELECT t.id, t.path, t.title, t.artist, t.album_artist, t.album_id, a.title, t.track_no,
            t.disc_no, t.year, t.genre, t.codec, t.rate, t.bits, t.channels, t.duration_ms,
-           t.rg_track_gain, t.rg_track_peak, t.rg_album_gain, t.rg_album_peak, art.hash
+           t.rg_track_gain, t.rg_track_peak, t.rg_album_gain, t.rg_album_peak, art.hash,
+           art.colors
     FROM tracks t
     JOIN albums a ON a.id = t.album_id
     LEFT JOIN art ON art.id = coalesce(t.art_id, a.art_id)";
@@ -105,6 +112,30 @@ const ARTIST_ALBUMS: &str = "
     SELECT t.album_id FROM track_artists ta JOIN tracks t ON t.id = ta.track_id
     WHERE ta.artist_id = ?1 AND ta.role = 1";
 
+/// A cover for artist `?1`: album-artist credits before guest spots, newest album first.
+const ARTIST_ART: &str = "
+    SELECT art.hash FROM track_artists ta
+    JOIN tracks t ON t.id = ta.track_id
+    JOIN albums al ON al.id = t.album_id
+    JOIN art ON art.id = coalesce(al.art_id, t.art_id)
+    WHERE ta.artist_id = ?1
+    ORDER BY ta.role DESC, al.year IS NULL, al.year DESC, al.id DESC, t.id
+    LIMIT 1";
+
+/// Album order on an artist's page, then tracks in disc and track order.
+const ARTIST_TRACK_ORDER: &str = "ORDER BY a.year IS NULL, a.year, a.title COLLATE NOCASE, a.id,
+    coalesce(t.disc_no, 1), t.track_no IS NULL, t.track_no, t.path";
+
+/// Splits the stored comma-separated colour list.
+fn colors(stored: Option<String>) -> Vec<String> {
+    stored
+        .unwrap_or_default()
+        .split(',')
+        .filter(|c| !c.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 fn album_row(row: &Row) -> rusqlite::Result<AlbumSummary> {
     Ok(AlbumSummary {
         id: row.get(0)?,
@@ -115,6 +146,7 @@ fn album_row(row: &Row) -> rusqlite::Result<AlbumSummary> {
         track_count: row.get(5)?,
         duration_ms: row.get::<_, i64>(6)? as u64,
         art: row.get(7)?,
+        art_colors: colors(row.get(9)?),
         added_at: row.get(8)?,
     })
 }
@@ -153,12 +185,35 @@ fn track_row(row: &Row) -> rusqlite::Result<Track> {
             album_peak: row.get(19)?,
         },
         art: row.get(20)?,
+        art_colors: colors(row.get(21)?),
     })
 }
 
 impl Library {
     /// Every album with at least one track.
     pub fn albums(&self, sort: AlbumSort) -> Result<Vec<AlbumSummary>, LibraryError> {
+        self.albums_page(sort, 0, usize::MAX)
+    }
+
+    /// Number of albums with at least one track (the length of [`albums`](Self::albums)).
+    pub fn album_count(&self) -> Result<usize, LibraryError> {
+        let count: i64 = self
+            .conn
+            .prepare_cached(
+                "SELECT count(*) FROM albums a
+                 WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id)",
+            )?
+            .query_row([], |r| r.get(0))?;
+        Ok(count as usize)
+    }
+
+    /// Up to `limit` albums of [`albums`](Self::albums), skipping the first `offset`.
+    pub fn albums_page(
+        &self,
+        sort: AlbumSort,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<AlbumSummary>, LibraryError> {
         let order = match sort {
             AlbumSort::Artist => {
                 "a.artist IS NULL, a.artist COLLATE NOCASE, a.year, a.title COLLATE NOCASE"
@@ -169,9 +224,14 @@ impl Library {
                 "a.year IS NULL, a.year, a.artist COLLATE NOCASE, a.title COLLATE NOCASE"
             }
         };
-        let sql = format!("{ALBUM_SELECT} GROUP BY a.id ORDER BY {order}");
+        // `a.id` last keeps pages stable when the sort keys tie.
+        let sql = format!("{ALBUM_SELECT} GROUP BY a.id ORDER BY {order}, a.id LIMIT ?1 OFFSET ?2");
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let offset = i64::try_from(offset).unwrap_or(i64::MAX);
         let mut stmt = self.conn.prepare_cached(&sql)?;
-        let albums = stmt.query_map([], album_row)?.collect::<Result<_, _>>()?;
+        let albums = stmt
+            .query_map([limit, offset], album_row)?
+            .collect::<Result<_, _>>()?;
         Ok(albums)
     }
 
@@ -216,10 +276,12 @@ impl Library {
         let sql = format!(
             "SELECT ar.id, ar.name,
                     (SELECT count(*) FROM ({ARTIST_ALBUMS_FOR_OUTER})),
-                    (SELECT count(*) FROM track_artists ta WHERE ta.artist_id = ar.id AND ta.role = 0)
+                    (SELECT count(*) FROM track_artists ta WHERE ta.artist_id = ar.id AND ta.role = 0),
+                    ({ARTIST_ART_FOR_OUTER})
              FROM artists ar
              ORDER BY ar.name COLLATE NOCASE",
-            ARTIST_ALBUMS_FOR_OUTER = ARTIST_ALBUMS.replace("?1", "ar.id")
+            ARTIST_ALBUMS_FOR_OUTER = ARTIST_ALBUMS.replace("?1", "ar.id"),
+            ARTIST_ART_FOR_OUTER = ARTIST_ART.replace("?1", "ar.id")
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
         let artists = stmt.query_map([], artist_row)?.collect::<Result<_, _>>()?;
@@ -230,7 +292,8 @@ impl Library {
         let sql = format!(
             "SELECT ar.id, ar.name,
                     (SELECT count(*) FROM ({ARTIST_ALBUMS})),
-                    (SELECT count(*) FROM track_artists ta WHERE ta.artist_id = ar.id AND ta.role = 0)
+                    (SELECT count(*) FROM track_artists ta WHERE ta.artist_id = ar.id AND ta.role = 0),
+                    ({ARTIST_ART})
              FROM artists ar WHERE ar.id = ?1"
         );
         let Some(artist) = self
@@ -268,6 +331,33 @@ impl Library {
             albums,
             appears_on,
         }))
+    }
+
+    /// Everything by an artist, for "play all": the tracks of their albums (oldest album
+    /// first, in disc and track order), then their tracks on other albums.
+    pub fn artist_tracks(&self, id: i64) -> Result<Vec<Track>, LibraryError> {
+        let own =
+            format!("{TRACK_SELECT} WHERE t.album_id IN ({ARTIST_ALBUMS}) {ARTIST_TRACK_ORDER}");
+        let guest = format!(
+            "{TRACK_SELECT}
+             WHERE t.id IN (SELECT ta.track_id FROM track_artists ta
+                            WHERE ta.artist_id = ?1 AND ta.role = 0)
+               AND t.album_id NOT IN ({ARTIST_ALBUMS})
+             {ARTIST_TRACK_ORDER}"
+        );
+        let mut tracks: Vec<Track> = self
+            .conn
+            .prepare_cached(&own)?
+            .query_map([id], track_row)?
+            .collect::<Result<_, _>>()?;
+        for track in self
+            .conn
+            .prepare_cached(&guest)?
+            .query_map([id], track_row)?
+        {
+            tracks.push(track?);
+        }
+        Ok(tracks)
     }
 
     /// Tracks whose title, album or artists contain every whitespace-separated term of
@@ -324,6 +414,7 @@ fn artist_row(row: &Row) -> rusqlite::Result<ArtistSummary> {
         name: row.get(1)?,
         album_count: row.get(2)?,
         track_count: row.get(3)?,
+        art: row.get(4)?,
     })
 }
 

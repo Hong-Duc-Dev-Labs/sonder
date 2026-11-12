@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use fixtures::{DSD64, Meta, aiff, dff, dsf, flac, png, wav};
-use sonder_library::{AlbumSort, Codec, Library, LibraryError, THUMB_SIZES};
+use sonder_library::{AlbumSort, Codec, Library, LibraryError, ScanProgress, THUMB_SIZES};
 use tempfile::TempDir;
 
 struct Env {
@@ -654,4 +654,264 @@ fn lofty_mp4_codec(path: &Path) -> Option<lofty::mp4::Mp4Codec> {
         .unwrap()
         .properties()
         .codec()
+}
+
+#[test]
+fn albums_page_through_the_sorted_list_and_scan_reports_progress() {
+    let env = Env::new();
+    build_tree(&env);
+    let mut lib = env.open();
+    lib.add_root(&env.music, false).unwrap();
+    let seen = std::sync::Mutex::new(Vec::new());
+    let report = lib
+        .scan_with_progress(&|p| seen.lock().unwrap().push(p))
+        .unwrap();
+
+    let seen = seen.into_inner().unwrap();
+    let read = report.added + 1; // the broken file is read too, then reported
+    assert_eq!(seen.first(), Some(&ScanProgress::Walking));
+    assert_eq!(seen.last(), Some(&ScanProgress::Writing));
+    let reading: Vec<usize> = seen
+        .iter()
+        .filter_map(|p| match p {
+            ScanProgress::Reading { done, total } => {
+                assert_eq!(*total, read);
+                Some(*done)
+            }
+            _ => None,
+        })
+        .collect();
+    let mut sorted = reading.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, (0..=read).collect::<Vec<_>>());
+
+    let all = lib.albums(AlbumSort::Title).unwrap();
+    assert_eq!(lib.album_count().unwrap(), all.len());
+    let mut paged = lib.albums_page(AlbumSort::Title, 0, 3).unwrap();
+    assert_eq!(paged.len(), 3);
+    paged.extend(lib.albums_page(AlbumSort::Title, 3, 3).unwrap());
+    assert_eq!(paged, all);
+    assert!(
+        lib.albums_page(AlbumSort::Title, all.len(), 3)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A PNG filled by `pixel(x, y)`.
+fn painted_png(side: u32, pixel: impl Fn(u32, u32) -> [u8; 3]) -> Vec<u8> {
+    let img = image::RgbImage::from_fn(side, side, |x, y| image::Rgb(pixel(x, y)));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+fn rgb(hex: &str) -> (u8, u8, u8) {
+    let v = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap();
+    ((v >> 16) as u8, (v >> 8) as u8, v as u8)
+}
+
+/// Two albums: one with a mostly red, partly blue cover, one with a grey cover.
+fn build_colour_tree(env: &Env) {
+    let red_blue = painted_png(256, |x, _| {
+        if x < 192 {
+            [210, 40, 40]
+        } else {
+            [40, 60, 210]
+        }
+    });
+    let grey = painted_png(256, |x, y| {
+        let v = 60 + ((x + y) % 120) as u8;
+        [v, v, v]
+    });
+    for (dir, album, cover) in [("Red", "Red Album", red_blue), ("Grey", "Grey Album", grey)] {
+        flac(
+            &env.path(&format!("{dir}/01.flac")),
+            44_100,
+            16,
+            2,
+            1,
+            &Meta {
+                title: Some("One"),
+                artist: Some("Painter"),
+                album: Some(album),
+                album_artist: Some("Painter"),
+                cover: Some(cover),
+                ..Default::default()
+            },
+        );
+    }
+}
+
+#[test]
+fn cover_colours_are_stored_ranked_and_shared_with_tracks() {
+    let env = Env::new();
+    build_colour_tree(&env);
+    let mut lib = env.open();
+    lib.add_root(&env.music, false).unwrap();
+    lib.scan().unwrap();
+
+    let albums = lib.albums(AlbumSort::Title).unwrap();
+    let red = albums.iter().find(|a| a.title == "Red Album").unwrap();
+    let grey = albums.iter().find(|a| a.title == "Grey Album").unwrap();
+
+    assert_eq!(red.art_colors.len(), 2, "{:?}", red.art_colors);
+    let (r, g, b) = rgb(&red.art_colors[0]);
+    assert!(
+        r > 170 && g < 90 && b < 90,
+        "dominant is red: {:?}",
+        red.art_colors
+    );
+    let (r, _, b) = rgb(&red.art_colors[1]);
+    assert!(b > 170 && r < 90, "second is blue: {:?}", red.art_colors);
+    assert!(grey.art.is_some());
+    assert!(grey.art_colors.is_empty(), "{:?}", grey.art_colors);
+
+    let detail = lib.album(red.id).unwrap().unwrap();
+    assert_eq!(detail.tracks[0].art_colors, red.art_colors);
+
+    // An unchanged rescan keeps them.
+    lib.scan().unwrap();
+    let again = lib.album(red.id).unwrap().unwrap();
+    assert_eq!(again.album.art_colors, red.art_colors);
+}
+
+#[test]
+fn backfill_fills_colours_of_covers_stored_without_them() {
+    let env = Env::new();
+    build_colour_tree(&env);
+    let mut lib = env.open();
+    lib.add_root(&env.music, false).unwrap();
+    lib.scan().unwrap();
+    let before: Vec<Vec<String>> = lib
+        .albums(AlbumSort::Title)
+        .unwrap()
+        .into_iter()
+        .map(|a| a.art_colors)
+        .collect();
+
+    // As a database written before the column existed would be.
+    rusqlite::Connection::open(&env.db)
+        .unwrap()
+        .execute("UPDATE art SET colors = NULL", [])
+        .unwrap();
+    assert!(
+        lib.albums(AlbumSort::Title)
+            .unwrap()
+            .iter()
+            .all(|a| a.art_colors.is_empty())
+    );
+
+    assert_eq!(lib.backfill_art_colors().unwrap(), 2);
+    let after: Vec<Vec<String>> = lib
+        .albums(AlbumSort::Title)
+        .unwrap()
+        .into_iter()
+        .map(|a| a.art_colors)
+        .collect();
+    // Backfill reads the JPEG thumbnail, not the original, so channels may differ slightly.
+    assert_eq!(after.len(), before.len());
+    for (a, b) in after.iter().zip(&before) {
+        assert_eq!(a.len(), b.len(), "{after:?} vs {before:?}");
+        for (x, y) in a.iter().zip(b) {
+            let (x, y) = (rgb(x), rgb(y));
+            let close = |p: u8, q: u8| p.abs_diff(q) <= 8;
+            assert!(
+                close(x.0, y.0) && close(x.1, y.1) && close(x.2, y.2),
+                "{after:?} vs {before:?}"
+            );
+        }
+    }
+    assert_eq!(
+        lib.backfill_art_colors().unwrap(),
+        0,
+        "nothing left to fill"
+    );
+}
+
+#[test]
+fn artist_tracks_list_own_albums_by_year_then_guest_spots() {
+    let env = Env::new();
+    let own = |album: &'static str, year: &'static str| Meta {
+        artist: Some("Solo"),
+        album: Some(album),
+        album_artist: Some("Solo"),
+        year: Some(year),
+        ..Default::default()
+    };
+    for (file, title, track, meta) in [
+        ("Solo/Later/02.flac", "Later Two", 2, own("Later", "2005")),
+        ("Solo/Later/01.flac", "Later One", 1, own("Later", "2005")),
+        ("Solo/Early/01.flac", "Early One", 1, own("Early", "1995")),
+    ] {
+        flac(
+            &env.path(file),
+            44_100,
+            16,
+            2,
+            1,
+            &Meta {
+                title: Some(title),
+                track: Some(track),
+                ..meta
+            },
+        );
+    }
+    flac(
+        &env.path("Mix/01.flac"),
+        44_100,
+        16,
+        2,
+        1,
+        &Meta {
+            title: Some("Guest Spot"),
+            artist: Some("Solo"),
+            album: Some("Mix"),
+            album_artist: Some("Someone Else"),
+            track: Some(1),
+            ..Default::default()
+        },
+    );
+    let mut lib = env.open();
+    lib.add_root(&env.music, false).unwrap();
+    lib.scan().unwrap();
+
+    let solo = lib
+        .artists()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.name == "Solo")
+        .unwrap();
+    let titles: Vec<String> = lib
+        .artist_tracks(solo.id)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.title)
+        .collect();
+    assert_eq!(
+        titles,
+        ["Early One", "Later One", "Later Two", "Guest Spot"]
+    );
+}
+
+#[test]
+fn artists_carry_a_cover_from_their_own_albums_first() {
+    let env = Env::new();
+    build_tree(&env);
+    let mut lib = env.open();
+    lib.add_root(&env.music, false).unwrap();
+    lib.scan().unwrap();
+    let artists = lib.artists().unwrap();
+    let miles = artists.iter().find(|a| a.name == "Miles Davis").unwrap();
+    let kob = lib
+        .albums(AlbumSort::Title)
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Kind of Blue")
+        .unwrap();
+    assert_eq!(miles.art, kob.art);
+    // A guest artist without albums of their own falls back to the album they appear on.
+    let brubeck = artists.iter().find(|a| a.name == "Dave Brubeck").unwrap();
+    assert!(brubeck.art.is_some());
+    assert_eq!(lib.artist(miles.id).unwrap().unwrap().artist.art, miles.art);
 }

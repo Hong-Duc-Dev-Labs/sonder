@@ -73,6 +73,11 @@ correctly. `NullBackend::with_busy_probes` reproduces this in tests.
 answers the next device periods with idle before stopping; CoreAudio switches the IOProc to
 idle-only for two cycles. Hardware verification is still part of the manual DAC test.
 
+**Settings.** The DSD mode (per device) and the DSD→PCM rate are user settings: the app stores
+them in `settings.toml` (`dsdModes`, `dsdPcmRate`) and applies changes live through
+`Player::set_dsd`, which restarts a playing DSD track from its position; the CLI takes
+`--dsd-mode` and `--dsd-pcm-rate`.
+
 **Phase 6 interaction.** Phase 5 had to ship DSD→PCM before phase 6's shared FIR core existed,
 so `sonder-dsp` carries its own two decimator stages (`build.rs` tables). Phase 6 should port
 `dsd2pcm` onto `FirCore` rather than letting a second filter engine grow.

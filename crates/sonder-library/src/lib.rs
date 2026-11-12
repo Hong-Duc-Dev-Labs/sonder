@@ -29,9 +29,9 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-pub use art::{ArtCache, ArtImage, THUMB_SIZES};
+pub use art::{ArtCache, ArtImage, MAX_COVER_COLORS, THUMB_SIZES, cover_colors};
 pub use query::{AlbumDetail, AlbumSort, AlbumSummary, ArtistDetail, ArtistSummary, Track};
-pub use scan::{ScanFailure, ScanReport};
+pub use scan::{ScanFailure, ScanProgress, ScanReport};
 pub use schema::SCHEMA_VERSION;
 pub use tags::{AUDIO_EXTENSIONS, AudioInfo, Codec, FileMeta, ReplayGain, TagError, TrackTags};
 pub use tags::{is_audio_file, read_file};
@@ -175,6 +175,30 @@ impl Library {
             })?
             .collect::<Result<_, _>>()?;
         Ok(roots)
+    }
+
+    /// Works out the colours of covers stored before colours were recorded, from their
+    /// cached 300 px thumbnail. Covers whose thumbnail is missing or unreadable are left for
+    /// the next rescan. Returns how many covers were updated.
+    pub fn backfill_art_colors(&mut self) -> Result<usize, LibraryError> {
+        let pending: Vec<String> = self
+            .conn
+            .prepare("SELECT hash FROM art WHERE colors IS NULL")?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        let mut updated = 0;
+        for hash in pending {
+            let path = self.art.thumbnail_path(&hash, THUMB_SIZES[0]);
+            let Ok(image) = image::open(&path) else {
+                continue;
+            };
+            self.conn.execute(
+                "UPDATE art SET colors = ?1 WHERE hash = ?2",
+                params![art::cover_colors(&image), hash],
+            )?;
+            updated += 1;
+        }
+        Ok(updated)
     }
 }
 

@@ -106,6 +106,8 @@ pub struct TrackTags {
     pub replay_gain: ReplayGain,
     /// Embedded front cover (or first picture) as stored in the file.
     pub cover: Option<Vec<u8>>,
+    /// Embedded lyrics (plain or LRC text), as stored in the file.
+    pub lyrics: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -317,6 +319,13 @@ fn extract_tags(tags: &[&Tag]) -> TrackTags {
             }),
         },
         cover,
+        // Not `clean`: line breaks and indentation inside lyrics are meaningful.
+        lyrics: first(tags, |t| {
+            t.get_string(ItemKey::Lyrics)
+                .map(|s| s.trim_matches(|c: char| c.is_whitespace() || c == '\0'))
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        }),
     }
 }
 

@@ -511,3 +511,263 @@ fn play_after_the_end_starts_at_the_first_added_track() {
     let seen = wait_end(&events);
     assert_eq!(track_changes(&seen), vec![0, 1]);
 }
+
+#[test]
+fn play_index_starts_that_entry_from_stop_and_while_playing() {
+    let a = wav("index-a.wav", 44_100, 16, 132_300, 30);
+    let b = wav("index-b.wav", 44_100, 16, 10_000, 31);
+    let c = wav("index-c.wav", 44_100, 16, 10_000, 32);
+    let (player, events, control) = start(slow());
+    player.enqueue(vec![a.clone(), b.clone(), c.clone()]);
+
+    player.play_index(2);
+    let (event, _) = wait_for(&events, |e| matches!(e, PlayerEvent::TrackChanged { .. }));
+    assert!(matches!(event, PlayerEvent::TrackChanged { index: 2, .. }));
+    wait_end(&events);
+    assert_eq!(
+        control.played_bytes(),
+        packed(SampleContainer::S16, &decoded(&c))
+    );
+
+    player.play_index(0);
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { index: 0, elapsed } if !elapsed.is_zero()),
+    );
+    player.play_index(1);
+    let (event, _) = wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::TrackChanged { index, .. } if *index != 0),
+    );
+    assert!(matches!(event, PlayerEvent::TrackChanged { index: 1, .. }));
+    wait_end(&events);
+    let session = control.sessions().pop().unwrap();
+    let mut rest = decoded(&b);
+    rest.extend(decoded(&c));
+    assert!(
+        session
+            .bytes
+            .ends_with(&packed(SampleContainer::S16, &rest))
+    );
+}
+
+#[test]
+fn switching_device_moves_playback_without_losing_or_repeating_frames() {
+    let a = wav("switch.wav", 44_100, 16, 88_200, 33);
+    let (player, events, control) = start(slow());
+    player.enqueue(vec![a.clone()]);
+    player.play();
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if !elapsed.is_zero()),
+    );
+
+    // A device that is not present: playback holds and pauses.
+    player.set_device(sonder_output::DeviceId("missing".into()));
+    let (_, seen) = wait_for(&events, |e| *e == PlayerEvent::State(PlaybackState::Paused));
+    assert!(
+        seen.iter().any(|e| matches!(e, PlayerEvent::DeviceLost(_))),
+        "{seen:#?}"
+    );
+    assert!(!control.is_open(), "the old device is released");
+
+    // Back to a present device: the held position reopens there.
+    player.set_device(NullBackend::device_id());
+    wait_for(&events, |e| matches!(e, PlayerEvent::OutputFormat(_)));
+    player.play();
+    wait_end(&events);
+
+    assert_eq!(control.sessions().len(), 2);
+    assert_eq!(
+        control.played_bytes(),
+        packed(SampleContainer::S16, &decoded(&a))
+    );
+}
+
+/// Track indices of the `TrackChanged` events in `events`, with their file names.
+fn changes(events: &[PlayerEvent]) -> Vec<(usize, String)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            PlayerEvent::TrackChanged { index, path, .. } => Some((
+                *index,
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+fn concat(paths: &[&PathBuf]) -> Vec<u8> {
+    let mut all = Vec::new();
+    for p in paths {
+        all.extend(decoded(p));
+    }
+    packed(SampleContainer::S16, &all)
+}
+
+fn wait_playing(events: &Receiver<PlayerEvent>, index: usize) -> Vec<PlayerEvent> {
+    let (event, mut seen) = wait_for(
+        events,
+        |e| matches!(e, PlayerEvent::Position { index: i, elapsed } if *i == index && !elapsed.is_zero()),
+    );
+    seen.push(event);
+    seen
+}
+
+#[test]
+fn removing_an_entry_decoded_ahead_skips_it_gaplessly() {
+    // `a` is short enough that `b` is already decoded when the removal lands.
+    let a = wav("rm-ahead-a.wav", 44_100, 16, 30_000, 40);
+    let b = wav("rm-ahead-b.wav", 44_100, 16, 20_000, 41);
+    let c = wav("rm-ahead-c.wav", 44_100, 16, 20_000, 42);
+    let (player, events, control) = start(slow());
+    player.enqueue(vec![a.clone(), b.clone(), c.clone()]);
+    player.play();
+    let mut seen = wait_playing(&events, 0);
+    player.remove(1);
+    seen.extend(wait_end(&events));
+
+    assert_eq!(
+        control.sessions().len(),
+        1,
+        "one stream: the skip stays gapless"
+    );
+    assert_eq!(control.played_bytes(), concat(&[&a, &c]));
+    assert_eq!(
+        changes(&seen),
+        [(0, "rm-ahead-a.wav".into()), (1, "rm-ahead-c.wav".into())]
+    );
+}
+
+#[test]
+fn removing_an_entry_before_the_playing_one_shifts_indices() {
+    let a = wav("rm-before-a.wav", 44_100, 16, 10_000, 43);
+    let b = wav("rm-before-b.wav", 44_100, 16, 60_000, 44);
+    let c = wav("rm-before-c.wav", 44_100, 16, 10_000, 45);
+    let (player, events, control) = start(slow());
+    player.enqueue(vec![a.clone(), b.clone(), c.clone()]);
+    player.play_index(1);
+    let mut seen = wait_playing(&events, 1);
+    player.remove(0);
+    // `b` is now entry 0 and keeps playing.
+    seen.extend(wait_playing(&events, 0));
+    seen.extend(wait_end(&events));
+
+    assert_eq!(control.played_bytes(), concat(&[&b, &c]));
+    assert_eq!(
+        changes(&seen),
+        [(1, "rm-before-b.wav".into()), (1, "rm-before-c.wav".into())]
+    );
+}
+
+#[test]
+fn removing_the_playing_entry_moves_on_to_the_next() {
+    let a = wav("rm-current-a.wav", 44_100, 16, 132_300, 46);
+    let b = wav("rm-current-b.wav", 44_100, 16, 10_000, 47);
+    let (player, events, control) = start(slow());
+    player.enqueue(vec![a.clone(), b.clone()]);
+    player.play();
+    wait_playing(&events, 0);
+    player.remove(0);
+    let seen = wait_end(&events);
+
+    assert_eq!(changes(&seen), [(0, "rm-current-b.wav".into())]);
+    let played = control.played_bytes();
+    let rest = concat(&[&b]);
+    assert!(played.ends_with(&rest));
+    assert!(concat(&[&a]).starts_with(&played[..played.len() - rest.len()]));
+}
+
+#[test]
+fn removing_the_last_playing_entry_ends_the_queue() {
+    let a = wav("rm-last-a.wav", 44_100, 16, 132_300, 48);
+    let (player, events, control) = start(slow());
+    player.enqueue(vec![a.clone()]);
+    player.play();
+    wait_playing(&events, 0);
+    player.remove(0);
+    wait_end(&events);
+    wait_for(&events, |e| {
+        *e == PlayerEvent::State(PlaybackState::Stopped)
+    });
+    assert!(!control.is_open());
+}
+
+#[test]
+fn inserting_after_the_playing_entry_plays_it_next_gaplessly() {
+    let a = wav("ins-next-a.wav", 44_100, 16, 30_000, 49);
+    let b = wav("ins-next-b.wav", 44_100, 16, 20_000, 50);
+    let c = wav("ins-next-c.wav", 44_100, 16, 20_000, 51);
+    let (player, events, control) = start(slow());
+    player.enqueue(vec![a.clone(), c.clone()]);
+    player.play();
+    let mut seen = wait_playing(&events, 0);
+    player.insert(1, vec![b.clone()]);
+    seen.extend(wait_end(&events));
+
+    assert_eq!(control.sessions().len(), 1);
+    assert_eq!(control.played_bytes(), concat(&[&a, &b, &c]));
+    assert_eq!(
+        changes(&seen),
+        [
+            (0, "ins-next-a.wav".into()),
+            (1, "ins-next-b.wav".into()),
+            (2, "ins-next-c.wav".into())
+        ]
+    );
+}
+
+#[test]
+fn inserting_after_a_fully_decoded_queue_continues_the_stream() {
+    let a = wav("ins-end-a.wav", 44_100, 16, 30_000, 52);
+    let b = wav("ins-end-b.wav", 44_100, 16, 10_000, 53);
+    let (player, events, control) = start(slow());
+    player.enqueue(vec![a.clone()]);
+    player.play();
+    wait_playing(&events, 0);
+    player.insert(1, vec![b.clone()]);
+    let seen = wait_end(&events);
+
+    assert_eq!(control.sessions().len(), 1);
+    assert_eq!(control.played_bytes(), concat(&[&a, &b]));
+    assert_eq!(changes(&seen), [(1, "ins-end-b.wav".into())]);
+}
+
+#[test]
+fn inserting_before_the_playing_entry_shifts_it() {
+    let a = wav("ins-before-a.wav", 44_100, 16, 60_000, 54);
+    let z = wav("ins-before-z.wav", 44_100, 16, 10_000, 55);
+    let (player, events, control) = start(slow());
+    player.enqueue(vec![a.clone()]);
+    player.play();
+    wait_playing(&events, 0);
+    player.insert(0, vec![z]);
+    wait_playing(&events, 1);
+    wait_end(&events);
+    assert_eq!(
+        control.played_bytes(),
+        concat(&[&a]),
+        "the inserted entry is not played"
+    );
+}
+
+#[test]
+fn queue_edits_while_paused_report_the_moved_current_entry() {
+    let a = wav("paused-edit-a.wav", 44_100, 16, 132_300, 56);
+    let z = wav("paused-edit-z.wav", 44_100, 16, 10_000, 57);
+    let (player, events, _control) = start(slow());
+    player.enqueue(vec![a]);
+    player.play();
+    wait_playing(&events, 0);
+    player.pause();
+    wait_for(&events, |e| *e == PlayerEvent::State(PlaybackState::Paused));
+    player.insert(0, vec![z]);
+    wait_for(&events, |e| {
+        matches!(e, PlayerEvent::Position { index: 1, .. })
+    });
+    player.remove(0);
+    wait_for(&events, |e| {
+        matches!(e, PlayerEvent::Position { index: 0, .. })
+    });
+}

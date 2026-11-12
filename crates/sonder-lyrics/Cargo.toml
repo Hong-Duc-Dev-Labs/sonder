@@ -1,0 +1,17 @@
+[package]
+name = "sonder-lyrics"
+description = "Lyrics for a track: embedded tags, .lrc sidecars and online lyrics services, cached"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2.workspace = true
+base64 = "0.22.1"
+ureq = { version = "3.5.1", features = ["json"] }
+
+[dev-dependencies]
+tempfile.workspace = true

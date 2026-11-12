@@ -9,7 +9,7 @@ use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ::alsa::pcm::{Access, Format, HwParams, PCM};
+use ::alsa::pcm::{Access, Format, HwParams, PCM, State};
 use ::alsa::{Ctl, Direction, ValueOr};
 
 use crate::format::{DeviceFormat, SampleContainer};
@@ -27,6 +27,8 @@ const PREBUFFER_TIMEOUT: Duration = Duration::from_secs(2);
 const WAIT_MS: u32 = 100;
 /// Upper bound on playing out the device buffer at the end of input.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Upper bound on playing the closing DSD idle period after a stop.
+const STOP_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Default)]
 pub struct AlsaHw;
@@ -42,6 +44,8 @@ fn alsa_format(container: SampleContainer) -> Option<Format> {
         SampleContainer::S16 => Some(Format::S16LE),
         SampleContainer::S24Packed => Some(Format::S243LE),
         SampleContainer::S32 => Some(Format::S32LE),
+        // ALSA's DSD_U32_BE carries four MSB-first DSD bytes per channel per frame.
+        SampleContainer::DsdU32Be => Some(Format::DSDU32BE),
         SampleContainer::S24In32 => None,
     }
 }
@@ -96,6 +100,18 @@ fn probe(device: &DeviceId, channels: u16) -> Result<Vec<DeviceFormat>, OutputEr
             if set_exact(&pcm, format, false).is_ok() {
                 formats.push(format);
             }
+        }
+    }
+    // Native DSD: the device's rate is one 32-bit word per frame (four DSD bytes), not the
+    // bit rate the file reports.
+    for bits in [2_822_400, 5_644_800, 11_289_600] {
+        let format = DeviceFormat {
+            rate: bits / 32,
+            container: SampleContainer::DsdU32Be,
+            channels,
+        };
+        if set_exact(&pcm, format, false).is_ok() {
+            formats.push(format);
         }
     }
     Ok(formats)
@@ -250,7 +266,7 @@ fn run_stream(
         }
     };
 
-    let mut renderer = Renderer::new(source, format, period, options.tap);
+    let mut renderer = Renderer::new(source, format, period, options.tap, options.dop);
     let target = renderer
         .queue_capacity()
         .min(period * usize::from(format.channels) * 4);
@@ -272,7 +288,7 @@ fn run_stream(
             let mut bytes = renderer.bytes(period);
             while !bytes.is_empty() {
                 if renderer.handle().is_stopping() {
-                    return Ok(());
+                    break;
                 }
                 match io.writei(bytes) {
                     Ok(frames) => bytes = &bytes[frames * format.frame_bytes()..],
@@ -299,6 +315,9 @@ fn run_stream(
                     Err(e) => return Err(classify(&e, device)),
                 }
             }
+            if renderer.handle().is_stopping() {
+                return Ok(());
+            }
             if fill.input_exhausted {
                 // Let the device play everything out before closing. `drain` would return
                 // EAGAIN in non-blocking mode, so wait for the queued delay to reach zero.
@@ -315,8 +334,49 @@ fn run_stream(
         Ok(())
     })();
     if renderer.handle().is_stopping() {
+        if renderer.is_dsd() {
+            end_on_dsd_idle(&pcm, &mut renderer, period, format.frame_bytes());
+        }
         let _ = pcm.drop();
     }
     renderer.finish();
     result
+}
+
+/// Ends a stopped DSD stream on idle frames instead of cutting it mid-music.
+///
+/// Queued audio is dropped first (a stop must be prompt), then one period of DSD idle
+/// (DoP 0x69 0x69 with alternating markers, or native 0x69) is played out before the caller
+/// closes the device, so the last thing the DAC hears is DSD silence. Writing idle frames and
+/// then dropping would discard them along with the queued audio. Best effort: any error
+/// just closes the stream.
+fn end_on_dsd_idle(pcm: &PCM, renderer: &mut Renderer, period: usize, frame_bytes: usize) {
+    if pcm.drop().is_err() || pcm.prepare().is_err() {
+        return;
+    }
+    let io = pcm.io_bytes();
+    renderer.silence(period);
+    let mut bytes = renderer.bytes(period);
+    let started = Instant::now();
+    while !bytes.is_empty() {
+        if started.elapsed() >= STOP_IDLE_TIMEOUT {
+            return;
+        }
+        match io.writei(bytes) {
+            Ok(frames) => bytes = &bytes[frames * frame_bytes..],
+            Err(e) if e.errno() == libc::EAGAIN => {
+                let _ = pcm.wait(Some(WAIT_MS));
+            }
+            Err(_) => return,
+        }
+    }
+    if pcm.state() == State::Prepared {
+        let _ = pcm.start();
+    }
+    while started.elapsed() < STOP_IDLE_TIMEOUT {
+        match pcm.avail_delay() {
+            Ok((_, delay)) if delay > 0 => thread::sleep(Duration::from_millis(2)),
+            _ => break,
+        }
+    }
 }

@@ -83,6 +83,9 @@ pub trait WriteTap: Send {
 #[derive(Default)]
 pub struct StreamOptions {
     pub tap: Option<Box<dyn WriteTap>>,
+    /// The ring carries DoP payload frames: the renderer writes the 0x05/0xFA markers and
+    /// uses DoP idle frames for pauses, underruns and drain. Never set for PCM streams.
+    pub dop: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

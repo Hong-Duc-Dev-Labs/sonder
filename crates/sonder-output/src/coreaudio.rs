@@ -14,7 +14,7 @@
 use std::ffi::c_void;
 use std::mem::{MaybeUninit, size_of};
 use std::ptr::{NonNull, null};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
@@ -56,6 +56,10 @@ const POLL: Duration = Duration::from_millis(5);
 const PREBUFFER_TIMEOUT: Duration = Duration::from_secs(2);
 /// After the last audio frame was handed over, keep running this long so it is played out.
 const DRAIN: Duration = Duration::from_millis(200);
+/// IO cycles of DSD idle handed to the device after a stop before it is halted.
+const DSD_STOP_IDLE_CYCLES: u32 = 2;
+/// Upper bound on waiting for those cycles.
+const DSD_STOP_IDLE_TIMEOUT: Duration = Duration::from_millis(200);
 /// `kAudioDevicePropertyHogMode` value meaning nobody holds the device.
 const HOG_FREE: i32 = -1;
 
@@ -248,15 +252,17 @@ fn first_output_stream(device: AudioObjectID) -> Result<AudioObjectID, OutputErr
 // ----- formats -----
 
 /// The physical stream description for `format`.
-fn asbd(format: DeviceFormat) -> AudioStreamBasicDescription {
+fn asbd(format: DeviceFormat) -> Option<AudioStreamBasicDescription> {
     let (bits, bytes, layout) = match format.container {
         SampleContainer::S16 => (16, 2, kAudioFormatFlagIsPacked),
         SampleContainer::S24Packed => (24, 3, kAudioFormatFlagIsPacked),
         SampleContainer::S24In32 => (24, 4, kAudioFormatFlagIsAlignedHigh),
         SampleContainer::S32 => (32, 4, kAudioFormatFlagIsPacked),
+        // CoreAudio has no native-DSD sample format; DoP is the only DSD path here.
+        SampleContainer::DsdU32Be => return None,
     };
     let frame = bytes * u32::from(format.channels);
-    AudioStreamBasicDescription {
+    Some(AudioStreamBasicDescription {
         mSampleRate: f64::from(format.rate),
         mFormatID: kAudioFormatLinearPCM,
         mFormatFlags: kAudioFormatFlagIsSignedInteger | layout,
@@ -266,7 +272,7 @@ fn asbd(format: DeviceFormat) -> AudioStreamBasicDescription {
         mChannelsPerFrame: u32::from(format.channels),
         mBitsPerChannel: bits,
         mReserved: 0,
-    }
+    })
 }
 
 /// Whether `desc` is the same integer layout as `want`, ignoring the rate.
@@ -303,7 +309,9 @@ fn physical_formats(stream: AudioObjectID) -> Vec<AudioStreamRangedDescription> 
 }
 
 fn stream_supports(stream: AudioObjectID, format: DeviceFormat) -> bool {
-    let want = asbd(format);
+    let Some(want) = asbd(format) else {
+        return false;
+    };
     let rate = f64::from(format.rate);
     physical_formats(stream).iter().any(|r| {
         same_layout(&r.mFormat, &want)
@@ -414,7 +422,7 @@ impl HogGuard {
         if !stream_supports(stream, format) {
             return Err(unsupported(device, format));
         }
-        let want = asbd(format);
+        let want = asbd(format).expect("stream_supports checked the layout");
         // SAFETY: the physical format is an ASBD.
         unsafe { set(stream, phys_addr, &want) }.map_err(|_| unsupported(device, format))?;
         // The change is asynchronous; wait until the device reports it.
@@ -555,6 +563,18 @@ struct IoState {
     channels: usize,
     device_frame_bytes: usize,
     exhausted: Arc<AtomicBool>,
+    /// Set by the supervisor when a DSD stream stops: the IOProc then writes only DSD idle
+    /// (continuing the DoP marker phase) and counts the cycles in `idle_cycles`.
+    idle_only: Arc<AtomicBool>,
+    idle_cycles: Arc<AtomicU32>,
+}
+
+/// Converts left-justified `i32` LE words in `buf` to native-endian Float32 in place.
+fn i32_to_f32_in_place(buf: &mut [u8]) {
+    for s in buf.as_chunks_mut::<4>().0 {
+        let v = i32::from_le_bytes(*s);
+        *s = (v as f32 / 2_147_483_648.0).to_ne_bytes();
+    }
 }
 
 /// The IOProc: fills the first output buffer from the ring. Real-time safe.
@@ -581,34 +601,46 @@ unsafe extern "C-unwind" fn io_proc(
         std::slice::from_raw_parts_mut(buffer.mData.cast::<u8>(), buffer.mDataByteSize as usize)
     };
     if buffer.mNumberChannels as usize != state.channels {
-        dst.fill(0);
+        // Not our layout; play nothing this cycle. A DSD stream gets DSD idle (DoP samples
+        // are 4 bytes in both the integer and the Float32 layout), never zeros, which would
+        // drop the DAC out of DSD mode.
+        if state.renderer.is_dsd() {
+            state
+                .renderer
+                .idle_into(buffer.mNumberChannels as usize, dst);
+            if state.float_out {
+                i32_to_f32_in_place(dst);
+            }
+        } else {
+            dst.fill(0);
+        }
         return 0;
     }
+    let idle = state.idle_only.load(Ordering::Acquire);
     let total = dst.len() / state.device_frame_bytes;
     let mut done = 0;
     while done < total {
         let frames = (total - done).min(MAX_CHUNK_FRAMES);
-        let fill = state.renderer.fill(frames);
+        let exhausted = if idle {
+            state.renderer.silence(frames);
+            false
+        } else {
+            state.renderer.fill(frames).input_exhausted
+        };
         let src = state.renderer.bytes(frames);
         let out =
             &mut dst[done * state.device_frame_bytes..(done + frames) * state.device_frame_bytes];
+        out.copy_from_slice(src);
         if state.float_out {
-            for (s, o) in src
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .zip(out.as_chunks_mut::<4>().0)
-            {
-                let v = i32::from_le_bytes(*s);
-                o.copy_from_slice(&(v as f32 / 2_147_483_648.0).to_ne_bytes());
-            }
-        } else {
-            out.copy_from_slice(src);
+            i32_to_f32_in_place(out);
         }
-        if fill.input_exhausted {
+        if exhausted {
             state.exhausted.store(true, Ordering::Release);
         }
         done += frames;
+    }
+    if idle {
+        state.idle_cycles.fetch_add(1, Ordering::Release);
     }
     0
 }
@@ -649,7 +681,7 @@ fn run_stream(
                 ),
             )
         }?;
-        let integer = same_layout(&virtual_format, &asbd(format));
+        let integer = asbd(format).is_some_and(|want| same_layout(&virtual_format, &want));
         let float32 = virtual_format.mFormatFlags & kAudioFormatFlagIsFloat != 0
             && virtual_format.mBitsPerChannel == 32
             && virtual_format.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0;
@@ -702,14 +734,19 @@ fn run_stream(
         other => other,
     };
     let exhausted = Arc::new(AtomicBool::new(false));
+    let idle_only = Arc::new(AtomicBool::new(false));
+    let idle_cycles = Arc::new(AtomicU32::new(0));
     let mut state = Box::new(IoState {
-        renderer: Renderer::new(source, render_format, MAX_CHUNK_FRAMES, tap),
+        renderer: Renderer::new(source, render_format, MAX_CHUNK_FRAMES, tap, options.dop),
         float_out,
         channels: usize::from(format.channels),
         device_frame_bytes,
         exhausted: exhausted.clone(),
+        idle_only: idle_only.clone(),
+        idle_cycles: idle_cycles.clone(),
     });
     let handle = state.renderer.handle().clone();
+    let dsd = state.renderer.is_dsd();
 
     let target = state
         .renderer
@@ -744,6 +781,17 @@ fn run_stream(
         let mut drain_from = None;
         loop {
             if handle.is_stopping() {
+                if dsd {
+                    // End a DSD stream on idle frames: the IOProc stops reading the queue
+                    // and hands the device DSD idle until it has taken a couple of cycles.
+                    idle_only.store(true, Ordering::Release);
+                    let since = Instant::now();
+                    while idle_cycles.load(Ordering::Acquire) < DSD_STOP_IDLE_CYCLES
+                        && since.elapsed() < DSD_STOP_IDLE_TIMEOUT
+                    {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
                 return Ok(());
             }
             if !is_alive(device) {

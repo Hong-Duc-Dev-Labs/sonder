@@ -454,11 +454,13 @@ pub async fn settings_get(state: State<'_, AppState>) -> AppResult<Settings> {
     Ok(lock(&state.settings).clone())
 }
 
-/// Saves `settings` and applies the device and volume in them.
+/// Saves `settings` and applies the device, volume and DSD handling in them.
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> AppResult<Settings> {
     let saved = state.update_settings(|s| *s = settings)?;
+    // DSD first: a device switch then opens the new device with the new DSD mode.
+    saved.apply_dsd(&state.player);
     if let Some(device) = &saved.output_device {
         apply_device(&state, DeviceId(device.clone()));
     }

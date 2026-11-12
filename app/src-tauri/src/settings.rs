@@ -6,10 +6,13 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
+use std::collections::{BTreeMap, HashMap};
+
 use serde::{Deserialize, Serialize};
+use sonder_output::DeviceId;
 use specta::Type;
 
-use crate::dto::{CoverStyle, GlassQuality, SortOrder};
+use crate::dto::{CoverStyle, DsdMode, DsdPcmRate, GlassQuality, SortOrder};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -26,6 +29,10 @@ pub struct Settings {
     /// Look up lyrics online (title, artist, album and length are sent) when a track has
     /// none of its own.
     pub lyrics_online: bool,
+    /// DSD handling per output device id; devices without an entry use DoP.
+    pub dsd_modes: BTreeMap<String, DsdMode>,
+    /// Output rate when DSD is converted to PCM.
+    pub dsd_pcm_rate: DsdPcmRate,
 }
 
 impl Default for Settings {
@@ -37,6 +44,8 @@ impl Default for Settings {
             cover_style: CoverStyle::default(),
             glass: GlassQuality::default(),
             lyrics_online: true,
+            dsd_modes: BTreeMap::new(),
+            dsd_pcm_rate: DsdPcmRate::default(),
         }
     }
 }
@@ -49,7 +58,25 @@ impl Settings {
             .filter(|db| db.is_finite())
             .map(|db| db.clamp(-90.0, 0.0));
         self.output_device = self.output_device.filter(|d| !d.is_empty());
+        self.dsd_modes.retain(|device, _| !device.is_empty());
         self
+    }
+
+    /// The per-device DSD modes in engine terms.
+    pub fn engine_dsd_modes(&self) -> HashMap<DeviceId, sonder_engine::DsdMode> {
+        self.dsd_modes
+            .iter()
+            .map(|(device, mode)| (DeviceId(device.clone()), (*mode).into()))
+            .collect()
+    }
+
+    /// Applies the DSD settings to the engine; the engine ignores unchanged values.
+    pub fn apply_dsd(&self, player: &sonder_engine::Player) {
+        player.set_dsd(
+            DsdMode::default().into(),
+            self.engine_dsd_modes(),
+            self.dsd_pcm_rate.into(),
+        );
     }
 }
 
@@ -117,6 +144,8 @@ mod tests {
             cover_style: CoverStyle::Square,
             glass: GlassQuality::Off,
             lyrics_online: false,
+            dsd_modes: BTreeMap::from([("hw:1,0".to_string(), DsdMode::Native)]),
+            dsd_pcm_rate: DsdPcmRate::Hz352800,
         };
         store.save(&settings).unwrap();
         assert_eq!(store.load(), settings);
@@ -141,10 +170,15 @@ mod tests {
         assert_eq!(store.load(), Settings::default());
         assert!(dir.join("settings.toml.broken").is_file());
 
-        fs::write(store.path(), "volumeDb = 12.0\noutputDevice = \"\"\n").unwrap();
+        fs::write(
+            store.path(),
+            "volumeDb = 12.0\noutputDevice = \"\"\n[dsdModes]\n\"\" = \"pcm\"\n",
+        )
+        .unwrap();
         let loaded = store.load();
         assert_eq!(loaded.volume_db, Some(0.0));
         assert_eq!(loaded.output_device, None);
+        assert!(loaded.dsd_modes.is_empty());
         let _ = fs::remove_dir_all(dir);
     }
 }

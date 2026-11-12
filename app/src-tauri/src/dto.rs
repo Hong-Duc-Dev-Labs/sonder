@@ -54,6 +54,47 @@ pub enum GlassQuality {
     Off,
 }
 
+/// How DSD files reach an output device.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DsdMode {
+    /// DSD over PCM, bit-perfect; converted to PCM when the device does not take DoP.
+    #[default]
+    Dop,
+    /// Native DSD where the driver exposes it (ALSA), else DoP, else PCM.
+    Native,
+    /// Always converted to PCM.
+    Pcm,
+}
+
+impl From<DsdMode> for sonder_engine::DsdMode {
+    fn from(mode: DsdMode) -> Self {
+        match mode {
+            DsdMode::Dop => sonder_engine::DsdMode::Dop,
+            DsdMode::Native => sonder_engine::DsdMode::Native,
+            DsdMode::Pcm => sonder_engine::DsdMode::Pcm,
+        }
+    }
+}
+
+/// Output rate of DSD→PCM conversion.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DsdPcmRate {
+    #[default]
+    Hz176400,
+    Hz352800,
+}
+
+impl From<DsdPcmRate> for sonder_engine::DsdPcmRate {
+    fn from(rate: DsdPcmRate) -> Self {
+        match rate {
+            DsdPcmRate::Hz176400 => sonder_engine::DsdPcmRate::R176_4,
+            DsdPcmRate::Hz352800 => sonder_engine::DsdPcmRate::R352_8,
+        }
+    }
+}
+
 impl From<SortOrder> for AlbumSort {
     fn from(s: SortOrder) -> Self {
         match s {

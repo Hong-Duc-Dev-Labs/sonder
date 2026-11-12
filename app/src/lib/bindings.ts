@@ -49,7 +49,7 @@ export const commands = {
 	/**  Switches output to `id` (playback continues there) and remembers the choice. */
 	deviceSelect: (id: string) => __TAURI_INVOKE<null>("device_select", { id }),
 	settingsGet: () => __TAURI_INVOKE<Settings>("settings_get"),
-	/**  Saves `settings` and applies the device and volume in them. */
+	/**  Saves `settings` and applies the device, volume and DSD handling in them. */
 	settingsSet: (settings: Settings) => __TAURI_INVOKE<Settings>("settings_set", { settings }),
 	/**
 	 *  Lyrics for a library track: its own (tags, then a `.lrc` beside it), else online when the
@@ -134,6 +134,18 @@ export type Device = {
 };
 
 export type DevicesChangedEvent = Device[];
+
+/**  How DSD files reach an output device. */
+export type DsdMode = 
+/**  DSD over PCM, bit-perfect; converted to PCM when the device does not take DoP. */
+"dop" | 
+/**  Native DSD where the driver exposes it (ALSA), else DoP, else PCM. */
+"native" | 
+/**  Always converted to PCM. */
+"pcm";
+
+/**  Output rate of DSD→PCM conversion. */
+export type DsdPcmRate = "hz176400" | "hz352800";
 
 /**
  *  How much frosted glass the UI draws. Blur is the costliest effect in the UI; `Off` keeps the
@@ -256,6 +268,10 @@ export type Settings = {
 	 *  none of its own.
 	 */
 	lyricsOnline?: boolean,
+	/**  DSD handling per output device id; devices without an entry use DoP. */
+	dsdModes?: { [key in string]: DsdMode },
+	/**  Output rate when DSD is converted to PCM. */
+	dsdPcmRate?: DsdPcmRate,
 };
 
 export type SortOrder = "artist" | "title" | "added" | "year";

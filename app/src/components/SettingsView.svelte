@@ -270,6 +270,34 @@
         </div>
       </div>
     </section>
+
+    <section aria-labelledby="lyrics-title">
+      <div class="group-head"><h3 id="lyrics-title">Lyrics</h3></div>
+      <div class="card soft">
+        <div class="row">
+          <span class="icon"><Icon name="lyrics" size={18} /></span>
+          <span class="info">
+            <span class="name" id="lyrics-online-label">Find lyrics online</span>
+            <span class="dim small">
+              Lyrics in the file or in a .lrc file beside it come first. Otherwise the title, artist, album and
+              length are sent to LRCLIB, BetterLyrics, LyricsPlus and Kugou. Results stay on this computer.
+            </span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="lyrics-online-label">
+            {#each [true, false] as on (on)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(app.settings.lyricsOnline ?? true) === on}
+                onclick={() => app.saveSettings({ ...app.settings, lyricsOnline: on })}
+              >
+                {on ? "On" : "Off"}
+              </button>
+            {/each}
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 </div>
 

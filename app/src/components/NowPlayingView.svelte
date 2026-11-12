@@ -10,11 +10,12 @@
   import Cover from "./Cover.svelte";
   import FormatBadges from "./FormatBadges.svelte";
   import FrostFade from "./FrostFade.svelte";
+  import LyricsPanel from "./LyricsPanel.svelte";
   import Icon from "./Icon.svelte";
   import PlayPauseIcon from "./PlayPauseIcon.svelte";
   import SeekBar from "./SeekBar.svelte";
   import TurntableStage from "./TurntableStage.svelte";
-  import { rise, fadeQuick } from "../lib/transitions";
+  import { rise, fadeQuick, pageIn } from "../lib/transitions";
 
   let item = $derived(app.current);
   let output = $derived(app.player.output);
@@ -50,7 +51,7 @@
       {#if vinyl}
         <TurntableStage />
       {:else}
-        <div class="square">
+        <div class="square" data-flight="stage" class:landing={app.flight?.target === "stage" && !app.flight.landed}>
           {#key trackKey}
             <div
               class="square-art"
@@ -66,6 +67,14 @@
     </div>
 
     <div class="side">
+      {#if app.lyricsOpen}
+        <div class="lyrics-slot" in:pageIn>
+          {#if item}
+            <p class="mini-meta"><strong>{item.title}</strong> · {item.artist ?? "Unknown artist"}</p>
+          {/if}
+          <LyricsPanel />
+        </div>
+      {:else}
       <div class="meta">
         {#key trackKey}
           <div class="meta-inner" in:rise={{ delay: 120 }} out:fadeQuick>
@@ -85,6 +94,7 @@
       </div>
 
       <FormatBadges />
+      {/if}
 
       <SeekBar />
 
@@ -111,6 +121,15 @@
         >
           <Icon name="queue" />
         </button>
+        <button
+          class="icon-btn filled"
+          class:on={app.lyricsOpen}
+          aria-label="Lyrics"
+          aria-pressed={app.lyricsOpen}
+          onclick={() => (app.lyricsOpen = !app.lyricsOpen)}
+        >
+          <Icon name="lyrics" />
+        </button>
         <button class="icon-btn filled" aria-label="Go to album" disabled={!item} onclick={() => item && app.go({ kind: "album", id: item.albumId })}>
           <Icon name="albums" />
         </button>
@@ -127,7 +146,7 @@
         </button>
       </div>
 
-      {#if output}
+      {#if output && !app.lyricsOpen}
         <p class="path">
           Device opened at {outputLabel(output)}{app.player.underruns ? ` · ${plural(app.player.underruns, "underrun")}` : ""}
         </p>
@@ -143,7 +162,7 @@
     container-type: size;
     display: flex;
     flex-direction: column;
-    padding: 18px 40px 28px;
+    padding: 18px var(--page-x) 28px calc(var(--inset-left, 0px) + var(--page-x));
   }
   .np-head {
     display: flex;
@@ -160,6 +179,8 @@
     min-height: 0;
     display: grid;
     grid-template-columns: auto minmax(300px, 400px);
+    /* One row exactly as tall as the pane, so the side column can never push past it. */
+    grid-template-rows: minmax(0, 1fr);
     align-items: center;
     justify-content: center;
     gap: 48px;
@@ -173,6 +194,9 @@
     width: 86%;
     margin: 0 auto;
     aspect-ratio: 1;
+  }
+  .square.landing {
+    opacity: 0;
   }
   .square-art {
     position: absolute;
@@ -191,9 +215,29 @@
     flex-direction: column;
     gap: 18px;
     min-width: 0;
+    max-height: 100%;
   }
   .meta {
     display: grid;
+  }
+  /* A few lines around the sung one, not the whole song: it shrinks first when space runs out. */
+  .lyrics-slot {
+    flex: 0 1 auto;
+    height: min(44cqh, 420px);
+    min-height: 140px;
+    display: flex;
+    flex-direction: column;
+  }
+  .mini-meta {
+    margin: 0 0 4px 10px;
+    font-size: 13px;
+    color: var(--ink-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mini-meta strong {
+    color: var(--ink);
   }
   /* Old and new titles overlap while they cross-fade: no layout jump. */
   .meta-inner {
@@ -328,6 +372,10 @@
     }
     .side :global(.badges) {
       justify-content: center;
+    }
+    .lyrics-slot {
+      height: clamp(160px, calc(100cqh - 560px), 300px);
+      text-align: left;
     }
   }
 </style>

@@ -115,3 +115,5 @@ native DSD track drops it instead of being forced to DSD→PCM.
 ## Next Steps
 
 - Phase 5 reuses `FirCore` for DSD→PCM; phase 7 adds stages and UI; phase 8 uses multistage for PCM→DSD.
+- Phase 7 dither must also cover the 16-bit-only fallback: today a resampled signal sent to
+  a device without a 24-bit container is truncated to 16 bits without dither.

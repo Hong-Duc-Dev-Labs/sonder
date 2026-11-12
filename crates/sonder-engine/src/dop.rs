@@ -99,6 +99,10 @@ impl Packer {
     }
 
     /// Pads and packs the carried bytes, if any, so the stream ends on a whole frame.
+    ///
+    /// Each track gets its own packer, so between gapless tracks whose byte-frame count is
+    /// not a multiple of the carrier frame (2 for DoP, 4 for native) this inserts up to three
+    /// byte frames of 0x69 silence: a few microseconds, but not sample-exact.
     pub fn finish(&mut self, out: &mut Vec<i32>) {
         if self.pending.is_empty() {
             return;

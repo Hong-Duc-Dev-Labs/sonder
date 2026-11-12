@@ -273,14 +273,21 @@ fn fill_idle(silence: Silence, channels: usize, marker: &mut u8, dst: &mut [u8])
         Silence::Zero => dst.fill(0),
         Silence::Dsd => dst.fill(0x69),
         Silence::Dop => {
-            let block = 4 * channels;
-            for frame in dst.chunks_exact_mut(block) {
-                let word = (u32::from(*marker) << 24) | 0x0069_6900;
-                let bytes = word.to_le_bytes();
+            let word = |marker: u8| ((u32::from(marker) << 24) | 0x0069_6900).to_le_bytes();
+            let mut frames = dst.chunks_exact_mut(4 * channels);
+            for frame in &mut frames {
+                let bytes = word(*marker);
                 for sample in frame.as_chunks_mut::<4>().0 {
                     sample.copy_from_slice(&bytes);
                 }
                 *marker = toggle(*marker);
+            }
+            // A buffer that ends mid-frame (only a foreign device layout can) still carries
+            // idle words, never zeros; the partial frame does not advance the marker.
+            let rest = frames.into_remainder();
+            let bytes = word(*marker);
+            for sample in rest.as_chunks_mut::<4>().0 {
+                sample.copy_from_slice(&bytes);
             }
         }
     }
@@ -583,6 +590,13 @@ mod tests {
         }
         renderer.silence(1);
         assert_dop_word(renderer.bytes(1), 0, 0xFA, 0x6969);
+
+        // One whole frame of two channels plus one stray sample: no zero word anywhere.
+        let mut odd = [0u8; 3 * 4];
+        renderer.idle_into(2, &mut odd);
+        assert_dop_word(&odd, 0, 0x05, 0x6969);
+        assert_dop_word(&odd, 1, 0x05, 0x6969);
+        assert_dop_word(&odd, 2, 0xFA, 0x6969);
     }
 
     #[test]

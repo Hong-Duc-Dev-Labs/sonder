@@ -374,6 +374,31 @@ fn play(
                 bail!("the device is in use by another application");
             }
             PlayerEvent::OutputFailed(reason) => bail!("output failed: {reason}"),
+            PlayerEvent::SignalPath(path) => {
+                let stages = path
+                    .stages
+                    .iter()
+                    .map(|stage| format!("{} ({})", stage.name, stage.detail))
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                eprintln!(
+                    "Signal path: {} Hz, {}-bit, {} ch, {}{}",
+                    path.output_rate,
+                    path.output_bits,
+                    path.output_channels,
+                    if path.bit_perfect {
+                        "bit-perfect"
+                    } else {
+                        "not bit-perfect"
+                    },
+                    if stages.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; {stages}")
+                    }
+                );
+            }
+            PlayerEvent::Warning(message) => eprintln!("\nWarning: {message}"),
             PlayerEvent::EndOfQueue => break,
             _ => {}
         }

@@ -227,6 +227,7 @@ fn handle(app: &AppHandle, event: &PlayerEvent) -> bool {
             NoticeLevel::Warning,
             format!("DSD: {mode:?} ({reason})"),
         ),
+        PlayerEvent::Warning(message) => notice(app, NoticeLevel::Warning, message),
         _ => {}
     }
     urgent

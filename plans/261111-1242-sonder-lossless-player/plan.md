@@ -40,7 +40,7 @@ PEQ, levelling, PCM→DSD, dither. Source contract:
 | 3 | [Library scanner](./phase-03-library-scanner.md) | Done |
 | 4 | [Tauri UI](./phase-04-tauri-ui.md) | Done (PR #4; CI green on all three OSes; scripted DAC click-through not recorded) |
 | 5 | [DSD playback](./phase-05-dsd-playback.md) | In progress (code + tests done; manual DAC test open) |
-| 6 | [Resampler and filter sources](./phase-06-resampler-and-filter-sources.md) | Pending |
+| 6 | [Resampler and filter sources](./phase-06-resampler-and-filter-sources.md) | In progress (code, tests and benchmarks done; manual listen open) |
 | 7 | [PEQ, dither and levelling](./phase-07-peq-dither-leveling.md) | Pending |
 | 8 | [SDM, signal path and verification](./phase-08-sdm-signal-path-verification.md) | Pending |
 

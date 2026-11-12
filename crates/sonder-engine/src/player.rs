@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,7 @@ use sonder_output::{
 };
 
 use crate::queue::Queue;
+use crate::rate::{self, DeviceFormats, FilterResolver, SignalStage, SrcConfig, SrcPlan};
 use crate::stage::{Stage, Volume};
 use crate::worker::{DecodeWorker, DsdMode, OutputMode, OutputSpec};
 
@@ -121,7 +123,27 @@ pub enum PlayerEvent {
         mode: DsdMode,
         reason: Option<String>,
     },
+    /// What happens to the signal from the source to the device for the announced track,
+    /// including which filter source served each resampling stage.
+    SignalPath(SignalPath),
+    /// A recoverable configuration problem worth showing the user (for example a missing
+    /// Roon filter folder, which falls back to Sonder).
+    Warning(String),
     EndOfQueue,
+}
+
+/// The stages a track passes through, and whether the output is still bit-perfect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignalPath {
+    pub source: SourceFormat,
+    pub output_rate: u32,
+    pub output_bits: u32,
+    pub output_channels: u16,
+    pub mode: OutputMode,
+    pub stages: Vec<SignalStage>,
+    /// `true` only when no stage touched the samples and the rate is unchanged. Automatic
+    /// SRC fallback and any DSP setting make this `false`.
+    pub bit_perfect: bool,
 }
 
 /// Builds a tap for each stream the player opens (bit-perfect verification).
@@ -160,6 +182,9 @@ pub struct PlayerConfig {
     pub dsd_modes: HashMap<DeviceId, DsdMode>,
     /// Output rate for DSD→PCM conversion.
     pub dsd_pcm_rate: DsdPcmRate,
+    /// Rate-conversion policy, filter source and automatic fallback. The default keeps the
+    /// bit-perfect path unless the device refuses the source rate.
+    pub src: SrcConfig,
 }
 
 impl PlayerConfig {
@@ -173,6 +198,7 @@ impl PlayerConfig {
             default_dsd_mode: DsdMode::Dop,
             dsd_modes: HashMap::new(),
             dsd_pcm_rate: DsdPcmRate::R176_4,
+            src: SrcConfig::default(),
         }
     }
 
@@ -336,6 +362,7 @@ enum FeedItem {
         source: SourceFormat,
         spec: OutputSpec,
         duration: Option<u64>,
+        path: Arc<SignalPath>,
     },
     Samples {
         data: Vec<i32>,
@@ -346,13 +373,14 @@ enum FeedItem {
 }
 
 /// Where a track starts in a stream's frame index space.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Segment {
     start: u64,
     index: usize,
     offset: u64,
     source: SourceFormat,
     duration: Option<u64>,
+    path: Arc<SignalPath>,
 }
 
 struct Output {
@@ -389,7 +417,7 @@ struct Hold {
 }
 
 /// What the device is playing right now.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Now {
     segment: Segment,
     frame: u64,
@@ -421,6 +449,8 @@ struct Engine {
     /// added afterwards) instead of replaying the queue.
     after_end: Option<usize>,
     reported_track: Option<usize>,
+    /// Last signal path sent, so a mid-track change (volume, SRC) is reported again.
+    reported_path: Option<Arc<SignalPath>>,
     last_position: Option<Instant>,
     underruns_base: u64,
     reported_underruns: u64,
@@ -430,6 +460,20 @@ struct Engine {
     /// Track whose assumed DSD mode was rejected when its stream opened and that was decoded
     /// again with the device free; a second rejection is a normal output failure.
     dsd_reprobe: Option<usize>,
+    resolver: FilterResolver,
+    /// The rate-conversion plan applied to the worker, and the source/target key it was
+    /// built for. `None` key means the bit-perfect path.
+    plan: Option<SrcPlan>,
+    plan_key: Option<(u32, u16, Option<u32>)>,
+    /// Source rates the device refused, mapped to the rate it accepted. Cleared on a device
+    /// change, so the next track re-probes the new device.
+    fallback: HashMap<(u32, u16), u32>,
+    volume_db: Option<f64>,
+    /// Track whose fallback SRC was already tried after a refusal; a second refusal is a
+    /// normal output failure.
+    src_retry: Option<usize>,
+    /// Device formats per (device, channels), queried once while the device is free.
+    device_formats: DeviceFormats,
 }
 
 impl Engine {
@@ -440,7 +484,9 @@ impl Engine {
         events: Sender<PlayerEvent>,
     ) -> Self {
         let devices = backend.device_ids().unwrap_or_default();
-        Self {
+        let (resolver, warnings) =
+            FilterResolver::new(&config.src, sonder_dsp::sonder_design::default_cache_dir());
+        let engine = Self {
             backend,
             config,
             commands,
@@ -459,6 +505,7 @@ impl Engine {
             target: None,
             after_end: None,
             reported_track: None,
+            reported_path: None,
             last_position: None,
             underruns_base: 0,
             reported_underruns: 0,
@@ -466,7 +513,18 @@ impl Engine {
             last_poll: Instant::now(),
             last_retry: Instant::now(),
             dsd_reprobe: None,
+            resolver,
+            plan: None,
+            plan_key: None,
+            fallback: HashMap::new(),
+            volume_db: None,
+            src_retry: None,
+            device_formats: HashMap::new(),
+        };
+        for warning in warnings {
+            engine.emit(PlayerEvent::Warning(warning));
         }
+        engine
     }
 
     fn run(mut self) {
@@ -823,10 +881,12 @@ impl Engine {
     }
 
     fn set_volume(&mut self, db: Option<f64>) {
-        let stages: Vec<Box<dyn Stage>> = match db {
-            Some(db) => vec![Box::new(Volume::from_db(db))],
-            None => Vec::new(),
-        };
+        if self.volume_db == db {
+            return;
+        }
+        self.volume_db = db;
+        // Volume sits in front of the resampler, so the stage list keeps the current plan.
+        let stages = self.compose_stages();
         self.worker.set_stages(stages);
         // Re-decode from what is playing now so the change is heard after one ring, not
         // after everything already decoded.
@@ -835,6 +895,133 @@ impl Engine {
             && let Some((index, pos)) = self.current_pos()
         {
             self.restart(index, pos);
+        }
+    }
+
+    /// The full stage list: volume, then the rate-conversion plan (headroom and resamplers).
+    fn compose_stages(&self) -> Vec<Box<dyn Stage>> {
+        let mut stages: Vec<Box<dyn Stage>> = Vec::new();
+        if let Some(db) = self.volume_db {
+            stages.push(Box::new(Volume::from_db(db)));
+        }
+        if let Some(plan) = &self.plan {
+            stages.extend(plan.stages());
+        }
+        stages
+    }
+
+    /// Rebuilds the worker's chain when the rate-conversion plan changes. `continuous`
+    /// keeps the old chain's tail in the stream before the switch.
+    fn ensure_plan(
+        &mut self,
+        rate: u32,
+        bits: u32,
+        channels: u16,
+        continuous: bool,
+        tail: &mut Vec<i32>,
+    ) {
+        let target = self.target_for(rate, bits, channels);
+        let key = (rate, channels, target);
+        if self.plan_key == Some(key) {
+            return;
+        }
+        let plan = target.and_then(|target| {
+            let plan = self.resolver.plan(rate, target, channels, &self.config.src);
+            if plan.is_none() {
+                self.emit(PlayerEvent::Warning(format!(
+                    "no filter can convert {rate} Hz to {target} Hz; keeping the source rate"
+                )));
+            }
+            plan
+        });
+        if continuous {
+            self.worker.flush_tail(tail);
+        }
+        self.plan = plan;
+        self.plan_key = Some(key);
+        let stages = self.compose_stages();
+        self.worker.set_stages(stages);
+    }
+
+    /// Removes the rate-conversion plan from the worker, keeping only volume.
+    fn drop_plan(&mut self, continuous: bool, tail: &mut Vec<i32>) {
+        self.plan_key = None;
+        if self.plan.is_none() {
+            return;
+        }
+        if continuous {
+            self.worker.flush_tail(tail);
+        }
+        self.plan = None;
+        let stages = self.compose_stages();
+        self.worker.set_stages(stages);
+    }
+
+    /// A rate the device accepts for this source, explicitly chosen or learned from a
+    /// refusal. `None` keeps the bit-perfect path.
+    fn target_for(&mut self, rate: u32, bits: u32, channels: u16) -> Option<u32> {
+        if let Some(&target) = self.fallback.get(&(rate, channels)) {
+            return (target != rate).then_some(target);
+        }
+        let supported = self.supported_rates(bits, channels);
+        rate::choose_target(&self.config.src, rate, &supported).filter(|&target| target != rate)
+    }
+
+    /// Rates the device accepts with a container that holds `bits`, probed once while the
+    /// device is free and then cached per channel count. Empty when the probe fails.
+    fn supported_rates(&mut self, bits: u32, channels: u16) -> Vec<u32> {
+        self.probed_rates(bits, channels).unwrap_or_default()
+    }
+
+    /// Like [`supported_rates`](Self::supported_rates), but `None` when the device could not
+    /// be asked (an exclusive stream holds it), so "unknown" is not mistaken for "none".
+    fn probed_rates(&mut self, bits: u32, channels: u16) -> Option<Vec<u32>> {
+        let key = (self.config.device.0.clone(), channels);
+        let formats = match self.device_formats.get(&key) {
+            Some(formats) => formats.clone(),
+            None => {
+                let formats = self
+                    .backend
+                    .supported_formats(&self.config.device, channels)
+                    .ok()?;
+                self.device_formats.insert(key, formats.clone());
+                formats
+            }
+        };
+        let mut rates: Vec<u32> = formats
+            .iter()
+            .filter(|format| format.container.holds(bits))
+            .map(|format| format.rate)
+            .collect();
+        rates.sort_unstable();
+        rates.dedup();
+        Some(rates)
+    }
+
+    fn signal_path(&self, source: SourceFormat, spec: OutputSpec) -> SignalPath {
+        let mut stages = Vec::new();
+        if let Some(db) = self.volume_db {
+            stages.push(SignalStage {
+                name: "Volume".into(),
+                detail: format!("{db:+.1} dB"),
+            });
+        }
+        if spec.mode == OutputMode::Pcm
+            && let Some(plan) = &self.plan
+        {
+            stages.extend(plan.describe());
+        }
+        let bit_perfect = stages.is_empty()
+            && (spec.mode != OutputMode::Pcm
+                || (source.bits != DSD_SOURCE_BITS && spec.rate == source.rate));
+        SignalPath {
+            source,
+            output_rate: spec.rate,
+            output_bits: spec.bits,
+            output_channels: spec.channels,
+            mode: spec.mode,
+            stages,
+            bit_perfect,
         }
     }
 
@@ -879,6 +1066,8 @@ impl Engine {
             return;
         }
         self.config.device = device;
+        self.fallback.clear();
+        self.src_retry = None;
         if self.state == PlaybackState::Stopped {
             return;
         }
@@ -1011,7 +1200,9 @@ impl Engine {
         if requested == DsdMode::Pcm {
             return (DsdMode::Pcm, None);
         }
-        if !self.worker.pipeline_is_empty() {
+        // Only stages that apply to every track count here. A rate-conversion plan belongs to
+        // the PCM source it was built for and is dropped for DoP and native DSD.
+        if self.volume_db.is_some() {
             return (
                 DsdMode::Pcm,
                 Some("PCM DSP stages are active; DSD is converted to PCM".into()),
@@ -1094,10 +1285,38 @@ impl Engine {
                     let source = decoder.source_format();
                     let mut tail = Vec::new();
                     let spec = match decoder.format() {
-                        TrackFormat::Pcm(_) => self.worker.prepare(source, &mut tail),
+                        TrackFormat::Pcm(_) => {
+                            self.ensure_plan(
+                                source.rate,
+                                source.bits,
+                                source.channels,
+                                continuous,
+                                &mut tail,
+                            );
+                            let mut spec = self.worker.prepare(source, &mut tail);
+                            if !self.worker.pipeline_is_empty()
+                                && spec.bits > 16
+                                && self
+                                    .probed_rates(24, source.channels)
+                                    .is_some_and(|rates| !rates.contains(&spec.rate))
+                            {
+                                // A 16-bit-only device still plays the resampled signal. A
+                                // device that could not be asked keeps the 24-bit request.
+                                spec.bits = source.bits.max(16);
+                            }
+                            spec
+                        }
                         TrackFormat::Dsd(dsd) => {
                             let (mode, reason) = self.choose_dsd_mode(dsd);
                             self.emit(PlayerEvent::DsdMode { mode, reason });
+                            if mode == DsdMode::Pcm {
+                                let rate = self.config.dsd_pcm_rate.rate();
+                                self.ensure_plan(rate, 24, source.channels, continuous, &mut tail);
+                            } else {
+                                // DoP and native DSD never resample: drop the plan a previous
+                                // PCM track left, so the pipeline is empty as they require.
+                                self.drop_plan(continuous, &mut tail);
+                            }
                             self.worker.prepare_dsd(
                                 dsd,
                                 mode,
@@ -1112,12 +1331,14 @@ impl Engine {
                         // Unplayable tracks may have been skipped on the way here.
                         self.target = Some((index, Pos::frames(decoder.position(), source.rate)));
                     }
+                    let path = Arc::new(self.signal_path(source, spec));
                     self.feed.push_back(FeedItem::TrackStart {
                         index,
                         offset: decoder.position(),
                         source,
                         spec,
                         duration: decoder.total(),
+                        path,
                     });
                     self.decoding = Some(Decoding { index, decoder });
                     return;
@@ -1191,6 +1412,7 @@ impl Engine {
                     source,
                     spec,
                     duration,
+                    path,
                 } => {
                     let segment = Segment {
                         start: 0,
@@ -1198,6 +1420,7 @@ impl Engine {
                         offset: *offset,
                         source: *source,
                         duration: *duration,
+                        path: path.clone(),
                     };
                     let spec = *spec;
                     match &mut self.out {
@@ -1210,7 +1433,7 @@ impl Engine {
                         Some(_) => {}
                         None => {
                             let pos = Pos::frames(segment.offset, segment.source.rate);
-                            if !self.open_output(spec, segment.index, pos) {
+                            if !self.open_output(spec, segment.index, pos, segment.source) {
                                 return true;
                             }
                         }
@@ -1262,7 +1485,13 @@ impl Engine {
         progress
     }
 
-    fn open_output(&mut self, spec: OutputSpec, index: usize, pos: Pos) -> bool {
+    fn open_output(
+        &mut self,
+        spec: OutputSpec,
+        index: usize,
+        pos: Pos,
+        track_source: SourceFormat,
+    ) -> bool {
         let backend = self.backend.as_ref();
         let device = &self.config.device;
         let format = match spec.mode {
@@ -1282,12 +1511,68 @@ impl Engine {
                 self.restart(index, pos);
                 return false;
             }
+            Err(error)
+                if spec.mode == OutputMode::Pcm
+                    && self.config.src.auto_fallback
+                    && self.src_retry != Some(index)
+                    && matches!(&error, OutputError::UnsupportedFormat { .. }) =>
+            {
+                // The device refuses this rate even with DSP off: pick one it accepts,
+                // resample, and decode the track again from the same position. The signal
+                // path marks the result "not bit-perfect".
+                // DSD→PCM already converted to the configured PCM rate; fallback starts
+                // from that rate, not from the DSD bit rate.
+                let dsd_pcm = track_source.bits == DSD_SOURCE_BITS;
+                let pre_rate = if dsd_pcm {
+                    self.config.dsd_pcm_rate.rate()
+                } else {
+                    track_source.rate
+                };
+                let pre_bits = if dsd_pcm { 24 } else { track_source.bits };
+                let supported = match &error {
+                    OutputError::UnsupportedFormat { supported, .. } => supported.clone(),
+                    _ => Vec::new(),
+                };
+                let mut rates: Vec<u32> = supported.iter().map(|format| format.rate).collect();
+                rates.sort_unstable();
+                rates.dedup();
+                if rates.is_empty() {
+                    rates = self.supported_rates(pre_bits, track_source.channels);
+                }
+                if spec.rate != pre_rate && rates.contains(&pre_rate) {
+                    // An explicit target was refused but the source rate is fine: drop the
+                    // resampler and play the track as it is.
+                    self.fallback
+                        .insert((pre_rate, track_source.channels), pre_rate);
+                    self.src_retry = Some(index);
+                    self.emit(PlayerEvent::Warning(format!(
+                        "the device cannot play {} Hz; keeping the source rate {pre_rate} Hz",
+                        spec.rate
+                    )));
+                    self.restart(index, pos);
+                    return false;
+                }
+                if let Some(target) = rate::fallback_target(pre_rate, &rates) {
+                    self.fallback
+                        .insert((pre_rate, track_source.channels), target);
+                    self.src_retry = Some(index);
+                    self.emit(PlayerEvent::Warning(format!(
+                        "the device cannot play {pre_rate} Hz; resampling to {target} Hz \
+                         (not bit-perfect)"
+                    )));
+                    self.restart(index, pos);
+                    return false;
+                }
+                self.output_failed(error, index, pos);
+                return false;
+            }
             Err(error) => {
                 self.output_failed(error, index, pos);
                 return false;
             }
         };
         self.dsd_reprobe = None;
+        self.src_retry = None;
         let frames = (u128::from(spec.rate) * self.config.ring.as_millis() / 1000) as usize;
         let (producer, source) = sample_ring(frames.max(MIN_RING_FRAMES), spec.channels);
         source
@@ -1415,8 +1700,9 @@ impl Engine {
 
     fn report(&mut self) {
         if let Some(now) = self.now_playing() {
-            let segment = now.segment;
-            if self.reported_track != Some(segment.index) {
+            let segment = now.segment.clone();
+            let track_changed = self.reported_track != Some(segment.index);
+            if track_changed {
                 self.reported_track = Some(segment.index);
                 self.queue.set_current(Some(segment.index));
                 self.last_position = None;
@@ -1432,6 +1718,10 @@ impl Engine {
                         .duration
                         .map(|d| Pos::frames(d, segment.source.rate).duration()),
                 });
+            }
+            if track_changed || self.reported_path.as_deref() != Some(segment.path.as_ref()) {
+                self.reported_path = Some(segment.path.clone());
+                self.emit(PlayerEvent::SignalPath((*segment.path).clone()));
             }
             let due = self
                 .last_position
@@ -1484,7 +1774,7 @@ fn now_in(
     format: DeviceFormat,
 ) -> Option<Now> {
     let consumed = handle.frames_consumed().min(pushed);
-    let segment = *segments.iter().rev().find(|s| s.start <= consumed)?;
+    let segment = segments.iter().rev().find(|s| s.start <= consumed)?.clone();
     let played = consumed - segment.start;
     let played = Pos::frames(played, format.rate).frames_at(segment.source.rate);
     let mut frame = segment.offset + played;

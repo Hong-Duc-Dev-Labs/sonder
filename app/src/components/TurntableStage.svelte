@@ -12,7 +12,6 @@
 
   /** The new record has landed, plus a beat, before the arm drops. */
   const SETTLE_MS = RECORD_LAND_DELAY + RECORD_LAND_MS + 80;
-  const STROBE_DOTS = 60;
 
   let item = $derived(app.current);
   let trackKey = $derived(item ? `entry-${item.entryId}` : "none");
@@ -31,22 +30,12 @@
     return () => clearTimeout(timer);
   });
 
-  const dots = Array.from({ length: STROBE_DOTS }, (_, i) => {
-    const a = (i / STROBE_DOTS) * Math.PI * 2;
-    return { x: 50 + 48.6 * Math.cos(a), y: 50 + 48.6 * Math.sin(a) };
-  });
 </script>
 
 <div class="stage">
-  <!-- the platter: brushed metal with strobe dots on its rim, still -->
-  <div class="platter" aria-hidden="true">
-    <svg viewBox="0 0 100 100">
-      {#each dots as d, i (i)}
-        <circle cx={d.x} cy={d.y} r="0.42" />
-      {/each}
-    </svg>
-  </div>
-  <div class="record-slot">
+  <!-- the platter under the record: only its machined rim shows past the record's edge -->
+  <div class="platter" aria-hidden="true"></div>
+  <div class="record-slot" data-flight="stage" class:landing={app.flight?.target === "stage" && !app.flight.landed}>
     {#key trackKey}
       <div
         class="record"
@@ -57,7 +46,8 @@
       </div>
     {/key}
   </div>
-  <Tonearm parked={changing || !item} />
+  <!-- the arm waits on its rest while a record flies in, then drops into the groove -->
+  <Tonearm parked={changing || !item || app.flight?.target === "stage"} />
 </div>
 
 <style>
@@ -81,17 +71,18 @@
     top: 5.45%;
     width: 89.1%;
     border-radius: 50%;
+    /* rubber mat inside, a narrow machined aluminium rim lit from the upper left */
     background:
-      repeating-conic-gradient(rgb(255 255 255 / 0.025) 0 0.4deg, transparent 0.4deg 1.1deg),
-      radial-gradient(circle, #2f3137 0 70%, #24262b 100%);
+      radial-gradient(circle closest-side, #141416 0 95.6%, transparent 96%),
+      conic-gradient(from -24deg, #8d9096, #3a3c41 70deg, #23252a 150deg, #5d6066 215deg, #b9bcc1 290deg, #8d9096);
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.12),
+      inset 0 0 0 1px rgb(0 0 0 / 0.6),
       0 18px 40px rgb(0 0 0 / 0.55);
   }
-  .platter svg {
-    width: 100%;
-    height: 100%;
-    fill: rgb(255 255 255 / 0.18);
+  /* Hidden while the record flies in from the player. It shows at once when the flight lands
+     on it (the flying copy still covers it, then fades away on top). */
+  .record-slot.landing {
+    opacity: 0;
   }
   .record {
     position: absolute;

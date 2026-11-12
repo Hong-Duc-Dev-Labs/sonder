@@ -1,21 +1,31 @@
 <script lang="ts">
-  // A still vinyl record whose label is a cover: artist avatars and the record peeking out of an
-  // album's sleeve. Drawn with gradients only; it never spins.
+  // A vinyl record whose label is a cover, drawn with gradients only: artist avatars, the record
+  // peeking out of an album's sleeve, and the record flying between Now Playing and the player.
+  // With `spinning`, the label turns in step with the playing record.
   import { artUrl, type ArtSize } from "../lib/art";
+  import { attachSpin } from "../lib/spin.svelte";
 
-  let { art, size = 300, label = 0.42 }: { art: string | null | undefined; size?: ArtSize; label?: number } =
-    $props();
+  let {
+    art,
+    size = 300,
+    label = 0.42,
+    spinning = false,
+  }: { art: string | null | undefined; size?: ArtSize; label?: number; spinning?: boolean } = $props();
   let src = $derived(artUrl(art, size));
   let failed = $state(false);
+  let labelEl: HTMLImageElement | undefined = $state();
   $effect(() => {
     void src;
     failed = false;
+  });
+  $effect(() => {
+    if (spinning && labelEl) return attachSpin(labelEl);
   });
 </script>
 
 <span class="record" style:--label="{label * 100}%" aria-hidden="true">
   {#if src && !failed}
-    <img {src} alt="" draggable="false" loading="lazy" onerror={() => (failed = true)} />
+    <img bind:this={labelEl} {src} alt="" draggable="false" loading={spinning ? "eager" : "lazy"} onerror={() => (failed = true)} />
   {/if}
   <span class="hole"></span>
 </span>

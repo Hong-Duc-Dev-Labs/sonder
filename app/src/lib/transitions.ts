@@ -2,6 +2,7 @@
 // OS asks for reduced motion, and moves only transform and opacity.
 
 import { cubicIn, cubicOut } from "svelte/easing";
+import { viewTransitionActive } from "./app.svelte";
 import { reducedMotion } from "./motion";
 
 const MED = 280;
@@ -44,6 +45,20 @@ export function rise(_node: Element, { delay = 0 }: { delay?: number } = {}) {
     duration: MED,
     easing: cubicOut,
     css: (t: number, u: number) => `transform: translateY(${u * 8}px); opacity: ${t}`,
+  };
+}
+
+/**
+ * A view arriving: fades in while rising a few pixels. Only opacity and transform animate, on
+ * the content alone, so the glass chrome around it keeps running. Still while a View
+ * Transition is morphing a cover, which animates the page itself.
+ */
+export function pageIn(_node: Element) {
+  if (reducedMotion() || viewTransitionActive()) return { duration: 0 };
+  return {
+    duration: 260,
+    easing: cubicOut,
+    css: (t: number, u: number) => `opacity: ${t}; transform: translateY(${u * 10}px)`,
   };
 }
 

@@ -25,6 +25,42 @@ export type View =
 
 export type Notice = { id: number; level: NoticeLevel; message: string };
 
+/**
+ * The record flying between Now Playing's stage and the player pill when either view opens.
+ * `from` and `to` are in viewport pixels; `to` is where the target settles once its own
+ * entrance (the pill sliding up, the page fading in) has finished.
+ */
+export type DiscFlight = {
+  from: DOMRect;
+  to: DOMRect;
+  target: "pill" | "stage";
+  art: string | null;
+  /** How the record looks at each end: the square cover style flies as a rounded square. */
+  fromRound: boolean;
+  toRound: boolean;
+  /**
+   * Set when the flying record reaches its target: the target shows from then on, underneath
+   * it, and the flying copy fades away on top. Until then the target stays hidden.
+   */
+  landed?: boolean;
+};
+
+/** Where `el` will be once the transforms its ancestors are animating through have ended. */
+function settledRect(el: HTMLElement): DOMRect {
+  const r = el.getBoundingClientRect();
+  let dx = 0;
+  let dy = 0;
+  for (let a: HTMLElement | null = el.parentElement; a; a = a.parentElement) {
+    const t = getComputedStyle(a).transform;
+    if (t && t !== "none") {
+      const m = new DOMMatrix(t);
+      dx += m.m41;
+      dy += m.m42;
+    }
+  }
+  return new DOMRect(r.left - dx, r.top - dy, r.width, r.height);
+}
+
 export type ScanState = {
   phase: ScanPhase | "idle";
   done: number;
@@ -33,22 +69,35 @@ export type ScanState = {
   failures: string[];
 };
 
+/** Set while a View Transition animates the page, so the content's own entrance stays still. */
+let viewTransitionRunning = false;
+export function viewTransitionActive(): boolean {
+  return viewTransitionRunning;
+}
+
 /**
- * Applies a view change inside a View Transition where the webview has them (the album cover
- * morphs into the album page), or directly where it does not.
+ * Applies a view change. Only a change that morphs a shared cover (an album card into its
+ * page, or back) runs inside a View Transition: it snapshots the whole window, freezing the
+ * spinning disc and the live glass for its duration. Every other change swaps the view
+ * directly and the content animates in by itself, so the sidebar and player stay live.
  */
-function transition(change: () => void) {
-  const start = (document as Document & { startViewTransition?: (cb: () => Promise<void>) => unknown })
-    .startViewTransition;
-  if (!start || reducedMotion()) {
+function transition(change: () => void, morph: boolean) {
+  const start = (document as Document & {
+    startViewTransition?: (cb: () => Promise<void>) => { finished: Promise<void> };
+  }).startViewTransition;
+  if (!morph || !start || reducedMotion()) {
     change();
     tick().then(focusHeading);
     return;
   }
-  start.call(document, async () => {
+  viewTransitionRunning = true;
+  const running = start.call(document, async () => {
     change();
     await tick();
     focusHeading();
+  });
+  running.finished.finally(() => {
+    viewTransitionRunning = false;
   });
 }
 
@@ -77,6 +126,8 @@ class AppState {
   player = $state<PlayerSnapshot>(emptySnapshot);
   queue = $state<QueueItem[]>([]);
   queueOpen = $state(false);
+  /** Now Playing shows the lyrics column in place of the title and badges. */
+  lyricsOpen = $state(false);
   settings = $state<Settings>({ albumSort: "artist" });
   scan = $state<ScanState>({ phase: "idle", done: 0, total: 0, last: null, failures: [] });
   notices = $state<Notice[]>([]);
@@ -96,6 +147,39 @@ class AppState {
 
   /** The album whose cover morphs between its card and its page (the one last opened). */
   morphAlbumId = $state<number | null>(null);
+
+  /** The record in flight between Now Playing and the player pill, if any. */
+  flight = $state<DiscFlight | null>(null);
+
+  /**
+   * Before a view change that opens or leaves Now Playing: where the record is now. Returns
+   * nothing when there is no record to fly (nothing playing) or motion is reduced.
+   */
+  private flightStart(next: View) {
+    if (reducedMotion() || !this.current) return null;
+    const leaving = this.view.kind === "now" && next.kind !== "now";
+    const entering = this.view.kind !== "now" && next.kind === "now";
+    if (!leaving && !entering) return null;
+    const el = document.querySelector<HTMLElement>(leaving ? '[data-flight="stage"]' : '[data-flight="pill"]');
+    if (!el) return null;
+    const square = (this.settings.coverStyle ?? "vinyl") === "square";
+    return {
+      from: el.getBoundingClientRect(),
+      target: leaving ? ("pill" as const) : ("stage" as const),
+      fromRound: leaving ? !square : true,
+      toRound: leaving ? true : !square,
+    };
+  }
+
+  /** After the change: finds where the record lands and launches the flight. */
+  private flightLaunch(start: ReturnType<AppState["flightStart"]>) {
+    if (!start) return;
+    tick().then(() => {
+      const el = document.querySelector<HTMLElement>(`[data-flight="${start.target}"]`);
+      if (!el) return;
+      this.flight = { ...start, to: settledRect(el), art: this.current?.art ?? null };
+    });
+  }
 
   /** Which way the last track change went through the queue: 1 forward, -1 back. */
   trackDirection = $state<1 | -1>(1);
@@ -120,20 +204,28 @@ class AppState {
 
   go(view: View) {
     if (JSON.stringify(view) === JSON.stringify(this.view)) return;
+    // The card the user clicked set morphAlbumId; its cover morphs into the album page.
+    const morph = view.kind === "album" && view.id === this.morphAlbumId;
+    const flight = this.flightStart(view);
     transition(() => {
       this.history.push(this.view);
       if (this.history.length > 50) this.history.shift();
       this.view = view;
-    });
+    }, morph);
+    this.flightLaunch(flight);
   }
 
   back() {
     const prev = this.history.at(-1);
     if (!prev) return;
+    // Leaving the album page the cover morphed into: it morphs back into its card.
+    const morph = this.view.kind === "album" && this.view.id === this.morphAlbumId;
+    const flight = this.flightStart(prev);
     transition(() => {
       this.history.pop();
       this.view = prev;
-    });
+    }, morph);
+    this.flightLaunch(flight);
   }
 
   notify(level: NoticeLevel, message: string) {

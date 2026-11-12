@@ -66,6 +66,8 @@
   /* room left under scrolling content so its end clears the floating player */
   --dock-reserve: 112px;
   --gutter: 12px;
+  /* horizontal page margin, added to whatever the sidebar covers */
+  --page-x: 40px;
 
   /* Motion: one place to tune how the whole app moves. */
   --dur-fast: 160ms;
@@ -374,7 +376,7 @@ h3 {
 
 .page {
   height: 100%;
-  padding: 28px 40px var(--dock-reserve);
+  padding: 28px var(--page-x) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
 }
 
 .page-head {
@@ -452,6 +454,19 @@ h3 {
 }
 ::view-transition-new(content) {
   animation: vt-in var(--dur-med) var(--ease-out) 40ms both;
+}
+/* The glass chrome stays put during a morph: shown as it is, above the content. */
+::view-transition-old(sidebar),
+::view-transition-old(player) {
+  display: none;
+}
+::view-transition-new(sidebar),
+::view-transition-new(player) {
+  animation: none;
+}
+::view-transition-group(sidebar),
+::view-transition-group(player) {
+  animation: none;
 }
 ::view-transition-group(*) {
   animation-duration: var(--dur-med);

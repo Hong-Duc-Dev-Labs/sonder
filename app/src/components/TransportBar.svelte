@@ -107,7 +107,7 @@
               stroke-dashoffset={RING_C}
             />
           </svg>
-          <span class="disc-inner"><MiniDisc art={item.art} paused={snap.state === "paused"} /></span>
+          <span class="disc-inner" data-flight="pill" class:landing={app.flight?.target === "pill" && !app.flight.landed}><MiniDisc art={item.art} paused={snap.state === "paused"} /></span>
         </button>
         <div class="text">
           <span class="t" title={item.title}>{item.title}</span>
@@ -196,6 +196,8 @@
 
 <style>
   .dock {
+    /* its own layer during a cover morph: above the moving page, not cross-faded */
+    view-transition-name: player;
     position: absolute;
     left: calc(var(--sidebar) + var(--gutter) * 2);
     right: var(--gutter);
@@ -239,6 +241,10 @@
     display: grid;
     place-items: center;
     border-radius: 50%;
+  }
+  /* Hidden while the record flies in from Now Playing; shown at once when it lands. */
+  .disc-inner.landing {
+    opacity: 0;
   }
   .ring {
     position: absolute;

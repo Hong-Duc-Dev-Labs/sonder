@@ -23,8 +23,9 @@
   let generation = 0;
   const loading = new Set<number>();
 
-  const PADDING = 40;
-  let inner = $derived(Math.max(0, width - 2 * PADDING));
+  // The spacer is measured inside the viewport's padding, so this is the cards' row width
+  // whatever the page margins are (they include the sidebar's inset).
+  let inner = $derived(Math.max(0, width));
   let columns = $derived(Math.max(1, Math.floor((inner + GAP) / (MIN_CARD + GAP))));
   let cardWidth = $derived(inner > 0 ? (inner - GAP * (columns - 1)) / columns : MIN_CARD);
   let rowHeight = $derived(cardWidth + TEXT_HEIGHT + GAP);
@@ -72,7 +73,6 @@
 <div
   class="viewport scroll"
   bind:this={viewport}
-  bind:clientWidth={width}
   bind:clientHeight={height}
   onscroll={() => (scrollTop = viewport.scrollTop)}
 >
@@ -83,7 +83,7 @@
       <button class="btn primary" onclick={() => app.go({ kind: "settings" })}>Open Settings</button>
     </div>
   {:else}
-    <div class="spacer" style:height="{rows * rowHeight}px">
+    <div class="spacer" bind:clientWidth={width} style:height="{rows * rowHeight}px">
       {#each visible as i (i)}
         {@const album = albums[i]}
         <div
@@ -110,7 +110,7 @@
 <style>
   .viewport {
     height: 100%;
-    padding: 4px 40px var(--dock-reserve);
+    padding: 4px var(--page-x) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
     contain: strict;
   }
   .spacer {

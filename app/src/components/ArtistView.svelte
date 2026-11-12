@@ -94,19 +94,22 @@
     height: 100%;
   }
   .missing {
-    padding: 96px 40px;
+    padding: 96px var(--page-x) 96px calc(var(--inset-left, 0px) + var(--page-x));
   }
   .hero {
     position: relative;
     min-height: clamp(300px, 42vh, 420px);
     display: flex;
     align-items: flex-end;
-    padding: 84px 40px 32px;
+    padding: 84px var(--page-x) 32px calc(var(--inset-left, 0px) + var(--page-x));
     overflow: hidden;
   }
   .backdrop {
     position: absolute;
     inset: 0;
+    /* Fades out, frost and all, so the hero melts into the lit canvas below with no edge. */
+    -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
   }
   .hero-inner {
     position: relative;
@@ -140,7 +143,7 @@
     margin-top: 12px;
   }
   .body {
-    padding: 8px 40px var(--dock-reserve);
+    padding: 8px var(--page-x) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
   }
   h2 {
     margin: 22px 0 18px;

@@ -1,7 +1,8 @@
 <script lang="ts">
   // A band at the bottom of a hero image that melts it into the canvas: three blurred layers of
-  // whatever is behind, each stronger and starting lower, then a fade to black. There is no
-  // edge where the picture stops. With glass off it is a plain gradient.
+  // whatever is behind, each stronger and starting lower, under a soft darkening. There is no
+  // edge where the picture stops. With glass off it is a plain gradient. Pair it with a mask
+  // on its container when the content below is not black.
   let { height = "45%" }: { height?: string } = $props();
 </script>
 
@@ -42,13 +43,9 @@
   .scrim {
     position: absolute;
     inset: 0;
-    background: linear-gradient(
-      to bottom,
-      transparent 0%,
-      rgb(0 0 0 / 0.35) 45%,
-      rgb(0 0 0 / 0.8) 80%,
-      var(--canvas) 100%
-    );
+    /* Darkens for legible text but never to solid black: what lies below is the cover-lit
+       canvas, and an opaque end would draw a line where the two meet. */
+    background: linear-gradient(to bottom, transparent 0%, rgb(0 0 0 / 0.3) 50%, rgb(0 0 0 / 0.45) 100%);
   }
   :global([data-glass="off"]) .band,
   :global([data-glass="reduced"]) .b1 {

@@ -5,10 +5,11 @@
   import { app, type View } from "./lib/app.svelte";
   import { commands } from "./lib/bindings";
   import { reducedMotion } from "./lib/motion";
-  import { fadeQuick, rise } from "./lib/transitions";
+  import { fadeQuick, pageIn, rise } from "./lib/transitions";
   import AlbumsView from "./components/AlbumsView.svelte";
   import AlbumView from "./components/AlbumView.svelte";
   import AmbientBackdrop from "./components/AmbientBackdrop.svelte";
+  import DiscFlight from "./components/DiscFlight.svelte";
   import ArtistsView from "./components/ArtistsView.svelte";
   import ArtistView from "./components/ArtistView.svelte";
   import Icon, { type IconName } from "./components/Icon.svelte";
@@ -99,21 +100,27 @@
     {/if}
     <div class="content">
       {#if ready}
-        {#if app.view.kind === "albums"}
-          <AlbumsView />
-        {:else if app.view.kind === "album"}
-          <AlbumView id={app.view.id} />
-        {:else if app.view.kind === "artists"}
-          <ArtistsView />
-        {:else if app.view.kind === "artist"}
-          <ArtistView id={app.view.id} />
-        {:else if app.view.kind === "search"}
-          <SearchView />
-        {:else if app.view.kind === "now"}
-          <NowPlayingView />
-        {:else if app.view.kind === "settings"}
-          <SettingsView />
-        {/if}
+        <!-- Each view fades in on its own; the old one leaves at once, so nothing outside the
+             content (sidebar, player) is touched by a view change. -->
+        {#key app.view}
+          <div class="view" in:pageIn>
+            {#if app.view.kind === "albums"}
+              <AlbumsView />
+            {:else if app.view.kind === "album"}
+              <AlbumView id={app.view.id} />
+            {:else if app.view.kind === "artists"}
+              <ArtistsView />
+            {:else if app.view.kind === "artist"}
+              <ArtistView id={app.view.id} />
+            {:else if app.view.kind === "search"}
+              <SearchView />
+            {:else if app.view.kind === "now"}
+              <NowPlayingView />
+            {:else if app.view.kind === "settings"}
+              <SettingsView />
+            {/if}
+          </div>
+        {/key}
       {/if}
     </div>
   </main>
@@ -167,6 +174,12 @@
 
   <TransportBar hidden={onNow} />
 
+  {#if app.flight}
+    {#key app.flight}
+      <DiscFlight flight={app.flight} />
+    {/key}
+  {/if}
+
   <!-- Errors are announced assertively, everything else politely. Hovering or focusing a
        notice holds them all on screen. -->
   <div
@@ -205,22 +218,29 @@
     height: 100%;
     overflow: hidden;
     transition: --wash 900ms var(--ease-standard);
+    /* What the floating sidebar covers. Declared here (not on :root) so the narrow-window
+       rail below, which changes --sidebar on this element, changes it too. */
+    --inset-left: calc(var(--sidebar) + var(--gutter) * 2);
   }
 
+  /* Content spans the whole window and scrolls under the glass sidebar; each page keeps its
+     own text clear of it with --inset-left, while backdrops run to the window's edge. */
   main {
     position: absolute;
     inset: 0;
     z-index: 1;
-    padding-left: calc(var(--sidebar) + var(--gutter) * 2);
   }
   .content {
     view-transition-name: content;
     height: 100%;
   }
+  .view {
+    height: 100%;
+  }
   .back {
     position: absolute;
     top: 20px;
-    left: calc(var(--sidebar) + var(--gutter) * 2 + 20px);
+    left: calc(var(--inset-left) + 20px);
     z-index: 5;
     width: 44px;
     height: 44px;
@@ -235,6 +255,8 @@
   }
 
   .sidebar {
+    /* its own layer during a cover morph: above the moving page, not cross-faded */
+    view-transition-name: sidebar;
     position: absolute;
     z-index: 10;
     top: var(--gutter);

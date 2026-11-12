@@ -219,6 +219,14 @@ fn handle(app: &AppHandle, event: &PlayerEvent) -> bool {
                 }
             });
         }
+        PlayerEvent::DsdMode {
+            mode,
+            reason: Some(reason),
+        } => notice(
+            app,
+            NoticeLevel::Warning,
+            format!("DSD: {mode:?} ({reason})"),
+        ),
         _ => {}
     }
     urgent

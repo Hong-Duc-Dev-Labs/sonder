@@ -299,6 +299,12 @@ fn play(
                 let _ = std::io::stderr().flush();
             }
             PlayerEvent::Underruns(total) => underruns = total,
+            PlayerEvent::DsdMode { mode, reason } => {
+                eprintln!(
+                    "\nDSD: {mode:?}{}",
+                    reason.map(|r| format!(" ({r})")).unwrap_or_default()
+                );
+            }
             PlayerEvent::TrackFailed { path, error, .. } => {
                 failures += 1;
                 eprintln!("\nSkipped {}: {error}", path.display());

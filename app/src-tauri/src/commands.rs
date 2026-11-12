@@ -5,6 +5,7 @@
 //! (UI) thread: library queries, device probing and dialogs must not freeze the window.
 
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use sonder_output::DeviceId;
@@ -13,8 +14,8 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
 
 use crate::dto::{
-    Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, Device, PlayerSnapshot,
-    QueueItem, RootFolder, SortOrder, TrackItem,
+    Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, Device, Lyrics,
+    PlayerSnapshot, QueueItem, RootFolder, SortOrder, TrackItem,
 };
 use crate::events::{LibraryChangedEvent, QueueChangedEvent};
 use crate::settings::Settings;
@@ -463,4 +464,47 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> App
     }
     apply_volume(&state, saved.volume_db);
     Ok(saved)
+}
+
+// ----- lyrics -----
+
+/// Lyrics for a library track: its own (tags, then a `.lrc` beside it), else online when the
+/// setting allows, through the on-disk cache. `None` when there are none anywhere.
+#[tauri::command]
+#[specta::specta]
+pub async fn lyrics_get(state: State<'_, AppState>, track_id: i64) -> AppResult<Option<Lyrics>> {
+    static ONLINE: LazyLock<sonder_lyrics::Online> =
+        LazyLock::new(|| sonder_lyrics::Online::new(concat!("Sonder/", env!("CARGO_PKG_VERSION"))));
+
+    let Some(track) = lock(&state.library).track(track_id)? else {
+        return Ok(None);
+    };
+    let online = lock(&state.settings).lyrics_online;
+    let cache = sonder_lyrics::Cache::new(state.paths.lyrics.clone());
+    let found = tauri::async_runtime::spawn_blocking(move || {
+        let embedded = sonder_library::read_file(&track.path)
+            .ok()
+            .and_then(|m| m.tags.lyrics);
+        let local = sonder_lyrics::local(&track.path, embedded.as_deref());
+        let query = sonder_lyrics::Query {
+            title: track.title,
+            artist: track.artist.or(track.album_artist),
+            album: Some(track.album).filter(|a| !a.is_empty()),
+            duration_ms: track.audio.duration_ms,
+        };
+        sonder_lyrics::choose(local, || {
+            // A cached answer is used even with lookups off: it sends nothing.
+            if let Some(cached) = cache.get(&query) {
+                return cached;
+            }
+            if !online {
+                return None;
+            }
+            let found = ONLINE.find(&query);
+            cache.put(&query, found.as_ref());
+            found
+        })
+    })
+    .await?;
+    Ok(found.map(Into::into))
 }

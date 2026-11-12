@@ -51,6 +51,11 @@ export const commands = {
 	settingsGet: () => __TAURI_INVOKE<Settings>("settings_get"),
 	/**  Saves `settings` and applies the device and volume in them. */
 	settingsSet: (settings: Settings) => __TAURI_INVOKE<Settings>("settings_set", { settings }),
+	/**
+	 *  Lyrics for a library track: its own (tags, then a `.lrc` beside it), else online when the
+	 *  setting allows, through the on-disk cache. `None` when there are none anywhere.
+	 */
+	lyricsGet: (trackId: number) => __TAURI_INVOKE<Lyrics | null>("lyrics_get", { trackId }),
 };
 
 /** Events */
@@ -143,6 +148,21 @@ export type GlassQuality = "full" |
 /**  The index changed (scan, watcher, root removed): reload what is on screen. */
 export type LibraryChangedEvent = null;
 
+export type Lyrics = {
+	/**  "Embedded", "LRC file" or the online service's name. */
+	source: string,
+	synced: boolean,
+	/**  The track has no vocals; `lines` is empty. */
+	instrumental: boolean,
+	lines: LyricsLine[],
+};
+
+/**  One line of lyrics; `start_ms` is 0 on every line of unsynced lyrics. */
+export type LyricsLine = {
+	startMs: number,
+	text: string,
+};
+
 /**  Something the user should see once (a skipped track, a lost device). */
 export type NoticeEvent = {
 	level: NoticeLevel,
@@ -231,6 +251,11 @@ export type Settings = {
 	coverStyle?: CoverStyle,
 	/**  How much frosted glass the UI draws. */
 	glass?: GlassQuality,
+	/**
+	 *  Look up lyrics online (title, artist, album and length are sent) when a track has
+	 *  none of its own.
+	 */
+	lyricsOnline?: boolean,
 };
 
 export type SortOrder = "artist" | "title" | "added" | "year";

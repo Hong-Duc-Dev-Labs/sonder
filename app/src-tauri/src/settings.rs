@@ -11,7 +11,7 @@ use specta::Type;
 
 use crate::dto::{CoverStyle, GlassQuality, SortOrder};
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     /// Backend id of the output device; `None` uses the system default device.
@@ -23,6 +23,22 @@ pub struct Settings {
     pub cover_style: CoverStyle,
     /// How much frosted glass the UI draws.
     pub glass: GlassQuality,
+    /// Look up lyrics online (title, artist, album and length are sent) when a track has
+    /// none of its own.
+    pub lyrics_online: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            output_device: None,
+            volume_db: None,
+            album_sort: SortOrder::default(),
+            cover_style: CoverStyle::default(),
+            glass: GlassQuality::default(),
+            lyrics_online: true,
+        }
+    }
 }
 
 impl Settings {
@@ -100,6 +116,7 @@ mod tests {
             album_sort: SortOrder::Added,
             cover_style: CoverStyle::Square,
             glass: GlassQuality::Off,
+            lyrics_online: false,
         };
         store.save(&settings).unwrap();
         assert_eq!(store.load(), settings);

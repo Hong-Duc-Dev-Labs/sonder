@@ -342,3 +342,40 @@ pub struct PlayerSnapshot {
     /// Software volume in dB; `None` is bit-perfect output.
     pub volume_db: Option<f64>,
 }
+
+/// One line of lyrics; `start_ms` is 0 on every line of unsynced lyrics.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LyricsLine {
+    pub start_ms: u32,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Lyrics {
+    /// "Embedded", "LRC file" or the online service's name.
+    pub source: String,
+    pub synced: bool,
+    /// The track has no vocals; `lines` is empty.
+    pub instrumental: bool,
+    pub lines: Vec<LyricsLine>,
+}
+
+impl From<sonder_lyrics::Lyrics> for Lyrics {
+    fn from(l: sonder_lyrics::Lyrics) -> Self {
+        Lyrics {
+            source: l.source,
+            synced: l.synced,
+            instrumental: l.instrumental,
+            lines: l
+                .lines
+                .into_iter()
+                .map(|x| LyricsLine {
+                    start_ms: x.start_ms,
+                    text: x.text,
+                })
+                .collect(),
+        }
+    }
+}

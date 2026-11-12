@@ -20,6 +20,8 @@ pub struct AppPaths {
     pub db: PathBuf,
     pub art: PathBuf,
     pub settings: PathBuf,
+    /// Cached online lyrics lookups.
+    pub lyrics: PathBuf,
 }
 
 impl AppPaths {
@@ -30,6 +32,7 @@ impl AppPaths {
             db: dirs.data_dir().join("library.db"),
             art: dirs.data_dir().join("art"),
             settings: dirs.config_dir().join("settings.toml"),
+            lyrics: dirs.data_dir().join("lyrics"),
         })
     }
 }

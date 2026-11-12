@@ -59,6 +59,7 @@ fn bindings() -> Builder<tauri::Wry> {
             commands::device_select,
             commands::settings_get,
             commands::settings_set,
+            commands::lyrics_get,
         ])
         .events(collect_events![
             events::PlayerStateEvent,

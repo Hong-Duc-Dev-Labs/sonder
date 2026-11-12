@@ -46,10 +46,21 @@ pub enum Command {
     Seek(Duration),
     Next,
     Previous,
+    /// Starts playing the queue entry at this index from its beginning, in any state.
+    PlayIndex(usize),
     Enqueue(Vec<PathBuf>),
+    /// Inserts entries before this queue index (clamped to the end). Inserting right after
+    /// the playing entry makes them play next, gaplessly where the formats allow.
+    Insert(usize, Vec<PathBuf>),
+    /// Removes the queue entry at this index. Removing the playing entry moves on to the one
+    /// after it.
+    Remove(usize),
     Clear,
     /// Software volume in dB; `None` removes the stage and restores bit-perfect output.
     SetVolume(Option<f64>),
+    /// Plays on another device from now on. Playback continues on it from the current
+    /// position; a stopped player just opens it on the next play.
+    SetDevice(DeviceId),
     Shutdown,
 }
 
@@ -178,8 +189,24 @@ impl Player {
         self.send(Command::Previous);
     }
 
+    pub fn play_index(&self, index: usize) {
+        self.send(Command::PlayIndex(index));
+    }
+
+    pub fn set_device(&self, device: DeviceId) {
+        self.send(Command::SetDevice(device));
+    }
+
     pub fn enqueue(&self, paths: Vec<PathBuf>) {
         self.send(Command::Enqueue(paths));
+    }
+
+    pub fn insert(&self, index: usize, paths: Vec<PathBuf>) {
+        self.send(Command::Insert(index, paths));
+    }
+
+    pub fn remove(&self, index: usize) {
+        self.send(Command::Remove(index));
     }
 
     pub fn clear(&self) {
@@ -445,7 +472,15 @@ impl Engine {
                     }
                 }
             }
+            Command::PlayIndex(index) => {
+                if index < self.queue.len() {
+                    self.jump(index, Pos::ZERO);
+                    self.play();
+                }
+            }
             Command::Enqueue(paths) => self.enqueue(paths),
+            Command::Insert(index, paths) => self.insert(index, paths),
+            Command::Remove(index) => self.remove(index),
             Command::Clear => {
                 self.stop();
                 self.queue.clear();
@@ -453,6 +488,7 @@ impl Engine {
                 self.after_end = None;
             }
             Command::SetVolume(db) => self.set_volume(db),
+            Command::SetDevice(device) => self.set_device(device),
             Command::Shutdown => return false,
         }
         true
@@ -537,14 +573,175 @@ impl Engine {
 
     fn enqueue(&mut self, paths: Vec<PathBuf>) {
         self.queue.extend(paths);
-        // Appending while the end of the queue is already decoded: continue decoding into the
-        // same stream if it has not been told to drain yet.
-        if let Some(next) = self.end_index.take() {
+        self.continue_after_end();
+    }
+
+    /// When the end of the queue was already decoded and entries now follow it, continues
+    /// decoding into the same stream (gapless) if it has not been told to drain yet.
+    fn continue_after_end(&mut self) {
+        if let Some(next) = self.end_index.filter(|&i| i < self.queue.len()) {
+            self.end_index = None;
             if matches!(self.feed.back(), Some(FeedItem::End)) {
                 self.feed.pop_back();
             }
             self.ending = false;
             self.open_track(next, Pos::ZERO, true);
+        }
+    }
+
+    fn insert(&mut self, index: usize, paths: Vec<PathBuf>) {
+        let n = paths.len();
+        if n == 0 {
+            return;
+        }
+        let index = index.min(self.queue.len());
+        let at = self.current_pos();
+        let reach = self.pipeline_reach();
+        self.queue.insert(index, paths);
+        // `end_index` and `after_end` name the slot after the old end: entries inserted
+        // exactly there are the ones that come next, so they do not move.
+        self.remap(
+            |i| Some(if i >= index { i + n } else { i }),
+            |i| if i > index { i + n } else { i },
+        );
+        if let Some((cur, pos)) = at
+            && self.state != PlaybackState::Stopped
+            && self.hold.is_none()
+            && index > cur
+            && reach.is_some_and(|r| index <= r)
+        {
+            // Audio after the playing entry is already decoded from the old order.
+            self.restart(cur, pos);
+        } else {
+            self.continue_after_end();
+        }
+        self.report_current();
+    }
+
+    /// Re-announces the current entry after the queue changed under it: its index may have
+    /// moved, and while paused no position report would follow on its own.
+    fn report_current(&self) {
+        if self.queue.current().is_none() {
+            return;
+        }
+        if let Some((index, pos)) = self.current_pos() {
+            self.emit(PlayerEvent::Position {
+                index,
+                elapsed: pos.duration(),
+            });
+        }
+    }
+
+    fn remove(&mut self, index: usize) {
+        if index >= self.queue.len() {
+            return;
+        }
+        let at = self.current_pos();
+        let reach = self.pipeline_reach();
+        self.queue.remove(index);
+        self.remap(
+            |i| match i.cmp(&index) {
+                std::cmp::Ordering::Less => Some(i),
+                std::cmp::Ordering::Equal => None,
+                std::cmp::Ordering::Greater => Some(i - 1),
+            },
+            |i| if i > index { i - 1 } else { i },
+        );
+        let Some((cur, pos)) = at else {
+            return;
+        };
+        if cur == index {
+            // The entry the player is on is gone: carry on with the one that took its place.
+            if index >= self.queue.len() {
+                if self.state == PlaybackState::Stopped {
+                    self.queue.set_current(None);
+                } else {
+                    self.close_output();
+                    self.reset_decoding();
+                    self.hold = None;
+                    self.finish_queue();
+                }
+            } else if self.state == PlaybackState::Stopped {
+                self.queue.set_current(Some(index));
+                self.stopped_at = Pos::ZERO;
+            } else if let Some(hold) = &mut self.hold {
+                hold.index = index;
+                hold.pos = Pos::ZERO;
+            } else {
+                self.restart(index, Pos::ZERO);
+            }
+        } else if self.state != PlaybackState::Stopped
+            && self.hold.is_none()
+            && index > cur
+            && reach.is_some_and(|r| index <= r)
+        {
+            // The removed entry is already decoded ahead: rebuild from where we are.
+            self.restart(cur, pos);
+        }
+        self.report_current();
+    }
+
+    /// The highest queue index whose audio is decoding, waiting in the feed, or in the ring.
+    fn pipeline_reach(&self) -> Option<usize> {
+        let feed = self.feed.iter().filter_map(|item| match item {
+            FeedItem::TrackStart { index, .. } => Some(*index),
+            _ => None,
+        });
+        let segments = self
+            .out
+            .iter()
+            .flat_map(|o| o.segments.iter().map(|s| s.index));
+        self.decoding
+            .as_ref()
+            .map(|d| d.index)
+            .into_iter()
+            .chain(feed)
+            .chain(segments)
+            .max()
+    }
+
+    /// Rewrites every stored queue index after an insert or a removal. `map` gives an entry's
+    /// new index, `None` when it was removed; audio of a removed entry that is decoded ahead
+    /// or queued in the ring loses its bookkeeping (the caller restarts in that case), and a
+    /// hold or restart target on it is left for the caller to move. `slot` remaps the indices
+    /// that name a position after the last entry (`end_index`, `after_end`).
+    fn remap(&mut self, map: impl Fn(usize) -> Option<usize>, slot: impl Fn(usize) -> usize) {
+        let current = self.queue.current().and_then(&map);
+        self.queue.set_current(current);
+        self.reported_track = self.reported_track.and_then(&map);
+        if let Some(hold) = &mut self.hold
+            && let Some(i) = map(hold.index)
+        {
+            hold.index = i;
+        }
+        if let Some((index, _)) = &mut self.target
+            && let Some(i) = map(*index)
+        {
+            *index = i;
+        }
+        self.end_index = self.end_index.map(&slot);
+        self.after_end = self.after_end.map(&slot);
+        if let Some(decoding) = &mut self.decoding {
+            match map(decoding.index) {
+                Some(i) => decoding.index = i,
+                None => self.decoding = None,
+            }
+        }
+        for item in &mut self.feed {
+            if let FeedItem::TrackStart { index, .. } = item
+                && let Some(i) = map(*index)
+            {
+                *index = i;
+            }
+        }
+        if let Some(out) = &mut self.out {
+            out.segments.retain_mut(|s| match map(s.index) {
+                Some(i) => {
+                    s.index = i;
+                    true
+                }
+                None => false,
+            });
         }
     }
 
@@ -564,19 +761,54 @@ impl Engine {
         }
     }
 
+    fn set_device(&mut self, device: DeviceId) {
+        if device == self.config.device {
+            return;
+        }
+        self.config.device = device;
+        if self.state == PlaybackState::Stopped {
+            return;
+        }
+        // Release the old device before the new one opens, and read the position only after
+        // its render thread has exited so no frame is lost or played twice.
+        let at = match self.out.take() {
+            Some(out) => {
+                let Output {
+                    stream,
+                    handle,
+                    pushed,
+                    segments,
+                    format,
+                    ..
+                } = out;
+                let _ = stream.stop();
+                self.underruns_base += handle.underruns();
+                now_in(&handle, pushed, &segments, format)
+                    .map(|now| {
+                        (
+                            now.segment.index,
+                            Pos::frames(now.frame, now.segment.source.rate),
+                        )
+                    })
+                    .or_else(|| self.current_pos())
+            }
+            None => self.current_pos(),
+        };
+        self.reset_decoding();
+        // A hold (device lost or busy) keeps its position and retries on the new device the
+        // usual way.
+        if self.hold.is_none()
+            && let Some((index, pos)) = at
+        {
+            self.restart(index, pos);
+        }
+    }
+
     // ----- position bookkeeping -----
 
     fn now_playing(&self) -> Option<Now> {
         let out = self.out.as_ref()?;
-        let consumed = out.handle.frames_consumed().min(out.pushed);
-        let segment = *out.segments.iter().rev().find(|s| s.start <= consumed)?;
-        let played = consumed - segment.start;
-        let played = Pos::frames(played, out.format.rate).frames_at(segment.source.rate);
-        let mut frame = segment.offset + played;
-        if let Some(total) = segment.duration {
-            frame = frame.min(total);
-        }
-        Some(Now { segment, frame })
+        now_in(&out.handle, out.pushed, &out.segments, out.format)
     }
 
     fn current_pos(&self) -> Option<(usize, Pos)> {
@@ -1021,6 +1253,24 @@ impl Engine {
             self.restart(hold.index, hold.pos);
         }
     }
+}
+
+/// What a stream with these counters is playing.
+fn now_in(
+    handle: &StreamHandle,
+    pushed: u64,
+    segments: &[Segment],
+    format: DeviceFormat,
+) -> Option<Now> {
+    let consumed = handle.frames_consumed().min(pushed);
+    let segment = *segments.iter().rev().find(|s| s.start <= consumed)?;
+    let played = consumed - segment.start;
+    let played = Pos::frames(played, format.rate).frames_at(segment.source.rate);
+    let mut frame = segment.offset + played;
+    if let Some(total) = segment.duration {
+        frame = frame.min(total);
+    }
+    Some(Now { segment, frame })
 }
 
 /// Whether an open stream in `current` can carry `spec` unchanged (same rate and channels, and

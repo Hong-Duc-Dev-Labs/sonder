@@ -38,6 +38,18 @@ impl Queue {
         self.items.extend(paths);
     }
 
+    /// Removes the entry at `index`. The current index is left for the caller to remap.
+    pub fn remove(&mut self, index: usize) -> Option<PathBuf> {
+        (index < self.items.len()).then(|| self.items.remove(index))
+    }
+
+    /// Inserts `paths` before `index` (clamped to the end). The current index is left for the
+    /// caller to remap.
+    pub fn insert(&mut self, index: usize, paths: impl IntoIterator<Item = PathBuf>) {
+        let at = index.min(self.items.len());
+        self.items.splice(at..at, paths);
+    }
+
     pub fn clear(&mut self) {
         self.items.clear();
         self.current = None;

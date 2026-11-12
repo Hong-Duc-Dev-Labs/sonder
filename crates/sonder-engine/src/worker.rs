@@ -48,8 +48,7 @@ pub enum DsdMode {
     Pcm,
 }
 
-/// Valid bits requested from the device when DSP is active: enough headroom that a volume
-/// change does not throw away the source's resolution.
+/// Valid bits requested when DSP is active, unless the device cannot carry them.
 const DSP_OUTPUT_BITS: u32 = 24;
 /// Bits the DSD→PCM converter claims, and the DoP payload depth.
 const DSD_PCM_BITS: u32 = 24;

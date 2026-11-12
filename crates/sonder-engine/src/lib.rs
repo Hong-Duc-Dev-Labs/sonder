@@ -11,13 +11,15 @@ pub mod dop;
 pub mod pipeline;
 mod player;
 pub mod queue;
+pub mod rate;
 pub mod stage;
 mod worker;
 
 pub use pipeline::Pipeline;
 pub use player::{
-    Command, DsdPcmRate, PlaybackState, Player, PlayerConfig, PlayerEvent, TapFactory,
+    Command, DsdPcmRate, PlaybackState, Player, PlayerConfig, PlayerEvent, SignalPath, TapFactory,
 };
 pub use queue::Queue;
+pub use rate::{FilterSourceConfig, SignalStage, SrcConfig, SrcTarget};
 pub use stage::{Stage, StreamFormat, Volume};
 pub use worker::{DsdMode, OutputMode, OutputSpec};

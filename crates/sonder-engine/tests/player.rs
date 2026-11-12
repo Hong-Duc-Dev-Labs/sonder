@@ -369,7 +369,9 @@ fn unsupported_format_is_refused_and_skipped() {
         container: SampleContainer::S16,
         channels: 2,
     };
-    let (player, events, control) = start(NullBackend::new().with_formats(vec![only]));
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.src.auto_fallback = false;
+    let (player, events, control) = start_with(config, NullBackend::new().with_formats(vec![only]));
     player.enqueue(vec![a, b.clone()]);
     player.play();
     let (failed, _) = wait_for(&events, |e| matches!(e, PlayerEvent::TrackFailed { .. }));
@@ -383,6 +385,139 @@ fn unsupported_format_is_refused_and_skipped() {
         control.played_bytes(),
         packed(SampleContainer::S16, &decoded(&b))
     );
+}
+
+#[test]
+fn unsupported_rate_falls_back_to_src_and_says_not_bit_perfect() {
+    let a = wav("fallback-src.wav", 96_000, 16, 5_000, 117);
+    let only = DeviceFormat {
+        rate: 44_100,
+        container: SampleContainer::S16,
+        channels: 2,
+    };
+    let (player, events, control) = start(NullBackend::new().with_formats(vec![only]));
+    player.enqueue(vec![a]);
+    player.play();
+    let seen = wait_end(&events);
+
+    assert!(
+        seen.iter().any(|event| matches!(
+            event,
+            PlayerEvent::Warning(message) if message.contains("resampling to 44100 Hz")
+        )),
+        "no fallback warning: {seen:#?}"
+    );
+    let path = seen
+        .iter()
+        .find_map(|event| match event {
+            PlayerEvent::SignalPath(path) => Some(path),
+            _ => None,
+        })
+        .expect("signal path for the resampled track");
+    assert_eq!(path.output_rate, 44_100);
+    assert!(!path.bit_perfect, "SRC fallback must not claim bit-perfect");
+    assert!(
+        path.stages.iter().any(|stage| stage.name == "Resampler"),
+        "signal path lacks a resampler: {path:#?}"
+    );
+    assert_eq!(control.sessions().len(), 1);
+    assert_eq!(control.sessions()[0].format.rate, 44_100);
+}
+
+#[test]
+fn a_192k_file_on_a_96k_device_plays_via_src_fallback() {
+    let a = wav("fallback-192k.wav", 192_000, 24, 5_000, 118);
+    let only = DeviceFormat {
+        rate: 96_000,
+        container: SampleContainer::S24Packed,
+        channels: 2,
+    };
+    let (player, events, control) = start(NullBackend::new().with_formats(vec![only]));
+    player.enqueue(vec![a]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let path = seen
+        .iter()
+        .find_map(|event| match event {
+            PlayerEvent::SignalPath(path) => Some(path),
+            _ => None,
+        })
+        .expect("signal path for the resampled track");
+    assert_eq!(path.output_rate, 96_000);
+    assert!(!path.bit_perfect);
+    assert!(seen.iter().any(|event| matches!(
+        event,
+        PlayerEvent::Warning(message) if message.contains("resampling to 96000 Hz")
+    )));
+    assert_eq!(control.sessions().len(), 1);
+    assert_eq!(control.sessions()[0].format.rate, 96_000);
+}
+
+#[test]
+fn roon_enabled_without_a_48_to_44_table_reports_sonder() {
+    let a = wav("roon-48k.wav", 48_000, 16, 5_000, 119);
+    let only = DeviceFormat {
+        rate: 44_100,
+        container: SampleContainer::S16,
+        channels: 2,
+    };
+    let roon = temp_dir().join("roon-empty");
+    std::fs::create_dir_all(&roon).unwrap();
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.src.filter_source = sonder_engine::FilterSourceConfig::Roon { dir: roon };
+    let (player, events, _) = start_with(config, NullBackend::new().with_formats(vec![only]));
+    player.enqueue(vec![a]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let path = seen
+        .iter()
+        .find_map(|event| match event {
+            PlayerEvent::SignalPath(path) => Some(path),
+            _ => None,
+        })
+        .expect("signal path");
+    assert!(!path.bit_perfect);
+    assert!(
+        path.stages.iter().any(|stage| {
+            stage.detail.contains("48000 → 44100")
+                && stage.detail.contains("Sonder")
+                && !stage.detail.contains("Roon")
+        }),
+        "signal path must name Sonder for the missing Roon ratio: {path:#?}"
+    );
+}
+
+#[test]
+fn refused_fixed_target_falls_back_to_the_bit_perfect_source_rate() {
+    let a = wav("fixed-target.wav", 44_100, 16, 5_000, 120);
+    let only = DeviceFormat {
+        rate: 44_100,
+        container: SampleContainer::S16,
+        channels: 2,
+    };
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.src.target = sonder_engine::SrcTarget::Fixed(96_000);
+    let (player, events, control) = start_with(config, NullBackend::new().with_formats(vec![only]));
+    player.enqueue(vec![a]);
+    player.play();
+    let seen = wait_end(&events);
+
+    assert!(seen.iter().any(|event| matches!(
+        event,
+        PlayerEvent::Warning(message) if message.contains("keeping the source rate 44100 Hz")
+    )));
+    let path = seen
+        .iter()
+        .find_map(|event| match event {
+            PlayerEvent::SignalPath(path) => Some(path),
+            _ => None,
+        })
+        .expect("signal path");
+    assert_eq!(path.output_rate, 44_100);
+    assert!(path.bit_perfect, "{path:#?}");
+    assert_eq!(control.sessions()[0].format.rate, 44_100);
 }
 
 #[test]
@@ -1284,4 +1419,61 @@ fn dsd_changes_for_other_devices_or_the_pcm_rate_keep_dop_playing() {
     let seen = wait_end(&events);
     assert!(dsd_modes(&seen).is_empty(), "events: {seen:#?}");
     assert_eq!(control.sessions().len(), 1);
+}
+
+/// A PCM track's resampler belongs to that track: the DSD track after it still plays DoP.
+#[test]
+fn dsd_after_a_resampled_pcm_track_keeps_dop() {
+    let pcm = wav("resampled-before-dsd.wav", 44_100, 16, 4_000, 21);
+    let expected = dsd_bytes(8_000, 22);
+    let dsd = dsf("dop-after-resampled.dsf", &expected);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.src.target = sonder_engine::SrcTarget::Fixed(48_000);
+    let (player, events, control) = start_with(config, dsd_device());
+    player.enqueue(vec![pcm, dsd]);
+    player.play();
+    let seen = wait_end(&events);
+
+    assert_eq!(
+        dsd_modes(&seen),
+        vec![(DsdMode::Dop, None)],
+        "events: {seen:#?}"
+    );
+    let sessions = control.sessions();
+    assert_eq!(
+        sessions[0].format.rate, 48_000,
+        "the PCM track was resampled"
+    );
+    let (payload, _) = decode_dop(&sessions.last().unwrap().bytes, 2);
+    assert_eq!(payload, expected);
+}
+
+/// A volume change in the middle of a track changes the signal path, so it is reported again.
+#[test]
+fn a_mid_track_volume_change_reports_the_new_signal_path() {
+    let a = wav("path-volume.wav", 44_100, 16, 132_300, 23);
+    let (player, events, _) = start(slow());
+    player.enqueue(vec![a]);
+    player.play();
+    let (_, before) = wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if !elapsed.is_zero()),
+    );
+    player.set_volume(Some(-6.0));
+    let after = wait_end(&events);
+
+    let paths: Vec<_> = before
+        .iter()
+        .chain(&after)
+        .filter_map(|e| match e {
+            PlayerEvent::SignalPath(path) => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(paths[0].bit_perfect, "{paths:#?}");
+    let last = paths.last().unwrap();
+    assert!(
+        !last.bit_perfect && last.stages.iter().any(|s| s.name == "Volume"),
+        "{paths:#?}"
+    );
 }

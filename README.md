@@ -82,6 +82,19 @@ cargo run -p sonder-cli -- play ~/Music/album --verify-hash
 
 The Now Playing view shows the signal path stage by stage (the icon next to the device line).
 
+## Playlists
+
+Playlists live in the library database (schema version 4; an older database is backed up as
+`library.db.bak-3` before it is upgraded). Create one on the Playlists page or from any track's
+⋯ menu → **Add to playlist** → **New playlist…**; a playlist page plays, shuffles, plays next or
+queues the whole list, and each row can be dragged by its grip (or moved with Up/Down on the
+grip) and removed from the ⋯ menu. Renaming and deleting are in the page's ⋯ menu; deleting
+asks first and never touches the tracks.
+
+Entries point at the file path, not the library's track id, so they survive rescans. A file that
+is moved or deleted stays in the playlist as "not in library" and comes back when a rescan finds
+it at the same path again.
+
 ## Verification
 
 ```sh
@@ -106,7 +119,7 @@ crates/sonder-decode   FLAC/ALAC/WAV/AIFF via symphonia; DSF/DFF readers; DSD bi
 crates/sonder-output   exclusive-mode backends, renderer, DoP markers, null backend for tests
 crates/sonder-dsp      FIR core, resamplers, PEQ, levelling, volume, dither, DSD→PCM, SDM
 crates/sonder-engine   player thread, gapless queue, DSP chain order, signal path, DoP packing
-crates/sonder-library  SQLite library, scanner, art cache, loudness analysis
+crates/sonder-library  SQLite library, scanner, art cache, loudness analysis, playlists
 crates/sonder-lyrics   LRC/TTML and online lyrics with a disk cache
 crates/sonder-cli      device listing, bit-perfect playback harness, library scanner
 crates/sonder-verify   acceptance/verification suite

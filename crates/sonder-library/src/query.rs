@@ -94,14 +94,32 @@ const ALBUM_SELECT: &str = "
     JOIN tracks t ON t.album_id = a.id
     LEFT JOIN art ON art.id = a.art_id";
 
-const TRACK_SELECT: &str = "
-    SELECT t.id, t.path, t.title, t.artist, t.album_artist, t.album_id, a.title, t.track_no,
+/// The columns [`track_row`] reads, in order. Further columns may follow them, starting at
+/// index [`TRACK_COLUMN_COUNT`].
+macro_rules! track_columns {
+    () => {
+        "t.id, t.path, t.title, t.artist, t.album_artist, t.album_id, a.title, t.track_no,
            t.disc_no, t.year, t.genre, t.codec, t.rate, t.bits, t.channels, t.duration_ms,
            t.rg_track_gain, t.rg_track_peak, t.rg_album_gain, t.rg_album_peak, art.hash,
-           art.colors
-    FROM tracks t
+           art.colors"
+    };
+}
+
+/// The tables behind `track_columns!`.
+macro_rules! track_from {
+    () => {
+        "FROM tracks t
     JOIN albums a ON a.id = t.album_id
-    LEFT JOIN art ON art.id = coalesce(t.art_id, a.art_id)";
+    LEFT JOIN art ON art.id = coalesce(t.art_id, a.art_id)"
+    };
+}
+
+pub(crate) const TRACK_COLUMNS: &str = track_columns!();
+pub(crate) const TRACK_FROM: &str = track_from!();
+/// Number of columns in [`TRACK_COLUMNS`].
+pub(crate) const TRACK_COLUMN_COUNT: usize = 22;
+
+const TRACK_SELECT: &str = concat!("SELECT ", track_columns!(), " ", track_from!());
 
 const TRACK_ORDER: &str = "ORDER BY coalesce(t.disc_no, 1), t.track_no IS NULL, t.track_no, t.path";
 
@@ -151,7 +169,7 @@ fn album_row(row: &Row) -> rusqlite::Result<AlbumSummary> {
     })
 }
 
-fn track_row(row: &Row) -> rusqlite::Result<Track> {
+pub(crate) fn track_row(row: &Row) -> rusqlite::Result<Track> {
     let codec: String = row.get(11)?;
     Ok(Track {
         id: row.get(0)?,

@@ -2,6 +2,8 @@
   // Tracks as one grouped soft card. A row plays on double-click, or through its play button
   // (shown in place of the number on hover and focus, and always reachable by keyboard and
   // screen readers). The quality badge only shows where a track differs from the album.
+  // With `onmove`, each row has a grip: drag it, or press Up/Down on it, to reorder.
+  import { tick } from "svelte";
   import { app } from "../lib/app.svelte";
   import type { TrackItem } from "../lib/bindings";
   import { duration, rate } from "../lib/format";
@@ -14,7 +16,80 @@
     tracks,
     onplay,
     variant = "album",
-  }: { tracks: TrackItem[]; onplay: (index: number) => void; variant?: "album" | "search" } = $props();
+    onremove,
+    onmove,
+  }: {
+    tracks: TrackItem[];
+    onplay: (index: number) => void;
+    /** "search" and "playlist" rows show the cover, artist and album of each track. */
+    variant?: "album" | "search" | "playlist";
+    /** Adds "Remove from playlist" to each row's menu. */
+    onremove?: (index: number) => void;
+    /** Moves the row at `from` to index `to`; the caller reorders `tracks` right away. */
+    onmove?: (from: number, to: number) => void;
+  } = $props();
+
+  let mixed = $derived(variant !== "album");
+  /** Row keys that stay unique when a track appears more than once (playlists). */
+  let keys = $derived.by(() => {
+    const seen = new Map<number, number>();
+    return tracks.map((t) => {
+      const n = seen.get(t.id) ?? 0;
+      seen.set(t.id, n + 1);
+      return `${t.id}#${n}`;
+    });
+  });
+
+  let rows: HTMLElement[] = $state([]);
+  /** The row being dragged by its grip, where it would land, and how far it has moved. */
+  let drag = $state<{ from: number; to: number; dy: number; height: number; startY: number } | null>(null);
+  /** Each row's middle when the drag started, before any row moved aside. */
+  let middles: number[] = [];
+
+  function gripDown(e: PointerEvent, i: number) {
+    if (e.button !== 0 || !onmove) return;
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    middles = tracks.map((_, j) => {
+      const r = rows[j]?.getBoundingClientRect();
+      return r ? r.top + r.height / 2 : Number.NaN;
+    });
+    const height = rows[i]?.getBoundingClientRect().height ?? 0;
+    drag = { from: i, to: i, dy: 0, height, startY: e.clientY };
+  }
+
+  function gripMove(e: PointerEvent) {
+    if (!drag) return;
+    // The landing index counts the other rows whose resting middle is above the pointer.
+    const from = drag.from;
+    const to = middles.filter((m, j) => j !== from && e.clientY > m).length;
+    drag = { ...drag, to, dy: e.clientY - drag.startY };
+  }
+
+  function gripUp() {
+    if (!drag) return;
+    const { from, to } = drag;
+    drag = null;
+    if (from !== to) onmove?.(from, to);
+  }
+
+  async function gripKey(e: KeyboardEvent, i: number) {
+    const step = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0;
+    const to = i + step;
+    if (!step || !onmove || to < 0 || to >= tracks.length) return;
+    e.preventDefault();
+    onmove(i, to);
+    await tick();
+    rows[to]?.querySelector<HTMLElement>(".grip")?.focus();
+  }
+
+  /** How far row `j` moves aside to make room for the dragged row. */
+  function shift(j: number): number {
+    if (!drag || j === drag.from) return 0;
+    if (drag.from < j && j <= drag.to) return -drag.height;
+    if (drag.to <= j && j < drag.from) return drag.height;
+    return 0;
+  }
 
   let playingId = $derived(app.current?.trackId ?? null);
   let multiDisc = $derived(variant === "album" && new Set(tracks.map((t) => t.discNo ?? 1)).size > 1);
@@ -42,8 +117,8 @@
   }
 </script>
 
-<div class="list soft" role="list">
-  {#each tracks as track, i (track.id)}
+<div class="list soft" class:sorting={drag} role="list">
+  {#each tracks as track, i (keys[i])}
     {#if multiDisc && (i === 0 || (tracks[i - 1].discNo ?? 1) !== (track.discNo ?? 1))}
       <div class="disc" role="presentation">
         <Icon name="disc" size={14} /> Disc {track.discNo ?? 1} · {discLength(track.discNo ?? 1)}
@@ -51,17 +126,36 @@
     {/if}
     {@const playing = track.id === playingId}
     <div
+      bind:this={rows[i]}
       class="row"
       class:playing
-      class:search={variant === "search"}
+      class:mixed
+      class:movable={onmove}
+      class:dragging={drag?.from === i}
+      style:transform={drag ? `translateY(${drag.from === i ? drag.dy : shift(i)}px)` : undefined}
       role="listitem"
       aria-current={playing ? "true" : undefined}
       ondblclick={() => onplay(i)}
     >
+      {#if onmove}
+        <button
+          class="grip"
+          aria-label="Move {track.title}, position {i + 1} of {tracks.length}"
+          aria-keyshortcuts="ArrowUp ArrowDown"
+          title="Drag, or press Up or Down, to reorder"
+          onpointerdown={(e) => gripDown(e, i)}
+          onpointermove={gripMove}
+          onpointerup={gripUp}
+          onpointercancel={() => (drag = null)}
+          onkeydown={(e) => gripKey(e, i)}
+        >
+          <Icon name="grip" size={18} />
+        </button>
+      {/if}
       <span class="lead">
         {#if playing}
           <span class="spin"><MiniDisc art={track.art} paused={app.player.state !== "playing"} /></span>
-        {:else if variant === "search"}
+        {:else if mixed}
           <span class="thumb"><Cover hash={track.art} alt="" /></span>
         {:else}
           <span class="no">{track.trackNo ?? ""}</span>
@@ -76,7 +170,7 @@
       </span>
       <span class="main">
         <span class="t">{track.title}</span>
-        {#if variant === "search"}
+        {#if mixed}
           <span class="sub">{track.artist ?? track.albumArtist ?? ""} • {track.album}</span>
         {:else if track.artist && track.artist !== track.albumArtist}
           <span class="sub">{track.artist}</span>
@@ -88,7 +182,7 @@
         <span></span>
       {/if}
       <span class="dur">{duration(track.durationMs)}</span>
-      <RowMenu {track} showAlbum={variant === "search"} />
+      <RowMenu {track} showAlbum={mixed} onremove={onremove ? () => onremove(i) : undefined} />
     </div>
   {/each}
 </div>
@@ -125,8 +219,42 @@
     border-radius: var(--r-sm);
     transition: background var(--dur-fast) var(--ease-standard);
   }
-  .row.search {
+  .row.mixed {
     grid-template-columns: 44px minmax(0, 1fr) auto 52px 34px;
+  }
+  .row.mixed.movable {
+    grid-template-columns: 24px 44px minmax(0, 1fr) auto 52px 34px;
+    padding-left: 2px;
+  }
+  /* While dragging, rows making room slide and the dragged row follows the pointer. On drop
+     the list reorders at once with no transition, so nothing slides back. */
+  .sorting .row {
+    transition:
+      background var(--dur-fast) var(--ease-standard),
+      transform var(--dur-med) var(--ease-standard);
+  }
+  .sorting .row.dragging {
+    position: relative;
+    z-index: 1;
+    background: var(--soft-active);
+    box-shadow: 0 10px 28px rgb(0 0 0 / 0.45);
+    transition: none;
+  }
+  .grip {
+    display: grid;
+    place-items: center;
+    height: 40px;
+    border-radius: var(--r-xs);
+    color: var(--ink-3);
+    cursor: grab;
+    touch-action: none;
+  }
+  .grip:hover,
+  .grip:focus-visible {
+    color: var(--ink);
+  }
+  .dragging .grip {
+    cursor: grabbing;
   }
   .row:hover,
   .row:focus-within {

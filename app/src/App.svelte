@@ -10,11 +10,14 @@
   import AlbumView from "./components/AlbumView.svelte";
   import AmbientBackdrop from "./components/AmbientBackdrop.svelte";
   import DiscFlight from "./components/DiscFlight.svelte";
+  import Dialog from "./components/Dialog.svelte";
   import ArtistsView from "./components/ArtistsView.svelte";
   import ArtistView from "./components/ArtistView.svelte";
   import Icon, { type IconName } from "./components/Icon.svelte";
   import MiniDisc from "./components/MiniDisc.svelte";
   import NowPlayingView from "./components/NowPlayingView.svelte";
+  import PlaylistsView from "./components/PlaylistsView.svelte";
+  import PlaylistView from "./components/PlaylistView.svelte";
   import QueuePanel from "./components/QueuePanel.svelte";
   import SearchView from "./components/SearchView.svelte";
   import SettingsView from "./components/SettingsView.svelte";
@@ -24,6 +27,7 @@
   const library: NavItem[] = [
     { view: { kind: "albums" }, label: "Albums", icon: "albums" },
     { view: { kind: "artists" }, label: "Artists", icon: "artists" },
+    { view: { kind: "playlists" }, label: "Playlists", icon: "playlist" },
   ];
   const tools: NavItem[] = [{ view: { kind: "search" }, label: "Search", icon: "search", hint: "Ctrl F" }];
 
@@ -36,7 +40,7 @@
   let errors = $derived(app.notices.filter((n) => n.level === "error"));
   let others = $derived(app.notices.filter((n) => n.level !== "error"));
   const flipMs = reducedMotion() ? 0 : 200;
-  let detail = $derived(app.view.kind === "album" || app.view.kind === "artist");
+  let detail = $derived(app.view.kind === "album" || app.view.kind === "artist" || app.view.kind === "playlist");
 
   /** Controls that handle Space themselves: a global shortcut must not steal it from them. */
   const OWNS_SPACE = 'input, select, textarea, button, a, [role="button"], [role="slider"], [role="menuitem"], [role="radio"], [role="switch"], [contenteditable]';
@@ -56,7 +60,12 @@
 
   function isActive(v: View): boolean {
     const k = app.view.kind;
-    return v.kind === k || (v.kind === "albums" && k === "album") || (v.kind === "artists" && k === "artist");
+    return (
+      v.kind === k ||
+      (v.kind === "albums" && k === "album") ||
+      (v.kind === "artists" && k === "artist") ||
+      (v.kind === "playlists" && k === "playlist")
+    );
   }
 
   function slidePanel(_node: Element) {
@@ -112,6 +121,10 @@
               <ArtistsView />
             {:else if app.view.kind === "artist"}
               <ArtistView id={app.view.id} />
+            {:else if app.view.kind === "playlists"}
+              <PlaylistsView />
+            {:else if app.view.kind === "playlist"}
+              <PlaylistView id={app.view.id} />
             {:else if app.view.kind === "search"}
               <SearchView />
             {:else if app.view.kind === "now"}
@@ -173,6 +186,8 @@
   {/if}
 
   <TransportBar hidden={onNow} />
+
+  <Dialog />
 
   {#if app.flight}
     {#key app.flight}

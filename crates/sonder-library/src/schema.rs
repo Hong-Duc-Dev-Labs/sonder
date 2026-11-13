@@ -15,6 +15,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_initial.sql"),
     include_str!("migrations/0002_art_colors.sql"),
     include_str!("migrations/0003_loudness.sql"),
+    include_str!("migrations/0004_playlists.sql"),
 ];
 
 /// Schema version this build creates and understands.
@@ -129,6 +130,49 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
         assert_eq!(version, 0);
+    }
+
+    #[test]
+    fn upgrade_from_loudness_schema_keeps_data_and_adds_playlists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        {
+            // A library as the previous release left it: schema version 3 with one track.
+            let conn = Connection::open(&path).unwrap();
+            for script in &MIGRATIONS[..3] {
+                conn.execute_batch(script).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 3).unwrap();
+            conn.execute_batch(
+                "INSERT INTO roots (id, path, added_at) VALUES (1, '/m', 0);
+                 INSERT INTO albums (id, group_key, title, added_at) VALUES (1, 'k', 'A', 0);
+                 INSERT INTO tracks (root_id, path, mtime, size, album_id, title, codec, rate,
+                                     channels, duration_ms, added_at, loudness_lufs)
+                 VALUES (1, '/m/a.flac', 0, 0, 1, 'T', 'flac', 44100, 2, 1000, 0, -14.0);",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let (title, lufs): (String, f64) = conn
+            .query_row("SELECT title, loudness_lufs FROM tracks", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((title.as_str(), lufs), ("T", -14.0));
+        conn.execute(
+            "INSERT INTO playlists (name, created_at, updated_at) VALUES ('p', 0, 0)",
+            [],
+        )
+        .unwrap();
+        let copy = Connection::open(backup_path(&path, 3)).unwrap();
+        let version: u32 = copy
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        let tracks: i64 = copy
+            .query_row("SELECT count(*) FROM tracks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tracks, 1);
     }
 
     #[test]

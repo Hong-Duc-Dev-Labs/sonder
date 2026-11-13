@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use sonder_decode::SourceFormat;
-use sonder_library::{AlbumDetail, AlbumSort, AlbumSummary, ArtistDetail, ArtistSummary, Track};
+use sonder_library::{
+    AlbumDetail, AlbumSort, AlbumSummary, ArtistDetail, ArtistSummary, PlaylistDetail,
+    PlaylistSummary, Track,
+};
 use sonder_output::{DeviceFormat, DeviceInfo};
 
 /// Error returned by every command: a message the UI can show.
@@ -319,6 +322,66 @@ impl From<AlbumDetail> for AlbumInfo {
         AlbumInfo {
             album: d.album.into(),
             tracks: d.tracks.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Playlist {
+    pub id: i64,
+    pub name: String,
+    /// Every entry, including those whose file is not in the library.
+    pub item_count: u32,
+    /// Total length of the entries whose file is in the library.
+    pub duration_ms: u64,
+    /// Cover hash of the first entry in the library.
+    pub art: Option<String>,
+}
+
+impl From<PlaylistSummary> for Playlist {
+    fn from(p: PlaylistSummary) -> Self {
+        Playlist {
+            id: p.id,
+            name: p.name,
+            item_count: p.item_count,
+            duration_ms: p.duration_ms,
+            art: p.art,
+        }
+    }
+}
+
+/// A playlist entry whose file is in the library.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistEntry {
+    /// Index among all entries, missing ones included; what remove and move take.
+    pub position: u32,
+    pub track: TrackItem,
+}
+
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistInfo {
+    pub playlist: Playlist,
+    pub entries: Vec<PlaylistEntry>,
+    /// Entries whose file is not in the library (moved, deleted or not yet rescanned).
+    pub missing: u32,
+}
+
+impl From<PlaylistDetail> for PlaylistInfo {
+    fn from(d: PlaylistDetail) -> Self {
+        PlaylistInfo {
+            playlist: d.playlist.into(),
+            entries: d
+                .items
+                .into_iter()
+                .map(|i| PlaylistEntry {
+                    position: i.position,
+                    track: i.track.into(),
+                })
+                .collect(),
+            missing: d.missing,
         }
     }
 }

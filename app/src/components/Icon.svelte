@@ -30,7 +30,11 @@
     expand: "M4 4h6v2H7.4l3.3 3.3-1.4 1.4L6 7.4V10H4V4Zm16 16h-6v-2h2.6l-3.3-3.3 1.4-1.4 3.3 3.3V14h2v6Z",
     signal: "M3 13h2.4v6H3zm4.3-5h2.4v11H7.3zm4.2-4h2.4v15h-2.4zm4.3 6h2.4v9h-2.4zm4.2-3H22v12h-2z",
     lyrics: "M3 5h12v2H3zm0 4h12v2H3zm0 4h7v2H3zm14-8h4v2h-2v9.5a2.5 2.5 0 1 1-2-2.45z",
-    trash: "M9 3h6l1 1h4v2H4V4h4l1-1Zm-3 5h12l-1 12a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 8Z",
+    playlist: "M3 5h13v2H3zm0 4h13v2H3zm0 4h8v2H3zm11 0v8l7-4z",
+    grip: "M8.5 5h2.5v2.5H8.5zm4.5 0h2.5v2.5H13zm-4.5 5.75h2.5v2.5H8.5zm4.5 0h2.5v2.5H13zm-4.5 5.75h2.5V19H8.5zm4.5 0h2.5V19H13z",
+    edit: "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25Zm17.71-10.21a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83Z",
+    chevron: "m9.4 6 1.4-1.4 7.4 7.4-7.4 7.4L9.4 18l6-6z",
+    trash:"M9 3h6l1 1h4v2H4V4h4l1-1Zm-3 5h12l-1 12a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 8Z",
   } as const;
   export type IconName = keyof typeof paths;
 </script>

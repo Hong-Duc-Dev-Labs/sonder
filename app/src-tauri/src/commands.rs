@@ -15,11 +15,11 @@ use tauri_specta::Event;
 
 use crate::dto::{
     Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, Device,
-    ImpulseResponseInfo, Lyrics, PlayerSnapshot, Playlist, PlaylistInfo, QueueItem, RepeatMode,
-    RootFolder, SortOrder, TrackItem,
+    ImpulseResponseInfo, Lyrics, PeqImport, PlayerSnapshot, Playlist, PlaylistInfo, QueueItem,
+    RepeatMode, RootFolder, SortOrder, TrackItem, export_file_name,
 };
 use crate::events::{LibraryChangedEvent, QueueChangedEvent};
-use crate::settings::Settings;
+use crate::settings::{PeqSetting, Settings};
 use crate::state::{AppState, lock};
 
 const SEARCH_LIMIT: usize = 200;
@@ -647,6 +647,49 @@ pub async fn impulse_response_info(path: String) -> AppResult<ImpulseResponseInf
     let info =
         tauri::async_runtime::spawn_blocking(move || ImpulseResponseInfo::describe(&path)).await?;
     Ok(info?)
+}
+
+/// Picks an Equalizer APO parametric file (the `ParametricEQ.txt` AutoEQ publishes) and returns
+/// its EQ. Nothing is saved here, so a cancelled dialog changes nothing.
+#[tauri::command]
+#[specta::specta]
+pub async fn peq_import(app: AppHandle) -> AppResult<Option<PeqImport>> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("Equalizer APO parametric EQ", &["txt"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(AppError::from)?;
+    let import = tauri::async_runtime::spawn_blocking(move || PeqImport::read(&path)).await??;
+    Ok(Some(import))
+}
+
+/// Saves `peq` as Equalizer APO parametric text, defaulting to `<name> ParametricEQ.txt`, and
+/// returns the saved path. Nothing is written when the dialog is cancelled.
+#[tauri::command]
+#[specta::specta]
+pub async fn peq_export(
+    app: AppHandle,
+    peq: PeqSetting,
+    name: String,
+) -> AppResult<Option<String>> {
+    let Some(target) = app
+        .dialog()
+        .file()
+        .add_filter("Equalizer APO parametric EQ", &["txt"])
+        .set_file_name(export_file_name(&name))
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = target.into_path().map_err(AppError::from)?;
+    let text = sonder_dsp::Peq::from(peq).to_apo_text();
+    let saved = path.clone();
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(&path, text)).await??;
+    Ok(Some(saved.to_string_lossy().into_owned()))
 }
 
 /// Tracks still waiting for a loudness measurement.

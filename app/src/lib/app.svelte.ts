@@ -486,9 +486,11 @@ class AppState {
     await this.run(commands.libraryAnalyzeLoudness());
   }
 
+  /** Saves settings on the backend; the saved copy, or nothing when the save failed. */
   async saveSettings(next: Settings) {
     const saved = await this.run(commands.settingsSet(next));
     if (saved) this.settings = saved;
+    return saved;
   }
 }
 

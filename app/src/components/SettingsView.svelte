@@ -209,6 +209,57 @@
     app.saveSettings({ ...app.settings, peqPresets: next, peqPreset: null });
   }
 
+  /** An EQ with no bands and no preamp has nothing to export. */
+  let peqEmpty = $derived((peq.bands?.length ?? 0) === 0 && (peq.preampDb ?? 0) === 0);
+
+  /** `base`, or `base (2)`, `base (3)`… while that name is taken. */
+  function freePresetName(base: string): string {
+    let name = base;
+    for (let n = 2; Object.hasOwn(peqPresets, name); n += 1) name = `${base} (${n})`;
+    return name;
+  }
+
+  /** Reads an Equalizer APO parametric file, saves it as a preset and applies it. */
+  async function importPeq() {
+    const imported = await app.run(commands.peqImport());
+    if (!imported) return;
+    let name = imported.name;
+    if (Object.hasOwn(peqPresets, name)) {
+      const kept = freePresetName(name);
+      const replace = await app.ask({
+        title: "Preset already exists",
+        message: `${name} already exists. Replace it, or keep both by importing as ${kept}.`,
+        confirm: "Replace",
+      });
+      if (replace == null) name = kept;
+    }
+    const saved = await app.saveSettings({
+      ...app.settings,
+      peq: imported.peq,
+      peqPresets: { ...peqPresets, [name]: imported.peq },
+      peqPreset: name,
+    });
+    if (!saved) return;
+    const bands = imported.peq.bands?.length ?? 0;
+    const warnings = imported.warnings ?? [];
+    const count = bands === 1 ? "1 band" : `${bands} bands`;
+    // One notice, as the plan asks, but a broken file can carry a hundred reasons.
+    const shown = warnings.slice(0, 3);
+    const more = warnings.length - shown.length;
+    const skipped = warnings.length
+      ? ` — ${shown.join(" · ")}${more > 0 ? ` · and ${more} more` : ""}`
+      : "";
+    app.notify(warnings.length ? "warning" : "info", `Imported ${name}: ${count}${skipped}`);
+  }
+
+  /** Writes the current EQ as Equalizer APO parametric text. */
+  async function exportPeq() {
+    const name = app.settings.peqPreset ?? "Sonder";
+    const saved = await app.run(commands.peqExport(peq, name));
+    if (!saved) return;
+    app.notify("info", `Exported EQ to ${saved.split(/[\\/]/).pop()}`);
+  }
+
   // ----- DSP: convolution and crossfeed -----
 
   let convolution = $derived<ConvolutionSetting>(app.settings.convolution ?? {});
@@ -596,7 +647,7 @@
           <input
             class="range"
             type="range"
-            min="-24"
+            min="-60"
             max="12"
             step="0.5"
             aria-label="EQ preamp"
@@ -669,7 +720,10 @@
           {#if app.settings.peqPreset}
             <button class="btn small" onclick={deletePreset}>Delete preset</button>
           {/if}
+          <button class="btn small" onclick={importPeq}>Import…</button>
+          <button class="btn small" disabled={peqEmpty} onclick={exportPeq}>Export…</button>
         </div>
+        <p class="note">Import a ParametricEQ.txt from AutoEQ or Equalizer APO.</p>
       </div>
     </section>
 

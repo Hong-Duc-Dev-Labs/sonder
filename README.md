@@ -68,6 +68,15 @@ cargo run -p sonder-cli -- play ~/Music/album --verify-hash
   feeds the DSD modulator above 384 kHz it runs at the source rate instead. Settings shows the
   response's peak gain; a positive value is how much to lower the EQ preamp or headroom. A file
   that cannot be read turns convolution off with a notice; playback continues.
+- **Parametric EQ** — up to 32 bands (peak, low/high shelf, low/high pass, band pass, notch)
+  behind a preamp, saved as named presets. **Import…** reads an Equalizer APO parametric file —
+  the `ParametricEQ.txt` AutoEQ publishes per headphone — and applies it as a preset named after
+  the file, minus a trailing ` ParametricEQ`; an existing name asks before it is replaced. Lines
+  meant for other APO stages and values Sonder clamps are listed in one warning notice, and a
+  file that is not a parametric EQ is rejected without changing anything. **Export…** writes the
+  current EQ in the same format (`Preamp:` then `Filter N:` lines) for Equalizer APO; importing
+  that file gives the same EQ back. Types read: `PK`/`PEQ`, `LSC`/`LS`, `HSC`/`HS`, `LP`/`LPQ`,
+  `HP`/`HPQ`, `BP`, `NO`; `BW Oct` is converted to Q and a shelf or pass without Q uses 0.707.
 - **Crossfeed** — bs2b headphone crossfeed for stereo tracks, after the EQ, with libbs2b's
   presets: Default (700 Hz, 4.5 dB), Chu Moy (700 Hz, 6 dB) and Jan Meier (650 Hz, 9.5 dB).
   Centred sounds keep their level in the bass and dip 1–1.75 dB above the cut-off, as in bs2b.

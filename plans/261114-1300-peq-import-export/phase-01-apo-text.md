@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Phase 1: Parser and formatter in sonder-dsp"
-status: pending
+status: completed
 priority: P2
 effort: "0.4d"
 dependencies: []
@@ -11,13 +11,13 @@ dependencies: []
 
 ## Requirements
 
-- [ ] `Peq::from_apo_text(text: &str) -> Result<ApoImport, ApoError>` where
+- [x] `Peq::from_apo_text(text: &str) -> Result<ApoImport, ApoError>` where
       `ApoImport { peq: Peq, warnings: Vec<String> }` (already passed through `sanitized()`,
       with a warning for each clamp or truncation).
-- [ ] `Peq::to_apo_text(&self) -> String`.
-- [ ] Every row of the plan's format table, including `OFF`, `BW Oct`, `kHz`, missing Q,
+- [x] `Peq::to_apo_text(&self) -> String`.
+- [x] Every row of the plan's format table, including `OFF`, `BW Oct`, `kHz`, missing Q,
       comments/BOM/CRLF, unknown lines → warnings, `,` decimal → error.
-- [ ] `ApoError` has user-facing messages (no Rust debug text).
+- [x] `ApoError` has user-facing messages (no Rust debug text).
 
 ## Files
 

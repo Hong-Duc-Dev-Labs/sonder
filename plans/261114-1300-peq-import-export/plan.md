@@ -1,7 +1,7 @@
 ---
 title: "Import and export parametric EQ as Equalizer APO text (AutoEQ ParametricEQ.txt)"
 description: "Read and write the Equalizer APO parametric format AutoEQ publishes, so a headphone correction becomes a Sonder EQ preset in one click, and Sonder presets can be used elsewhere."
-status: pending
+status: completed
 priority: P2
 effort: "~1 day"
 tags: [dsp, eq, settings, tauri]
@@ -46,36 +46,78 @@ preset rename; per-device preset switching; response graph. (Possible later step
 | More than 32 bands, values outside Sonder's ranges | truncated / clamped by `sanitized()`, with a warning |
 
 A file with no `Preamp` and no usable filter is an error ("not an Equalizer APO parametric
-file"). Export writes `Preamp:` then one `Filter N:` line per band, `ON`/`OFF` from `enabled`,
-fixed decimal places, LF line endings; import(export(x)) == x for any sanitized EQ.
+file"), naming the first skipped lines when the file had the right lines but none usable. Export
+writes `Preamp:` then one `Filter N:` line per band, `ON`/`OFF` from `enabled`, the shortest
+decimal form that reads back exactly (fixed notation, no exponent — fixed decimal places would
+break the round trip), LF line endings; import(export(x)) == x for any sanitized EQ.
 
 ## Phases
 
 | # | Phase | Status |
 |---|---|---|
-| 1 | [Parser and formatter in sonder-dsp](./phase-01-apo-text.md) | Pending |
-| 2 | [Tauri commands and bindings](./phase-02-commands.md) | Pending |
-| 3 | [Settings UI and docs](./phase-03-ui-docs.md) | Pending |
+| 1 | [Parser and formatter in sonder-dsp](./phase-01-apo-text.md) | Completed |
+| 2 | [Tauri commands and bindings](./phase-02-commands.md) | Completed |
+| 3 | [Settings UI and docs](./phase-03-ui-docs.md) | Completed (native-dialog click-through open) |
 
 ## Acceptance criteria
 
 - [ ] Importing a real AutoEQ `ParametricEQ.txt` (e.g. a 10-band PK + LSC/HSC file) creates
       preset "<headphone name>" (file stem minus ` ParametricEQ`), applies it, and the PEQ card
-      shows the same preamp, types, Fc, gain and Q.
-- [ ] Skipped lines and clamps are reported in one notice; a non-APO file is rejected with a
-      clear message and changes nothing.
-- [ ] Export then import gives back the same EQ; the exported file loads in Equalizer APO's
-      syntax (checked against the format table above).
-- [ ] Cancelling either dialog changes nothing and shows nothing.
-- [ ] `cargo test -p sonder-dsp`, `cargo test -p sonder-app`,
+      shows the same preamp, types, Fc, gain and Q. — parse and naming proven by tests
+      (`peq_apo::tests::reads_the_autoeq_shape`, `dto::tests::import_names_the_preset_after_the_file`);
+      the dialog click-through is open.
+- [x] Skipped lines and clamps are reported in one notice; a non-APO file is rejected with a
+      clear message and changes nothing. (one warning notice joined from `warnings`; `AppError`
+      text; nothing saved before `peqImport` returns)
+- [x] Export then import gives back the same EQ; the exported file loads in Equalizer APO's
+      syntax (checked against the format table above). (`peq_apo::tests::exports_what_it_reads`
+      round-trips every kind; the writer only emits lines the table lists)
+- [ ] Cancelling either dialog changes nothing and shows nothing. — both commands return
+      `Ok(None)` before writing; not clicked (native dialogs).
+- [x] `cargo test -p sonder-dsp`, `cargo test -p sonder-app`,
       `pnpm check`, `pnpm test`, `pnpm build` pass; bindings regenerated.
-- [ ] README "Settings worth knowing" documents Import/Export.
+- [x] README "Settings worth knowing" documents Import/Export.
 
 ## Risks
 
 - AutoEQ files vary slightly (`LSC` with or without Q, comments, preamp missing) → tolerant
   parser with fixtures for each shape.
-- Locale: APO uses `.` decimals; a `,` decimal is rejected with a message rather than misread.
+- Locale: APO writes `.` decimals (it rewrites `,` to `.` before parsing); a `,` decimal is
+  rejected here with a message rather than guessed, because a `,` is also a thousands
+  separator.
+- Shelves without Q: APO's own fallback slope is S = 0.9/12 = 0.075, far gentler than the
+  0.707 this parser stores (APO `BiQuadFilterFactory`), and APO's `LS`/`HS` mark a corner
+  frequency while `LSC`/`HSC` mark a centre (RBJ's f0, which Sonder follows). Both are per this
+  plan's table; a re-exported Q-less shelf therefore sounds steeper in APO than a Q-less `LS`
+  line did. AutoEQ files always carry Q.
+
+## Implementation Notes
+
+- The parser lives in `crates/sonder-dsp/src/peq_apo.rs` (re-exported as `sonder_dsp::ApoImport`
+  and `ApoError`), not in `peq.rs`, which stays the model plus the stage.
+- Tolerance details: a unit may follow (`Fc 105 Hz`, `Gain 3.4 dB`) or precede (`BW Oct 1.0`)
+  or be glued to the value (`3.4dB`); a missing Q uses 0.707 for every shape, and only the
+  clamps and skips produce warnings, so a clean AutoEQ file imports silently.
+- A `,` anywhere a number is expected fails the whole import instead of being read as two
+  values; unknown lines, types and keys are skipped one line at a time with `line N: …`.
+- Export writes `Gain` and `Q` on every band so non-peak shapes keep their stored values and
+  the round trip is exact; numbers use Rust's shortest round-trip decimal form (no exponents in
+  Sonder's ranges).
+- `PeqImport::read` caps the file at 256 KB, rejects non-UTF-8 with a message, and names the
+  preset from the stem minus a trailing ` ParametricEQ` (case-insensitive).
+- The UI keeps the whole import in one `saveSettings` call; a name collision asks
+  replace-or-keep, and keeps both under the next free `name (N)`, which is the name the prompt
+  names. The success notice waits for the save to come back, and shows the first three
+  warnings plus "and N more".
+- The export dialog starts from `<preset> ParametricEQ.txt` with the characters Windows forbids
+  replaced (`export_file_name`): `rfd` turns a rejected default name into "no file chosen", so
+  an unsanitized name made `Export…` look dead.
+- Review fixes: `ApoError` carries the first skipped-line reasons (a file with `Filter` lines
+  that all fail no longer claims it has none); repeated `Preamp`/`Fc`/`Gain`/`Q`/`BW` keys warn
+  and the last value wins; the preamp slider spans the model's −60…+12 dB, so an imported
+  −30 dB preamp is not silently moved to −24 on the first touch.
+
+<!-- slug: peq-import-export -->
 
 ## Rollback
 

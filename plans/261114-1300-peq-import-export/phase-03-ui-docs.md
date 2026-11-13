@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Phase 3: Settings UI and docs"
-status: pending
+status: completed
 priority: P2
 effort: "0.3d"
 dependencies: [2]
@@ -11,15 +11,15 @@ dependencies: [2]
 
 ## Requirements
 
-- [ ] PEQ card actions row (`SettingsView.svelte`): **Import…** and **Export…** buttons beside
+- [x] PEQ card actions row (`SettingsView.svelte`): **Import…** and **Export…** buttons beside
       Add band / Save preset. Export is disabled when the EQ has no bands and a 0 dB preamp.
-- [ ] Import: on success save `peqPresets[name] = peq`, `peq = peq`, `peqPreset = name` in one
+- [x] Import: on success save `peqPresets[name] = peq`, `peq = peq`, `peqPreset = name` in one
       `saveSettings`; if `name` already exists, ask (existing `app.ask` dialog) to replace or
       keep both (`name (2)`). Notice: "Imported <name>: N bands" plus warnings, if any, in the
       same notice.
-- [ ] Export: notice with the saved file name.
-- [ ] Errors go through `app.run` (existing error notice).
-- [ ] Helper line under the card: "Import a ParametricEQ.txt from AutoEQ or Equalizer APO."
+- [x] Export: notice with the saved file name.
+- [x] Errors go through `app.run` (existing error notice).
+- [x] Helper line under the card: "Import a ParametricEQ.txt from AutoEQ or Equalizer APO."
 
 ## Files
 
@@ -28,10 +28,12 @@ dependencies: [2]
 
 ## Validation
 
-- `pnpm check`, `pnpm test`, `pnpm build`.
+- `pnpm check`, `pnpm test`, `pnpm build` — pass.
 - `pnpm tauri dev`: import an AutoEQ file → preset appears in the Preset select, bands match
   the file; import the same file again → replace/keep prompt; export → file opens in a text
-  editor with the expected lines; re-import it → identical EQ.
+  editor with the expected lines; re-import it → identical EQ. **Not run:** the native file
+  dialogs need a real window and a human click; the parse, naming and round-trip halves are
+  covered by `crates/sonder-dsp/src/peq_apo.rs` and `app/src-tauri/src/dto.rs` tests.
 
 ## Risk / rollback
 

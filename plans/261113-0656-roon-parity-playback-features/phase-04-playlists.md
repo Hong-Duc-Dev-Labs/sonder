@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Phase 4: Playlists"
-status: todo
+status: completed
 priority: P1
 effort: "4-5d"
 dependencies: []
@@ -28,18 +28,18 @@ User playlists stored in the library database, with commands and a Playlists vie
 
 ## Requirements
 
-- [ ] Migration `0004_playlists.sql`: `playlists(id, name, created_at, updated_at)`,
+- [x] Migration `0004_playlists.sql`: `playlists(id, name, created_at, updated_at)`,
       `playlist_items(playlist_id, position, path)` with `(playlist_id, position)` unique and
       `ON DELETE CASCADE`.
-- [ ] Library API: create, rename, delete, list (with item count and total duration of
+- [x] Library API: create, rename, delete, list (with item count and total duration of
       present tracks), items (tracks present in the library, plus a count of missing
       entries), add tracks (append), remove item, move item (reorder).
-- [ ] Commands for each operation; play / play next / enqueue a playlist reuse the existing
+- [x] Commands for each operation; play / play next / enqueue a playlist reuse the existing
       player commands with the resolved track ids.
-- [ ] UI: a Playlists entry in navigation, a list view, a playlist view (play, shuffle,
+- [x] UI: a Playlists entry in navigation, a list view, a playlist view (play, shuffle,
       rename, delete, drag to reorder, remove from playlist), "Add to playlist ▸" in
       `RowMenu` with "New playlist…".
-- [ ] Deleting a playlist asks for confirmation.
+- [x] Deleting a playlist asks for confirmation.
 
 ## Related Code Files
 
@@ -62,11 +62,11 @@ User playlists stored in the library database, with commands and a Playlists vie
 
 ## Todo
 
-- [ ] Migration + schema test
-- [ ] Library playlist API + tests
-- [ ] Commands + bindings
-- [ ] Views, navigation, row menu
-- [ ] README
+- [x] Migration + schema test
+- [x] Library playlist API + tests
+- [x] Commands + bindings
+- [x] Views, navigation, row menu
+- [x] README
 
 ## Success Criteria
 
@@ -79,3 +79,19 @@ User playlists stored in the library database, with commands and a Playlists vie
 
 - Path-based items break when a user moves files; that matches how the library itself keys
   tracks and is reported as "missing", not silently dropped.
+
+## Result
+
+- Library: `playlist.rs` + migration `0004_playlists.sql`; `tests/playlists.rs` (CRUD, dense
+  positions through remove/move, duplicates, missing entry hidden and back after rescan,
+  cascade on delete) and the schema upgrade test from version 3 (data kept, `.bak-3` written).
+- App: `library_playlists`, `library_playlist`, `playlist_create|rename|delete|add_tracks|
+  remove_entry|move_entry`; play / shuffle / play next / enqueue use the player commands
+  with the entries' track ids.
+- UI: Playlists nav entry and page, playlist page (grip drag or Up/Down to reorder, ⋯ row menu
+  remove, page ⋯ menu rename/delete with confirmation), "Add to playlist ▸" in every track
+  row menu, one shared modal dialog (`Dialog.svelte`, `app.ask`).
+- The artist page has no track rows, so artist tracks reach a playlist from album or search
+  rows.
+- Open: the in-app walkthrough (create, fill, reorder, play, delete in the running app) has
+  not been run yet; everything above is covered by tests, `pnpm check` and `pnpm build`.

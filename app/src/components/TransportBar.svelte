@@ -286,9 +286,11 @@
 </Popover>
 
 <style>
+  /* The dock only places the pill. It must not carry a view-transition name, opacity under 1,
+     a filter or a mask: any of them makes it a backdrop root, and the pill's backdrop blur
+     would then see nothing but the empty dock, leaving the page sharp behind the glass. Those
+     belong on the pill itself. */
   .dock {
-    /* its own layer during a cover morph: above the moving page, not cross-faded */
-    view-transition-name: player;
     position: absolute;
     /* inside the page sheet's bottom edge (App.svelte), one gutter in from each side, so it
        narrows with the sheet when the inspector docks */
@@ -299,15 +301,18 @@
     justify-content: center;
     z-index: 20;
     pointer-events: none;
-    transition:
-      transform var(--dur-slow) var(--ease-out),
-      opacity var(--dur-med) var(--ease-standard);
+    transition: transform var(--dur-slow) var(--ease-out);
   }
   .dock.hidden {
     transform: translateY(calc(100% + var(--gutter) * 2));
+  }
+  .dock.hidden .pill {
     opacity: 0;
   }
   .pill {
+    /* its own layer during a cover morph: above the moving page, not cross-faded */
+    view-transition-name: player;
+    transition: opacity var(--dur-med) var(--ease-standard);
     pointer-events: auto;
     container-type: inline-size;
     width: min(100%, 1080px);

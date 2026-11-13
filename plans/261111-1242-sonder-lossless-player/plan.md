@@ -35,14 +35,14 @@ PEQ, levelling, PCM→DSD, dither. Source contract:
 
 | # | Phase | Status |
 |---|-------|--------|
-| 1 | [Workspace and WASAPI exclusive spike](./phase-01-workspace-and-wasapi-spike.md) | In progress (manual DAC test open) |
+| 1 | [Workspace and WASAPI exclusive spike](./phase-01-workspace-and-wasapi-spike.md) | Done (TP35 hash checks 2026-11-13) |
 | 2 | [Engine, gapless and OS backends](./phase-02-engine-gapless-and-os-backends.md) | In progress (code + tests done; manual DAC and CI run open) |
 | 3 | [Library scanner](./phase-03-library-scanner.md) | Done |
 | 4 | [Tauri UI](./phase-04-tauri-ui.md) | Done (PR #4; CI green on all three OSes; scripted DAC click-through not recorded) |
-| 5 | [DSD playback](./phase-05-dsd-playback.md) | In progress (code + tests done; manual DAC test open) |
+| 5 | [DSD playback](./phase-05-dsd-playback.md) | Done (TP35 DoP check 2026-11-13) |
 | 6 | [Resampler and filter sources](./phase-06-resampler-and-filter-sources.md) | In progress (code, tests and benchmarks done; manual listen open) |
 | 7 | [PEQ, dither and levelling](./phase-07-peq-dither-leveling.md) | In progress (code, tests and UI done; manual listen open) |
-| 8 | [SDM, signal path and verification](./phase-08-sdm-signal-path-verification.md) | In progress (code, tests, benchmark and docs done; real-device checks open) |
+| 8 | [SDM, signal path and verification](./phase-08-sdm-signal-path-verification.md) | Done (TP35 checks 2026-11-13; macOS/Linux hardware and S/PDIF capture still open in docs/verification.md) |
 
 Order: 1 → 2 → (3 ∥ 6) → 4 needs 2+3 → 5 needs 2+6 (shares the FIR core) → 7 needs 3+4+6 → 8 needs 4+5+6+7.
 

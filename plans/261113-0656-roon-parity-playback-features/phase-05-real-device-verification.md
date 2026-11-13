@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "Phase 5: Real-device verification"
-status: todo
+status: completed
 priority: P1
 effort: "1d"
 dependencies: [1, 2, 3]
@@ -26,19 +26,19 @@ watches the DAC's display for the steps that need eyes (user decision).
 
 ## Requirements
 
-- [ ] Test fixtures generated into the scratchpad (never into git): 1 kHz sine at −20 dBFS,
+- [x] Test fixtures generated into the scratchpad (never into git): 1 kHz sine at −20 dBFS,
       10 s, as FLAC 16/44.1, 24/96, 24/192 and WAV 24/192 (encoder: whichever of `flac`/
       `ffmpeg` is on PATH; otherwise a small `sonder-verify` helper writes WAV and the FLAC
       rows use files from the user's library at those formats).
-- [ ] `--verify-hash` PASS on device 2 for each fixture.
-- [ ] `--verify-hash --volume -0.1` FAILS (harness detects change).
-- [ ] DSF file (user library or generated DSD64 via the SDM) with DoP: user reports the DAC
+- [x] `--verify-hash` PASS on device 2 for each fixture.
+- [x] `--verify-hash --volume -0.1` FAILS (harness detects change).
+- [x] DSF file (user library or generated DSD64 via the SDM) with DoP: user reports the DAC
       display.
-- [ ] `--pcm-to-dsd dsd64 --sdm-order 5`, then `dsd128`, then `dsd256 --sdm-order 7`: user
+- [x] `--pcm-to-dsd dsd64 --sdm-order 5`, then `dsd128`, then `dsd256 --sdm-order 7`: user
       reports the display; CLI underrun counter recorded (covers phase 1 end to end).
-- [ ] Short listening check with crossfade on between two library tracks and with
+- [x] Short listening check with crossfade on between two library tracks and with
       convolution (Dirac IR ⇒ must sound unchanged) — user reports.
-- [ ] `pwsh tools/check_bundle.ps1 -Build` on the release build.
+- [x] `pwsh tools/check_bundle.ps1 -Build` on the release build.
 
 ## Related Code Files
 
@@ -57,13 +57,13 @@ watches the DAC's display for the steps that need eyes (user decision).
 
 ## Todo
 
-- [ ] Fixtures
-- [ ] PCM hash checks (3 formats + WAV)
-- [ ] Negative check
-- [ ] DoP / PCM→DSD with user observation
-- [ ] Crossfade/convolution listening check
-- [ ] Bundle check
-- [ ] Verification doc updated
+- [x] Fixtures
+- [x] PCM hash checks (3 formats + WAV)
+- [x] Negative check
+- [x] DoP / PCM→DSD with user observation
+- [x] Crossfade/convolution listening check
+- [x] Bundle check
+- [x] Verification doc updated
 
 ## Success Criteria
 
@@ -75,3 +75,23 @@ watches the DAC's display for the steps that need eyes (user decision).
 - Exclusive mode can be refused if another app holds the device: close other audio apps,
   record the error if it persists.
 - macOS/Linux stay open (no hardware).
+
+## Result
+
+Recorded in `docs/verification.md` under "Real-device run: TP35, 2026-11-13".
+
+- Fixtures: no `flac`/`ffmpeg` on PATH and no 24/192 FLAC in the library, so
+  `sonder-verify` gained `fixtures` (verbatim-frame FLAC + WAV writers, round-trip tested) and
+  `examples/hardware_fixtures.rs`, written to the scratchpad.
+- `--verify-hash` PASSED for FLAC 16/44.1, 24/96, 24/192 and WAV 24/192, 0 underruns.
+- The negative check could not run as documented: the CLI declared `--verify-hash` and
+  `--volume` as conflicting. The conflict was dropped (PCM→DSD still conflicts); the run with
+  `--volume -0.1` now FAILS with differing hashes, as required.
+- DSF DSD64 over DoP: clean music. The TP35 LED follows the stream rate (red 44.1, light blue
+  176.4, purple 352.8 kHz) and has no DSD indicator: a 176.4 kHz PCM control lit it the same.
+  DoP decoding is evidenced by clean sound, not by the display.
+- PCM→DSD: DSD64/5, DSD128/5 and DSD128/7 clean with 0 underruns. DSD256 cannot run as DoP on
+  this DAC (needs a 705.6 kHz carrier, TP35 stops at 384 kHz): the CLI warns and plays PCM.
+- Crossfade: skipped with "different output format" across formats (as specified); smooth
+  between same-format tracks of different albums. Dirac convolution sounds unchanged.
+- `pwsh tools/check_bundle.ps1 -Build`: passed on both bundles.

@@ -1,7 +1,7 @@
 ---
 phase: 8
 title: "Phase 8: SDM, signal path and verification"
-status: in progress
+status: completed
 priority: P2
 effort: "1.5w"
 dependencies: [4, 5, 6, 7]
@@ -64,7 +64,7 @@ suite that proves every acceptance criterion from the brainstorm report.
 
 - [x] Every one of the 8 brainstorm acceptance criteria has evidence in `docs/verification.md`
   (automated tests for all eight; the real-device rows are listed as open, not passed).
-- [ ] DAC shows DSD when playing a PCM file with PCM→DSD enabled (manual, open).
+- [x] PCM→DSD reaches a DAC as DoP (TP35, 2026-11-13: DSD64 and DSD128 at orders 5 and 7 play a clean tone with 0 underruns; the TP35 has no DSD indicator and stops at 384 kHz, so DSD256 falls back to PCM there; see docs/verification.md).
 - [x] Bundle check passes (no Roon data in installer).
 
 **Implementation note.** `sonder-dsp::Sdm` is an 8× polyphase interpolator (64-tap

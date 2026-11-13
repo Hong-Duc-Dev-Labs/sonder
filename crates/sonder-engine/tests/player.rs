@@ -1821,7 +1821,9 @@ fn pcm_to_dsd128_and_dsd256_use_the_wider_carriers() {
         (sonder_engine::SdmMode::Dsd128, 352_800),
         (sonder_engine::SdmMode::Dsd256, 705_600),
     ] {
-        let track = tone_wav(&format!("sdm-{carrier}.wav"), 48_000, 24, 24_000);
+        // A short track keeps the debug-build modulator well inside the wait timeout at
+        // DSD256; the carrier rate is all this test checks.
+        let track = tone_wav(&format!("sdm-{carrier}.wav"), 48_000, 24, 4_800);
         let mut config = PlayerConfig::new(NullBackend::device_id());
         config.sdm.mode = mode;
         let (player, events, control) = start_with(config, dsd_device());

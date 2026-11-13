@@ -576,26 +576,20 @@ impl Default for ChainState {
     }
 }
 
-/// Consecutive decode failures of one queue entry. A whole queue's worth ends the run, so a
-/// repeat mode cannot retry a file that fails mid-stream forever.
+/// Decode failures in a row, with no decoded block in between. A whole queue's worth ends
+/// the run, so a repeat mode cannot cycle forever over files that all fail mid-stream.
 #[derive(Default)]
 struct FailureRun {
-    index: Option<usize>,
     count: usize,
 }
 
 impl FailureRun {
     fn clear(&mut self) {
-        self.index = None;
         self.count = 0;
     }
 
-    /// Notes a failure of `index`; `true` when the run should end instead of retrying.
-    fn note(&mut self, index: usize, queue_len: usize) -> bool {
-        if self.index != Some(index) {
-            self.index = Some(index);
-            self.count = 0;
-        }
+    /// Notes a failure; `true` when the run should end instead of moving on.
+    fn note(&mut self, queue_len: usize) -> bool {
         self.count += 1;
         self.count >= queue_len.max(1)
     }
@@ -2048,7 +2042,17 @@ impl Engine {
         tail: &mut Vec<i32>,
         report: bool,
     ) -> Result<Opened, usize> {
+        // Entries that failed to open on the way. Repeat-all wraps past an unplayable last
+        // entry, but only until every entry has failed once.
+        let mut failed = 0;
         loop {
+            if index >= self.queue.len()
+                && self.repeat == RepeatMode::All
+                && failed > 0
+                && failed < self.queue.len()
+            {
+                index = 0;
+            }
             let Some(path) = self.queue.get(index).map(Path::to_path_buf) else {
                 return Err(index);
             };
@@ -2158,6 +2162,7 @@ impl Engine {
                             error: error.to_string(),
                         });
                     }
+                    failed += 1;
                     index += 1;
                     pos = Pos::ZERO;
                 }
@@ -2654,7 +2659,7 @@ impl Engine {
             // The incoming file broke inside the fade: move past it like a decode failure
             // instead of installing a decoder that already failed.
             self.decoding = None;
-            let stop = self.failures.note(fade.index, self.queue.len());
+            let stop = self.failures.note(self.queue.len());
             let next = if stop {
                 self.queue.len()
             } else {
@@ -2692,9 +2697,6 @@ impl Engine {
         {
             return true;
         }
-        if self.crossfade.is_some() {
-            return self.produce_fade();
-        }
         let Some(decoding) = &mut self.decoding else {
             return false;
         };
@@ -2722,7 +2724,7 @@ impl Engine {
                     error: error.to_string(),
                 });
                 self.decoding = None;
-                let stop = self.failures.note(index, self.queue.len());
+                let stop = self.failures.note(self.queue.len());
                 let next = if stop {
                     self.queue.len()
                 } else {
@@ -3207,22 +3209,18 @@ mod tests {
     }
 
     #[test]
-    fn a_whole_queue_of_failures_ends_the_run_but_a_new_track_resets_it() {
+    fn a_whole_queue_of_failures_ends_the_run_but_a_decoded_block_resets_it() {
         let mut run = FailureRun::default();
+        assert!(!run.note(3), "one failure of a three-track queue moves on");
         assert!(
-            !run.note(1, 3),
-            "one failure of a three-track queue retries"
+            !run.note(3),
+            "another entry failing next still moves on (repeat-all over broken files)"
         );
-        assert!(
-            !run.note(1, 3),
-            "the same broken file retries under repeat-one"
-        );
-        assert!(run.note(1, 3), "a whole queue's worth ends the run");
+        assert!(run.note(3), "a whole queue's worth ends the run");
         run.clear();
-        assert!(!run.note(2, 3), "a new track gets its own budget");
-        assert!(!run.note(0, 3), "another index starts over");
-        assert!(!run.note(0, 3));
-        assert!(run.note(0, 3));
+        assert!(!run.note(3), "a decoded block starts a new run");
+        assert!(!run.note(3));
+        assert!(run.note(3));
     }
 
     #[test]

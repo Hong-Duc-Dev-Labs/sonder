@@ -2610,3 +2610,49 @@ fn spawn_clamps_the_crossfade_length() {
         "fade of {seconds} s ignores the 1–10 s setting: {note}"
     );
 }
+
+#[test]
+fn repeat_all_wraps_past_an_unplayable_last_entry() {
+    let a = wav("repeat-skip-a.wav", 44_100, 16, 10_000, 57);
+    let bad = temp_dir().join("repeat-skip-broken.flac");
+    std::fs::write(&bad, b"not audio").unwrap();
+    let (player, events, control) = start(NullBackend::new());
+    player.set_repeat(RepeatMode::All);
+    player.enqueue(vec![a.clone(), bad]);
+    player.play();
+    let track = packed(SampleContainer::S16, &decoded(&a));
+    wait_until(|| control.played_bytes().len() >= 2 * track.len());
+    player.stop();
+    let (_, seen) = wait_for(&events, |e| {
+        *e == PlayerEvent::State(PlaybackState::Stopped)
+    });
+    assert!(
+        !seen.contains(&PlayerEvent::EndOfQueue),
+        "repeat-all must wrap past the broken entry: {seen:#?}"
+    );
+    let played = control.played_bytes();
+    let mut twice = track.clone();
+    twice.extend_from_slice(&track);
+    assert!(
+        played.len() >= twice.len() && played[..twice.len()] == twice[..],
+        "the first entry must follow itself with no gap"
+    );
+}
+
+#[test]
+fn repeat_all_over_a_queue_of_unplayable_entries_ends() {
+    let bad = temp_dir().join("repeat-all-broken-a.flac");
+    let worse = temp_dir().join("repeat-all-broken-b.flac");
+    std::fs::write(&bad, b"not audio").unwrap();
+    std::fs::write(&worse, b"not audio").unwrap();
+    let (player, events, _) = start(NullBackend::new());
+    player.set_repeat(RepeatMode::All);
+    player.enqueue(vec![bad, worse]);
+    player.play();
+    let seen = wait_end(&events);
+    let failures = seen
+        .iter()
+        .filter(|e| matches!(e, PlayerEvent::TrackFailed { .. }))
+        .count();
+    assert_eq!(failures, 2, "each entry fails once: {seen:#?}");
+}

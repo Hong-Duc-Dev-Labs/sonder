@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "Phase 5: DSD playback"
-status: in progress
+status: completed
 priority: P2
 effort: "1.5w"
 dependencies: [2, 6]
@@ -91,7 +91,7 @@ so `sonder-dsp` carries its own two decimator stages (`build.rs` tables). Phase 
 - [x] Engine DSD path + round-trip test
 - [x] DSD→PCM converter + response test
 - [x] Native DSD on ALSA (implementation; hardware untested)
-- [ ] Manual DAC test
+- [x] Manual DAC test (TP35, 2026-11-13: DSF DSD64 over DoP plays clean music; the TP35 has no DSD indicator; see docs/verification.md)
 
 ## Success Criteria
 

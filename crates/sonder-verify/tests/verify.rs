@@ -667,3 +667,25 @@ fn walk_files(dir: &Path) -> Vec<PathBuf> {
     }
     out
 }
+
+// ----- hardware fixtures -----
+
+#[test]
+fn hardware_fixture_flac_decodes_to_the_written_samples() {
+    use sonder_verify::fixtures::{sine, write_flac};
+    // Frame counts that end on a short last frame and cross 128 frames (two-byte numbers).
+    for (rate, bits, seconds) in [(44_100, 16, 0.3), (192_000, 24, 3.0)] {
+        let samples = sine(rate, bits, 1000.0, -20.0, seconds);
+        let path = temp_dir().join(format!("fixture-{bits}-{rate}.flac"));
+        write_flac(&path, rate, bits, &samples).unwrap();
+        let decoder = sonder_decode::Decoder::open(&path).unwrap();
+        let format = decoder.format();
+        assert_eq!((format.rate, format.bits), (rate, bits), "{format:?}");
+        // The decoder left-justifies samples in 32 bits.
+        let written: Vec<i32> = samples.iter().map(|&s| s << (32 - bits)).collect();
+        assert!(
+            decoded(&path) == written,
+            "{bits}/{rate} does not round-trip"
+        );
+    }
+}

@@ -24,6 +24,24 @@ pub struct ConvolutionSetting {
     pub path: Option<String>,
 }
 
+/// Equal-power crossfade between queue entries.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CrossfadeSetting {
+    pub enabled: bool,
+    /// Fade length in seconds, within the engine's 1–10 s range.
+    pub seconds: f64,
+}
+
+impl Default for CrossfadeSetting {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            seconds: 4.0,
+        }
+    }
+}
+
 /// Headphone crossfeed.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -196,6 +214,8 @@ pub struct Settings {
     pub peq: PeqSetting,
     /// Headphone crossfeed (runs after the EQ).
     pub crossfeed: CrossfeedSetting,
+    /// Equal-power crossfade between entries; off keeps transitions gapless.
+    pub crossfade: CrossfadeSetting,
     /// Saved EQ presets, by name.
     pub peq_presets: BTreeMap<String, PeqSetting>,
     /// Name of the preset `peq` came from, when it has not been edited since.
@@ -226,6 +246,7 @@ impl Default for Settings {
             convolution: ConvolutionSetting::default(),
             peq: PeqSetting::default(),
             crossfeed: CrossfeedSetting::default(),
+            crossfade: CrossfadeSetting::default(),
             peq_presets: BTreeMap::new(),
             peq_preset: None,
             leveling: LevelingSetting::default(),
@@ -267,6 +288,12 @@ impl Settings {
             .map(|db| db.clamp(-60.0, 0.0));
         self.src.roon_folder = self.src.roon_folder.filter(|dir| !dir.is_empty());
         self.convolution.path = self.convolution.path.filter(|path| !path.is_empty());
+        self.crossfade.seconds = sonder_engine::CrossfadeConfig {
+            enabled: self.crossfade.enabled,
+            seconds: self.crossfade.seconds,
+        }
+        .sanitized()
+        .seconds;
         self
     }
 
@@ -298,6 +325,20 @@ impl Settings {
     /// Applies the PCM→DSD output mode to the engine.
     pub fn apply_sdm(&self, player: &sonder_engine::Player) {
         player.set_sdm(self.engine_sdm());
+    }
+
+    /// The crossfade settings in engine terms.
+    pub fn engine_crossfade(&self) -> sonder_engine::CrossfadeConfig {
+        sonder_engine::CrossfadeConfig {
+            enabled: self.crossfade.enabled,
+            seconds: self.crossfade.seconds,
+        }
+        .sanitized()
+    }
+
+    /// Applies the crossfade settings to the running engine.
+    pub fn apply_crossfade(&self, player: &sonder_engine::Player) {
+        player.set_crossfade(self.engine_crossfade());
     }
 }
 
@@ -618,6 +659,41 @@ mod dsp_settings_tests {
         // A missing file reaches the engine as a reason, not as a silent "off".
         assert!(matches!(dsp.convolution, Some(Err(_))));
         assert_eq!(dsp.crossfeed, Some(sonder_engine::CrossfeedPreset::ChuMoy));
+    }
+
+    #[test]
+    fn crossfade_defaults_off_and_is_clamped_to_what_the_engine_accepts() {
+        let settings: Settings = toml::from_str("dither = true\n").unwrap();
+        assert_eq!(settings.crossfade, CrossfadeSetting::default());
+        assert_eq!(settings.engine_crossfade().seconds, 4.0);
+
+        let edited = Settings {
+            crossfade: CrossfadeSetting {
+                enabled: true,
+                seconds: 30.0,
+            },
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(
+            edited.engine_crossfade().seconds,
+            sonder_engine::MAX_CROSSFADE_SECONDS
+        );
+        assert!(edited.engine_crossfade().is_on());
+
+        let short = Settings {
+            crossfade: CrossfadeSetting {
+                enabled: true,
+                seconds: 0.2,
+            },
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!(
+            short.engine_crossfade().seconds,
+            sonder_engine::MIN_CROSSFADE_SECONDS
+        );
+        assert!(!settings.crossfade.enabled);
     }
 
     #[test]

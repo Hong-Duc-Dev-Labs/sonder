@@ -36,6 +36,12 @@
       <span class="name">Output</span>
       <span class="detail">{outputMode} {output} · {path.outputChannels} ch</span>
     </li>
+    {#if path.transition}
+      <li>
+        <span class="name">Transition</span>
+        <span class="detail">{path.transition}</span>
+      </li>
+    {/if}
   </ol>
 </section>
 

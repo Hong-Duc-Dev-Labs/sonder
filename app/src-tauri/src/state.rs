@@ -140,6 +140,7 @@ impl AppState {
         config.sdm = settings.engine_sdm();
         config.dsp = settings.engine_dsp();
         config.src = settings.engine_src();
+        config.crossfade = settings.engine_crossfade();
         config.loudness = Arc::new(LibraryLoudness::new(loudness.clone()));
         let (player, events) = Player::spawn(backend(), config)?;
         if settings.volume_db.is_some() {

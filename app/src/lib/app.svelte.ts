@@ -142,6 +142,8 @@ class AppState {
   settings = $state<Settings>({ albumSort: "artist" });
   scan = $state<ScanState>({ phase: "idle", done: 0, total: 0, last: null, failures: [] });
   loudness = $state<LoudnessState>({ running: false, done: 0, total: 0, pending: null, last: null });
+  /** The user started the current analysis from Settings, so even an empty result is news. */
+  private loudnessAsked = false;
   notices = $state<Notice[]>([]);
   searchQuery = $state("");
   /** Bumped whenever the library index changes; views reload when it moves. */
@@ -307,13 +309,19 @@ class AppState {
       events.loudnessFinishedEvent.listen((e) => {
         const r = e.payload;
         const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-        // The backend already raised a notice for a failed pass.
+        const didWork = r.tracks || r.albums || r.failed;
+        // The backend already raised a notice for a failed pass. Scans and folder changes
+        // queue passes too: one that found nothing keeps the result the user last saw,
+        // unless the user asked for it.
         const last =
           r.error ??
-          (r.tracks || r.albums || r.failed
+          (didWork
             ? `${plural(r.tracks, "track")} measured, ${plural(r.albums, "album")} updated` +
               (r.failed ? `, ${r.failed} could not be read` : "")
-            : "Nothing to measure");
+            : this.loudnessAsked
+              ? "Nothing to measure"
+              : this.loudness.last);
+        this.loudnessAsked = false;
         this.loudness = { running: false, done: 0, total: 0, pending: r.error ? this.loudness.pending : r.pending, last };
       }),
     ]);
@@ -323,7 +331,9 @@ class AppState {
       commands.settingsGet(),
       commands.libraryIsScanning(),
       commands.libraryIsAnalyzing(),
-      commands.libraryLoudnessPending(),
+      // The only start-up call that reads the database: a failure leaves the count unknown
+      // instead of failing the whole start-up.
+      commands.libraryLoudnessPending().catch(() => null),
     ]);
     this.player = player;
     this.queue = queue;
@@ -334,6 +344,7 @@ class AppState {
 
   /** Starts (or queues) a loudness analysis pass; its events update `loudness`. */
   async analyzeLoudness() {
+    this.loudnessAsked = true;
     this.loudness = { ...this.loudness, running: true, last: null };
     await this.run(commands.libraryAnalyzeLoudness());
   }

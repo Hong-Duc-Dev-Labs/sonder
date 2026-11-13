@@ -1,7 +1,7 @@
 ---
 phase: 7
 title: "Phase 7: PEQ, dither and levelling"
-status: todo
+status: in progress
 priority: P2
 effort: "1w"
 dependencies: [3, 4, 6]
@@ -26,11 +26,11 @@ ReplayGain tags, bit-depth reduction with TPDF dither, and optional software vol
 
 ## Requirements
 
-- [ ] `Biquad`, `PeqStage` (per-channel band list, preamp), with filter types above.
-- [ ] `LevelingStage` using DB ReplayGain values and peaks; R128 analysis job in `sonder-library` for untagged files.
-- [ ] `DitherStage` (TPDF, none) + final quantiser to device bit depth.
-- [ ] `VolumeStage` (software volume, dB, off by default).
-- [ ] Settings and Tauri commands for each stage, plus the phase 6 SRC settings (filter source, Roon folder picker, phase, variant, target policy); PEQ presets saved to settings.
+- [x] `Biquad`, `PeqStage` (per-channel band list, preamp), with filter types above.
+- [x] `LevelingStage` using DB ReplayGain values and peaks; R128 analysis job in `sonder-library` for untagged files.
+- [x] `DitherStage` (TPDF, none) + final quantiser to device bit depth.
+- [x] `VolumeStage` (software volume, dB, off by default).
+- [x] Settings and Tauri commands for each stage, plus the phase 6 SRC settings (filter source, Roon folder picker, phase, variant, target policy); PEQ presets saved to settings.
 
 ## Related Code Files
 
@@ -47,17 +47,47 @@ ReplayGain tags, bit-depth reduction with TPDF dither, and optional software vol
 
 ## Todo
 
-- [ ] Biquad + tests
-- [ ] PEQ stage
-- [ ] Levelling + R128 analysis
-- [ ] Dither + quantiser + tests
-- [ ] Software volume
-- [ ] Pipeline order + UI
+- [x] Biquad + tests
+- [x] PEQ stage
+- [x] Levelling + R128 analysis
+- [x] Dither + quantiser + tests
+- [x] Software volume
+- [x] Pipeline order + UI
 
 ## Success Criteria
 
-- Unit tests above pass; enabling then disabling all stages restores the bit-perfect path (byte-equality test still passes).
-- Album mode levelling keeps relative track loudness inside an album.
+- [x] Unit tests above pass; enabling then disabling all stages restores the bit-perfect path
+  (`removing_every_dsp_stage_restores_the_bit_perfect_path`).
+- [x] Album mode levelling keeps relative track loudness inside an album (the measured album
+  value is a duration-weighted energy average; track gains keep their LUFS difference).
+
+**Implementation note.** The EQ is a per-channel cascade of RBJ biquads in transposed direct
+form II; tests check gain at f0, shelf asymptotes, passband/stopband and per-channel state.
+R128 is implemented in `sonder-library` rather than added as a dependency: K-weighting uses the
+BS.1770 analog prototypes at the stream's own rate, 400 ms blocks over 100 ms hops, −70 LUFS
+absolute and −10 LU relative gates, 5.1 LFE excluded and surrounds weighted +1.5 dB; channels
+past the eighth count towards the peak only. The analysis job groups pending PCM
+tracks by album, writes `loudness_lufs/loudness_peak` (migration 0003, with the usual backup)
+and derives `album_lufs/album_peak` as a duration-weighted energy average, so mixed-rate albums
+and partial rescans still produce a usable album value; DSD is skipped. Silent or sub-block
+tracks store a placeholder below the absolute gate that yields no gain and is left out of the
+album average. A rescan clears the measurement of a changed file and the album values of every
+album it touched; the next pass re-measures and rebuilds them. Passes run on their own queued
+worker (one at a time), started by scans, the folder watcher and the Settings button, with
+progress and finished events; decoding happens outside the write transaction and a
+measurement is written only if the file was not re-indexed meanwhile. Levelling converts DSD
+to PCM only when that track has a non-zero gain; otherwise DoP/native DSD stay untouched. Levelling reads tags first, shifted from the ReplayGain −18 LUFS
+reference to the chosen target, and the measurement second, caps a boost at the track peak, and publishes its gain through
+an atomic so a gapless next track changes gain without rebuilding the chain. `Auto` uses album
+values while the queue holds a contiguous run of the album. Dither (2 LSB peak-to-peak TPDF,
+RMS 0.5 LSB) is inserted only when the chain shapes the signal and the device's widest container
+is narrower than the processed 24 bits, and the output spec then requests exactly that width so
+the 16-bit fallback is dithered rather than truncated. The pipeline order is headroom → SRC →
+PEQ → levelling → volume → dither. Clipping in the final conversion, or clamped by the dither
+quantiser, is counted and reported once
+per track (`PlayerEvent::Clipping`) and shown as a notice. Settings carry the EQ (with named
+presets), levelling mode and target, dither, and every phase 6 SRC option; the UI edits them on
+the Settings screen.
 
 ## Risk Assessment
 

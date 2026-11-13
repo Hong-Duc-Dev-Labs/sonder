@@ -1,5 +1,6 @@
 <script lang="ts">
-  // The queue as a glass card over the content (nothing behind it reflows). Rows are keyed by
+  // The queue in the inspector column: beside the page on wide windows, a card over it
+  // otherwise (see App.svelte). Rows are keyed by
   // their queue entry, so the highlight never jumps when entries move. Click or Enter plays a
   // row, the × removes it, Escape closes the card and returns focus to the queue button.
   import { onMount } from "svelte";
@@ -108,7 +109,7 @@
 
 <style>
   .panel {
-    width: 360px;
+    width: 100%;
     height: 100%;
     border-radius: var(--r-lg);
     display: flex;

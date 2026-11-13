@@ -189,13 +189,13 @@
     container-type: inline-size;
   }
   .missing {
-    padding: 96px var(--page-x) 96px calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 96px calc(var(--inset-right, 0px) + var(--page-x)) 96px calc(var(--inset-left, 0px) + var(--page-x));
   }
   .hero {
     display: flex;
     align-items: flex-end;
     gap: 40px;
-    padding: 84px var(--page-x) 36px calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 84px calc(var(--inset-right, 0px) + var(--page-x)) 36px calc(var(--inset-left, 0px) + var(--page-x));
   }
   .art {
     flex: none;
@@ -241,7 +241,7 @@
     cursor: default;
   }
   .body {
-    padding: 8px var(--page-x) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 8px calc(var(--inset-right, 0px) + var(--page-x)) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
   }
 
   @container (max-width: 760px) {

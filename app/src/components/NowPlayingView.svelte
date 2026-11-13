@@ -119,7 +119,7 @@
           aria-label="Queue"
           aria-expanded={app.queueOpen}
           data-queue-toggle
-          onclick={() => (app.queueOpen = !app.queueOpen)}
+          onclick={() => app.toggleQueue()}
         >
           <Icon name="queue" />
         </button>
@@ -128,7 +128,7 @@
           class:on={app.lyricsOpen}
           aria-label="Lyrics"
           aria-pressed={app.lyricsOpen}
-          onclick={() => (app.lyricsOpen = !app.lyricsOpen)}
+          onclick={() => app.toggleLyrics()}
         >
           <Icon name="lyrics" />
         </button>
@@ -183,7 +183,7 @@
     container-type: size;
     display: flex;
     flex-direction: column;
-    padding: 18px var(--page-x) 28px calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 18px calc(var(--inset-right, 0px) + var(--page-x)) 28px calc(var(--inset-left, 0px) + var(--page-x));
   }
   .np-head {
     display: flex;

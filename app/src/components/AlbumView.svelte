@@ -114,11 +114,11 @@
     container-type: inline-size;
   }
   .missing {
-    padding: 96px var(--page-x) 96px calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 96px calc(var(--inset-right, 0px) + var(--page-x)) 96px calc(var(--inset-left, 0px) + var(--page-x));
   }
   .hero {
     position: relative;
-    padding: 84px var(--page-x) 36px calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 84px calc(var(--inset-right, 0px) + var(--page-x)) 36px calc(var(--inset-left, 0px) + var(--page-x));
     overflow: hidden;
   }
   .backdrop {
@@ -198,7 +198,7 @@
     margin-top: 14px;
   }
   .body {
-    padding: 8px var(--page-x) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 8px calc(var(--inset-right, 0px) + var(--page-x)) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
   }
   .skeleton {
     border-radius: var(--r-lg);

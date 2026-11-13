@@ -16,6 +16,7 @@ import { tick } from "svelte";
 import { reducedMotion } from "./motion";
 
 export type View =
+  | { kind: "home" }
   | { kind: "albums" }
   | { kind: "album"; id: number }
   | { kind: "artists" }
@@ -136,6 +137,9 @@ function focusHeading() {
   document.querySelector<HTMLElement>("[data-view-heading]")?.focus({ preventScroll: true });
 }
 
+/** Narrowest window that docks the inspector; below it the inspector floats over the page. */
+const INSPECTOR_DOCK_MIN_PX = 1280;
+
 const emptySnapshot: PlayerSnapshot = {
   state: "stopped",
   index: null,
@@ -150,13 +154,27 @@ const emptySnapshot: PlayerSnapshot = {
 };
 
 class AppState {
-  view = $state<View>({ kind: "albums" });
+  view = $state<View>({ kind: "home" });
   history = $state<View[]>([]);
   player = $state<PlayerSnapshot>(emptySnapshot);
   queue = $state<QueueItem[]>([]);
   queueOpen = $state(false);
-  /** Now Playing shows the lyrics column in place of the title and badges. */
+  /**
+   * Lyrics are open: on Now Playing in place of the title and badges, on every other page in
+   * the inspector column.
+   */
   lyricsOpen = $state(false);
+  /** The window has room to dock the inspector beside the page instead of over it. */
+  wide = $state(false);
+  /** What the right-hand inspector shows: one panel at a time, none on Now Playing's lyrics. */
+  inspector = $derived<"queue" | "lyrics" | null>(
+    this.queueOpen ? "queue" : this.lyricsOpen && this.view.kind !== "now" ? "lyrics" : null,
+  );
+  /**
+   * The inspector sits beside the page, which narrows to make room for it. Now Playing keeps
+   * its full width for the stage, so its queue stays a card over it.
+   */
+  docked = $derived(this.inspector != null && this.wide && this.view.kind !== "now");
   /** Now Playing shows the engine's stage-by-stage signal path under the transport. */
   signalPathOpen = $state(false);
   settings = $state<Settings>({ albumSort: "artist" });
@@ -268,6 +286,20 @@ class AppState {
     this.flightLaunch(flight);
   }
 
+  /** Opens or closes the queue; outside Now Playing it takes the inspector from the lyrics. */
+  toggleQueue() {
+    const open = !this.queueOpen;
+    if (open && this.view.kind !== "now") this.lyricsOpen = false;
+    this.queueOpen = open;
+  }
+
+  /** Opens or closes the lyrics; outside Now Playing they take the inspector from the queue. */
+  toggleLyrics() {
+    const open = !this.lyricsOpen;
+    if (open && this.view.kind !== "now") this.queueOpen = false;
+    this.lyricsOpen = open;
+  }
+
   notify(level: Notice["level"], message: string) {
     const id = this.nextNotice++;
     this.notices.push({ id, level, message });
@@ -356,6 +388,9 @@ class AppState {
   }
 
   async init() {
+    const roomy = window.matchMedia(`(min-width: ${INSPECTOR_DOCK_MIN_PX}px)`);
+    this.wide = roomy.matches;
+    roomy.addEventListener("change", (e) => (this.wide = e.matches));
     await Promise.all([
       events.playerStateEvent.listen((e) => this.setPlayer(e.payload)),
       events.queueChangedEvent.listen((e) => (this.queue = e.payload)),

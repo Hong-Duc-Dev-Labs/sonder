@@ -1,7 +1,8 @@
 <script lang="ts">
   // The floating glass player: disc, title, a compact signal-path chip (full path in its
-  // popover), controls, seek bar and queue. Narrow (under ~860 px of its own width) the seek
-  // bar becomes a thin line along the pill's bottom edge. It slides away on Now Playing, which
+  // popover), controls, seek bar, then lyrics, queue and (only while software volume is on)
+  // volume. Narrow (under ~860 px of its own width) the seek bar becomes a thin line along the
+  // pill's bottom edge and the volume slider moves into a popover. It slides away on Now Playing, which
   // has its own controls.
   import { app } from "../lib/app.svelte";
   import { commands, type RepeatMode } from "../lib/bindings";
@@ -79,6 +80,21 @@
   };
   function cycleRepeat() {
     app.run(commands.playerSetRepeat(repeatOrder[repeat]));
+  }
+
+  // Software volume, only while it is on: with it off the output is bit-perfect and the status
+  // chip says so. The pill never turns it on; that is a choice made in Settings.
+  const VOL_MIN = -60;
+  let volumeDb = $derived(snap.volumeDb);
+  let volumeDraft = $state(0);
+  let volumeOpen = $state(false);
+  let volumeButton: HTMLButtonElement | undefined = $state();
+  $effect(() => {
+    if (volumeDb != null) volumeDraft = volumeDb;
+    else volumeOpen = false;
+  });
+  function commitVolume() {
+    app.run(commands.playerSetVolume(volumeDraft));
   }
 
   function commitSeek() {
@@ -193,18 +209,71 @@
 
     <div class="right">
       <button
+        data-lyrics-toggle
+        class="icon-btn"
+        class:on={app.lyricsOpen}
+        aria-label="Lyrics"
+        title="Lyrics"
+        aria-pressed={app.lyricsOpen}
+        onclick={() => app.toggleLyrics()}
+      >
+        <Icon name="lyrics" />
+      </button>
+      <button
         data-queue-toggle
         class="icon-btn"
         class:on={app.queueOpen}
         aria-label="Queue"
+        title="Queue"
         aria-expanded={app.queueOpen}
-        onclick={() => (app.queueOpen = !app.queueOpen)}
+        onclick={() => app.toggleQueue()}
       >
         <Icon name="queue" />
       </button>
+      {#if volumeDb != null}
+        <input
+          class="vol-inline"
+          type="range"
+          min={VOL_MIN}
+          max="0"
+          step="0.5"
+          aria-label="Software volume"
+          aria-valuetext="{volumeDraft.toFixed(1)} dB"
+          title="{volumeDraft.toFixed(1)} dB"
+          bind:value={volumeDraft}
+          onchange={commitVolume}
+        />
+        <button
+          class="icon-btn vol-btn"
+          bind:this={volumeButton}
+          aria-label="Software volume {volumeDraft.toFixed(1)} dB"
+          aria-haspopup="dialog"
+          aria-expanded={volumeOpen}
+          onclick={() => (volumeOpen = !volumeOpen)}
+        >
+          <Icon name="volume" />
+        </button>
+      {/if}
     </div>
   </div>
 </footer>
+
+<Popover anchor={volumeButton} bind:open={volumeOpen} placement="top" label="Software volume">
+  <div class="vol-pop">
+    <span class="kicker">Software volume</span>
+    <input
+      type="range"
+      min={VOL_MIN}
+      max="0"
+      step="0.5"
+      aria-label="Software volume"
+      aria-valuetext="{volumeDraft.toFixed(1)} dB"
+      bind:value={volumeDraft}
+      onchange={commitVolume}
+    />
+    <span class="device">{volumeDraft.toFixed(1)} dB</span>
+  </div>
+</Popover>
 
 <Popover anchor={statusChip} bind:open={statusOpen} placement="top" label="Signal path">
   <div class="path">
@@ -221,9 +290,11 @@
     /* its own layer during a cover morph: above the moving page, not cross-faded */
     view-transition-name: player;
     position: absolute;
-    left: calc(var(--sidebar) + var(--gutter) * 2);
-    right: var(--gutter);
-    bottom: var(--gutter);
+    /* inside the page sheet's bottom edge (App.svelte), one gutter in from each side, so it
+       narrows with the sheet when the inspector docks */
+    left: calc(var(--sidebar) + var(--gutter) * 3);
+    right: calc(max(var(--gutter), var(--inset-right)) + var(--gutter));
+    bottom: calc(var(--gutter) * 2);
     display: flex;
     justify-content: center;
     z-index: 20;
@@ -472,6 +543,25 @@
   .right {
     display: flex;
     align-items: center;
+    gap: 2px;
+  }
+  .vol-inline {
+    width: 96px;
+    margin-left: 6px;
+    accent-color: var(--ink);
+  }
+  .vol-btn {
+    display: none;
+  }
+  .vol-pop {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
+    min-width: 200px;
+  }
+  .vol-pop input {
+    accent-color: var(--ink);
   }
 
   .path {
@@ -513,6 +603,12 @@
     }
     .knob {
       display: none;
+    }
+    .vol-inline {
+      display: none;
+    }
+    .vol-btn {
+      display: grid;
     }
   }
 </style>

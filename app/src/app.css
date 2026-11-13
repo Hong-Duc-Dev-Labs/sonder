@@ -66,6 +66,10 @@
   /* room left under scrolling content so its end clears the floating player */
   --dock-reserve: 112px;
   --gutter: 12px;
+  /* the queue or lyrics column on the right */
+  --inspector-w: 340px;
+  /* what a docked inspector covers on the right; set on the shell, zero when closed */
+  --inset-right: 0px;
   /* horizontal page margin, added to whatever the sidebar covers */
   --page-x: 40px;
 
@@ -376,7 +380,7 @@ h3 {
 
 .page {
   height: 100%;
-  padding: 28px var(--page-x) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
+  padding: 28px calc(var(--inset-right, 0px) + var(--page-x)) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
 }
 
 .page-head {

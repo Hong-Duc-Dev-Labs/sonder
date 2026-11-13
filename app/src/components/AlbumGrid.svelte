@@ -110,7 +110,7 @@
 <style>
   .viewport {
     height: 100%;
-    padding: 4px var(--page-x) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 4px calc(var(--inset-right, 0px) + var(--page-x)) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
     contain: strict;
   }
   .spacer {

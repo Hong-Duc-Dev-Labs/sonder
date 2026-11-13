@@ -180,7 +180,8 @@
     font-weight: 800;
     letter-spacing: -0.02em;
     color: var(--ink);
-    opacity: 0.32;
+    /* how lit a line yet to be sung is; a host on glass raises it to stay readable */
+    opacity: var(--lyric-idle, 0.32);
     transform-origin: left center;
     transform: scale(0.97);
     transition:
@@ -189,7 +190,7 @@
       background var(--dur-fast) var(--ease-standard);
   }
   .line.past {
-    opacity: 0.5;
+    opacity: var(--lyric-past, 0.5);
   }
   .line.on {
     opacity: 1;

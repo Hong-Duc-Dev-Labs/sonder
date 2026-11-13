@@ -94,6 +94,56 @@ impl From<SdmOrderSetting> for sonder_engine::SdmOrder {
     }
 }
 
+/// Headphone crossfeed presets (libbs2b's).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum CrossfeedPresetSetting {
+    /// 700 Hz, 4.5 dB.
+    #[default]
+    Default,
+    /// 700 Hz, 6.0 dB.
+    ChuMoy,
+    /// 650 Hz, 9.5 dB.
+    JanMeier,
+}
+
+impl From<CrossfeedPresetSetting> for sonder_engine::CrossfeedPreset {
+    fn from(preset: CrossfeedPresetSetting) -> Self {
+        match preset {
+            CrossfeedPresetSetting::Default => sonder_engine::CrossfeedPreset::Default,
+            CrossfeedPresetSetting::ChuMoy => sonder_engine::CrossfeedPreset::ChuMoy,
+            CrossfeedPresetSetting::JanMeier => sonder_engine::CrossfeedPreset::JanMeier,
+        }
+    }
+}
+
+/// What Settings shows about an impulse response file.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ImpulseResponseInfo {
+    pub path: String,
+    pub name: String,
+    pub rate: u32,
+    pub channels: u32,
+    pub seconds: f64,
+    /// Highest gain of the response; a positive value is the headroom it needs.
+    pub peak_gain_db: f64,
+}
+
+impl ImpulseResponseInfo {
+    pub fn describe(path: &str) -> Result<Self, sonder_engine::IrError> {
+        let ir = sonder_engine::ImpulseResponse::load_cached(std::path::Path::new(path))?;
+        Ok(Self {
+            path: path.to_owned(),
+            name: ir.name().to_owned(),
+            rate: ir.rate(),
+            channels: u32::try_from(ir.channel_count()).unwrap_or(u32::MAX),
+            seconds: ir.frames() as f64 / f64::from(ir.rate()),
+            peak_gain_db: ir.peak_gain_db(),
+        })
+    }
+}
+
 /// How DSD files reach an output device.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

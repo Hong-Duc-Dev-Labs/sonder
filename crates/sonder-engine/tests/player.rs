@@ -1514,6 +1514,7 @@ fn shaped_dsp() -> DspConfig {
         leveling: sonder_dsp::LevelingMode::Track,
         leveling_target_lufs: -18.0,
         dither: true,
+        ..DspConfig::default()
     }
 }
 
@@ -1813,6 +1814,50 @@ fn pcm_to_dsd64_reaches_the_device_over_dop() {
         path.stages.iter().any(|s| s.name == "DoP"),
         "signal path: {path:#?}"
     );
+}
+
+#[test]
+fn convolution_moves_ahead_of_the_converter_only_above_384_khz() {
+    // DSD64's modulator input (352.8 kHz) is still a normal rate for convolution; DSD128's
+    // (705.6 kHz) would stretch the response, so it runs at the source rate instead.
+    for (mode, before, detail) in [
+        (
+            sonder_engine::SdmMode::Dsd64,
+            false,
+            "room.wav: 3528 taps at 352800 Hz, resampled from 44100 Hz",
+        ),
+        (
+            sonder_engine::SdmMode::Dsd128,
+            true,
+            "room.wav: 441 taps at 44100 Hz",
+        ),
+    ] {
+        let track = tone_wav("sdm-conv.wav", 44_100, 16, 8_000);
+        let mut config = PlayerConfig::new(NullBackend::device_id());
+        config.sdm.mode = mode;
+        let mut h = vec![0.0; 441];
+        h[0] = 1.0;
+        let ir = sonder_engine::ImpulseResponse::new("room.wav".into(), 44_100, vec![h]).unwrap();
+        config.dsp.convolution = Some(Ok(std::sync::Arc::new(ir)));
+        let (player, events, control) = start_with(config, dsd_device());
+        player.enqueue(vec![track]);
+        player.play();
+        let seen = wait_end(&events);
+
+        assert_eq!(control.sessions().len(), 1, "{mode:?}");
+        let path = signal_path(&seen);
+        let names: Vec<&str> = path.stages.iter().map(|s| s.name.as_str()).collect();
+        let conv = names
+            .iter()
+            .position(|n| *n == "Convolution")
+            .expect("convolution");
+        let src = names
+            .iter()
+            .position(|n| *n == "Resampler")
+            .expect("resampler");
+        assert_eq!(conv < src, before, "{mode:?}: {names:?}");
+        assert_eq!(path.stages[conv].detail, detail, "{mode:?}");
+    }
 }
 
 #[test]

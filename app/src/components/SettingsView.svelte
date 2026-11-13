@@ -5,7 +5,10 @@
     commands,
     events,
     type BiquadKindSetting,
+    type ConvolutionSetting,
     type CoverStyle,
+    type CrossfeedPresetSetting,
+    type CrossfeedSetting,
     type Device,
     type DsdMode,
     type DsdPcmRate,
@@ -13,6 +16,7 @@
     type FilterSourceSetting,
     type FilterVariantSetting,
     type GlassQuality,
+    type ImpulseResponseInfo,
     type LevelingSetting,
     type PeqBandSetting,
     type PcmToDsd,
@@ -201,6 +205,55 @@
     const next = { ...peqPresets };
     delete next[name];
     app.saveSettings({ ...app.settings, peqPresets: next, peqPreset: null });
+  }
+
+  // ----- DSP: convolution and crossfeed -----
+
+  let convolution = $derived<ConvolutionSetting>(app.settings.convolution ?? {});
+  let crossfeed = $derived<CrossfeedSetting>(app.settings.crossfeed ?? {});
+  let irInfo = $state<ImpulseResponseInfo | null>(null);
+  let irError = $state<string | null>(null);
+  const crossfeedPresets: { value: CrossfeedPresetSetting; label: string; hint: string }[] = [
+    { value: "default", label: "Default", hint: "700 Hz, 4.5 dB: closest to speakers" },
+    { value: "chuMoy", label: "Chu Moy", hint: "700 Hz, 6 dB" },
+    { value: "janMeier", label: "Jan Meier", hint: "650 Hz, 9.5 dB: the lightest" },
+  ];
+
+  // Describe the chosen file when Settings opens or the file changes.
+  $effect(() => {
+    const path = convolution.path;
+    if (!path) {
+      irInfo = null;
+      irError = null;
+      return;
+    }
+    if (irInfo?.path === path) return;
+    commands.impulseResponseInfo(path).then(
+      (info) => {
+        irInfo = info;
+        irError = null;
+      },
+      (err) => {
+        irInfo = null;
+        irError = typeof err === "string" ? err : String(err);
+      },
+    );
+  });
+
+  function saveConvolution(change: Partial<ConvolutionSetting>) {
+    app.saveSettings({ ...app.settings, convolution: { ...convolution, ...change } });
+  }
+
+  async function pickImpulseResponse() {
+    const info = await app.run(commands.settingsPickImpulseResponse());
+    if (!info) return;
+    irInfo = info;
+    irError = null;
+    saveConvolution({ path: info.path, enabled: true });
+  }
+
+  function saveCrossfeed(change: Partial<CrossfeedSetting>) {
+    app.saveSettings({ ...app.settings, crossfeed: { ...crossfeed, ...change } });
   }
 
   function setLeveling(mode: LevelingSetting) {
@@ -408,6 +461,45 @@
       </div>
     </section>
 
+    <section aria-labelledby="conv-title">
+      <div class="group-head"><h3 id="conv-title">Convolution</h3></div>
+      <div class="card soft">
+        <div class="row">
+          <span class="icon"><Icon name="signal" size={18} /></span>
+          <span class="info">
+            <span class="name">Impulse response</span>
+            <span class="dim small">
+              {#if irInfo}
+                {irInfo.name} · {rate(irInfo.rate)} · {irInfo.channels} ch ·
+                {(irInfo.seconds ?? 0).toFixed(2)} s. Resampled to each track's rate.
+              {:else if irError}
+                {irError}
+              {:else}
+                A WAV room-correction or headphone response, mono or one channel per output
+                channel, up to 2 s.
+              {/if}
+            </span>
+          </span>
+          <button class="btn small" onclick={pickImpulseResponse}>Choose…</button>
+          <input
+            type="checkbox"
+            role="switch"
+            class="switch"
+            aria-label="Convolution"
+            disabled={!convolution.path}
+            checked={convolution.enabled ?? false}
+            onchange={(e) => saveConvolution({ enabled: e.currentTarget.checked })}
+          />
+        </div>
+        {#if irInfo && (irInfo.peakGainDb ?? 0) > 0.1}
+          <p class="note">
+            This response boosts up to +{(irInfo.peakGainDb ?? 0).toFixed(1)} dB, so loud tracks
+            can clip. Lower the EQ preamp (or the headroom when upsampling) by at least that much.
+          </p>
+        {/if}
+      </div>
+    </section>
+
     <section aria-labelledby="peq-title">
       <div class="group-head"><h3 id="peq-title">Parametric EQ</h3></div>
       <div class="card soft">
@@ -510,6 +602,50 @@
           {#if app.settings.peqPreset}
             <button class="btn small" onclick={deletePreset}>Delete preset</button>
           {/if}
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="xfeed-title">
+      <div class="group-head"><h3 id="xfeed-title">Headphone crossfeed</h3></div>
+      <div class="card soft">
+        <div class="row">
+          <span class="icon"><Icon name="speaker" size={18} /></span>
+          <span class="info">
+            <span class="name">Crossfeed</span>
+            <span class="dim small">
+              Blends a little of each channel into the other, as speakers do, for stereo tracks.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            class="switch"
+            aria-label="Crossfeed"
+            checked={crossfeed.enabled ?? false}
+            onchange={(e) => saveCrossfeed({ enabled: e.currentTarget.checked })}
+          />
+        </div>
+        <div class="row">
+          <span class="icon"><Icon name="speaker" size={18} /></span>
+          <span class="info">
+            <span class="name" id="xfeed-preset-label">Preset</span>
+            <span class="dim small">
+              {crossfeedPresets.find((p) => p.value === (crossfeed.preset ?? "default"))?.hint}
+            </span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="xfeed-preset-label">
+            {#each crossfeedPresets as preset (preset.value)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(crossfeed.preset ?? "default") === preset.value}
+                onclick={() => saveCrossfeed({ preset: preset.value })}
+              >
+                {preset.label}
+              </button>
+            {/each}
+          </div>
         </div>
       </div>
     </section>

@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use sha2::{Digest, Sha256};
 use sonder_dsp::{
-    DsdToPcm, FilterPhase, FilterSource, FilterSpec, FilterVariant, Peq, PeqBand, PeqStage,
-    Resampler, Sdm, SdmOrder, SdmRate, SonderDesigned, Stage, StreamFormat,
+    CrossfeedPreset, DsdToPcm, FilterPhase, FilterSource, FilterSpec, FilterVariant,
+    ImpulseResponse, Peq, PeqBand, PeqStage, Resampler, Sdm, SdmOrder, SdmRate, SonderDesigned,
+    Stage, StreamFormat,
 };
 use sonder_engine::{Player, PlayerConfig, PlayerEvent};
 use sonder_output::format::pack;
@@ -473,6 +474,116 @@ fn the_signal_path_lists_every_active_stage() {
         "{path:#?}"
     );
     assert!(path.stages.iter().any(|s| s.name == "PEQ"), "{path:#?}");
+}
+
+fn dirac(rate: u32, frames: usize) -> std::sync::Arc<ImpulseResponse> {
+    let mut h = vec![0.0; frames];
+    h[0] = 1.0;
+    std::sync::Arc::new(ImpulseResponse::new("dirac.wav".into(), rate, vec![h]).unwrap())
+}
+
+#[test]
+fn a_dirac_convolution_reaches_the_device_unchanged_across_a_gapless_join() {
+    // Two tracks that do not fill a whole number of partitions: frames the convolver holds
+    // must carry into the next track, and the response's tail must only come at the end.
+    let first = wav("conv-a.wav", 44_100, 24, 10_001);
+    let second = wav("conv-b.wav", 44_100, 24, 7_777);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.dsp.convolution = Some(Ok(dirac(44_100, 3_000)));
+    let (player, events, control) = start(config, NullBackend::new());
+    player.enqueue(vec![first.clone(), second.clone()]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 1, "{seen:#?}");
+    let session = &sessions[0];
+    let mut expected = decoded(&first);
+    expected.extend(decoded(&second));
+    let mut device = session.bytes.clone();
+    let wanted = packed(session.format.container, &expected);
+    // The response's own tail (zeros for a Dirac) follows the music at the end of the queue.
+    let tail = device.split_off(wanted.len().min(device.len()));
+    assert_eq!(device.len(), wanted.len(), "{seen:#?}");
+    assert!(
+        device == wanted,
+        "the convolved samples differ from the source"
+    );
+    assert!(
+        tail.iter().all(|&b| b == 0),
+        "the tail after the music is not silent"
+    );
+}
+
+#[test]
+fn convolution_and_crossfeed_take_their_places_in_the_signal_path() {
+    let path = tone_wav("path-conv.wav", 44_100, 16, 20_000, 1000.0);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.src.target = sonder_engine::SrcTarget::Fixed(88_200);
+    config.dsp.convolution = Some(Ok(dirac(48_000, 4_800)));
+    config.dsp.crossfeed = Some(CrossfeedPreset::ChuMoy);
+    config.dsp.peq = Some(Peq {
+        preamp_db: -3.0,
+        bands: vec![PeqBand {
+            freq_hz: 1_000.0,
+            gain_db: 3.0,
+            q: 1.0,
+            ..PeqBand::default()
+        }],
+    });
+    let (player, events, _control) = start(config, NullBackend::new());
+    player.enqueue(vec![path]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let path = seen
+        .iter()
+        .find_map(|event| match event {
+            PlayerEvent::SignalPath(path) => Some(path),
+            _ => None,
+        })
+        .expect("signal path");
+    assert!(!path.bit_perfect);
+    let names: Vec<&str> = path.stages.iter().map(|s| s.name.as_str()).collect();
+    let at = |name: &str| names.iter().position(|n| *n == name);
+    let (src, conv, peq, cross) = (
+        at("Resampler").expect("resampler"),
+        at("Convolution").expect("convolution"),
+        at("PEQ").expect("peq"),
+        at("Crossfeed").expect("crossfeed"),
+    );
+    assert!(src < conv && conv < peq && peq < cross, "{names:?}");
+    let detail = &path.stages[conv].detail;
+    assert!(
+        detail.contains("8820 taps at 88200 Hz") && detail.contains("resampled from 48000 Hz"),
+        "{detail}"
+    );
+    assert!(path.stages[cross].detail.starts_with("Chu Moy"));
+}
+
+#[test]
+fn a_response_that_cannot_be_read_turns_convolution_off_with_a_warning() {
+    let path = tone_wav("conv-missing.wav", 44_100, 16, 5_000, 1000.0);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.dsp.convolution = Some(ImpulseResponse::load_cached(Path::new("no/such/ir.wav")));
+    let (player, events, control) = start(config, NullBackend::new());
+    player.enqueue(vec![path.clone()]);
+    player.play();
+    let seen = wait_end(&events);
+
+    assert!(
+        seen.iter().any(|event| matches!(
+            event,
+            PlayerEvent::Warning(text) if text.starts_with("convolution is off")
+        )),
+        "{seen:#?}"
+    );
+    // Nothing else is on, so the track still plays bit-perfect.
+    let session = &control.sessions()[0];
+    assert_eq!(
+        session.bytes,
+        packed(session.format.container, &decoded(&path))
+    );
 }
 
 // ----- criterion: the bundle never contains Roon data -----

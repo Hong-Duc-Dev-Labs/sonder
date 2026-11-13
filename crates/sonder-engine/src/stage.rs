@@ -4,4 +4,6 @@
 //! volume and dither share one interface; the engine re-exports what its own modules use.
 
 pub use sonder_dsp::stage::{Stage, StreamFormat};
-pub use sonder_dsp::{Dither, GainHandle, LevelingStage, Peq, PeqStage, Volume};
+pub use sonder_dsp::{
+    Convolver, Crossfeed, Dither, GainHandle, LevelingStage, Peq, PeqStage, Volume,
+};

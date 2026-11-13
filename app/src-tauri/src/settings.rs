@@ -2,9 +2,7 @@
 
 use std::fs;
 use std::io::ErrorKind;
-#[cfg(test)]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -13,8 +11,26 @@ use sonder_output::DeviceId;
 use specta::Type;
 
 use crate::dto::{
-    CoverStyle, DsdMode, DsdPcmRate, GlassQuality, PcmToDsd, SdmOrderSetting, SortOrder,
+    CoverStyle, CrossfeedPresetSetting, DsdMode, DsdPcmRate, GlassQuality, PcmToDsd,
+    SdmOrderSetting, SortOrder,
 };
+
+/// Convolution with an impulse response file.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ConvolutionSetting {
+    pub enabled: bool,
+    /// WAV file holding the response.
+    pub path: Option<String>,
+}
+
+/// Headphone crossfeed.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CrossfeedSetting {
+    pub enabled: bool,
+    pub preset: CrossfeedPresetSetting,
+}
 
 /// One parametric EQ band as the settings file and the UI store it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
@@ -174,8 +190,12 @@ pub struct Settings {
     pub pcm_to_dsd: PcmToDsd,
     /// Sigma-delta modulator order for PCM→DSD.
     pub sdm_order: SdmOrderSetting,
+    /// Convolution with an impulse response (runs before the EQ).
+    pub convolution: ConvolutionSetting,
     /// Parametric EQ preset in use.
     pub peq: PeqSetting,
+    /// Headphone crossfeed (runs after the EQ).
+    pub crossfeed: CrossfeedSetting,
     /// Saved EQ presets, by name.
     pub peq_presets: BTreeMap<String, PeqSetting>,
     /// Name of the preset `peq` came from, when it has not been edited since.
@@ -203,7 +223,9 @@ impl Default for Settings {
             dsd_pcm_rate: DsdPcmRate::default(),
             pcm_to_dsd: PcmToDsd::default(),
             sdm_order: SdmOrderSetting::default(),
+            convolution: ConvolutionSetting::default(),
             peq: PeqSetting::default(),
+            crossfeed: CrossfeedSetting::default(),
             peq_presets: BTreeMap::new(),
             peq_preset: None,
             leveling: LevelingSetting::default(),
@@ -244,6 +266,7 @@ impl Settings {
             .filter(|db| db.is_finite())
             .map(|db| db.clamp(-60.0, 0.0));
         self.src.roon_folder = self.src.roon_folder.filter(|dir| !dir.is_empty());
+        self.convolution.path = self.convolution.path.filter(|path| !path.is_empty());
         self
     }
 
@@ -511,7 +534,16 @@ impl Settings {
     /// The engine's view of the EQ, levelling and dither settings.
     pub fn engine_dsp(&self) -> sonder_engine::DspConfig {
         sonder_engine::DspConfig {
+            // The file is read here (and cached while unchanged); a failure reaches the
+            // engine, which turns the stage off and says why.
+            convolution: self
+                .convolution
+                .path
+                .as_deref()
+                .filter(|_| self.convolution.enabled)
+                .map(|path| sonder_engine::ImpulseResponse::load_cached(Path::new(path))),
             peq: Some(self.peq.clone().into()).filter(|peq: &sonder_dsp::Peq| peq.active()),
+            crossfeed: self.crossfeed.enabled.then(|| self.crossfeed.preset.into()),
             leveling: self.leveling.into(),
             leveling_target_lufs: self.leveling_target_lufs,
             dither: self.dither,
@@ -561,6 +593,43 @@ mod dsp_settings_tests {
         let dsp = settings.engine_dsp();
         assert!(dsp.peq.is_none());
         assert_eq!(dsp.leveling_target_lufs, sonder_engine::MIN_TARGET_LUFS);
+    }
+
+    #[test]
+    fn convolution_and_crossfeed_reach_the_engine_only_when_switched_on() {
+        let mut settings = Settings {
+            convolution: ConvolutionSetting {
+                enabled: false,
+                path: Some("no/such/response.wav".into()),
+            },
+            crossfeed: CrossfeedSetting {
+                enabled: false,
+                preset: CrossfeedPresetSetting::ChuMoy,
+            },
+            ..Settings::default()
+        };
+        let dsp = settings.engine_dsp();
+        assert!(dsp.convolution.is_none());
+        assert!(dsp.crossfeed.is_none());
+
+        settings.convolution.enabled = true;
+        settings.crossfeed.enabled = true;
+        let dsp = settings.engine_dsp();
+        // A missing file reaches the engine as a reason, not as a silent "off".
+        assert!(matches!(dsp.convolution, Some(Err(_))));
+        assert_eq!(dsp.crossfeed, Some(sonder_engine::CrossfeedPreset::ChuMoy));
+    }
+
+    #[test]
+    fn a_settings_file_from_before_convolution_loads_with_both_off() {
+        let settings: Settings = toml::from_str("dither = false\n").unwrap();
+        assert_eq!(settings.convolution, ConvolutionSetting::default());
+        assert_eq!(settings.crossfeed, CrossfeedSetting::default());
+        assert!(!settings.dither);
+        // An empty path from a hand-edited file means no file.
+        let edited: Settings =
+            toml::from_str("[convolution]\nenabled = true\npath = \"\"\n").unwrap();
+        assert_eq!(edited.sanitized().convolution.path, None);
     }
 
     #[test]

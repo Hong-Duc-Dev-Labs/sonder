@@ -484,17 +484,21 @@ fn the_repository_has_no_roon_filter_files() {
         .unwrap()
         .parent()
         .unwrap();
+    // Paths relative to the repository, so the folder the clone lives in never matches.
     let forbidden = |name: &str, path: &Path| {
         name.starts_with("polyphase_")
             || name == "filters_manifest.json"
             || name.ends_with(".decrypted")
             || (name.ends_with(".csv")
-                && path
-                    .components()
-                    .any(|c| c.as_os_str().to_string_lossy().contains("filter")))
+                && path.components().any(|c| {
+                    c.as_os_str()
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .contains("filter")
+                }))
     };
     let mut found = Vec::new();
-    for entry in walk_files(root) {
+    for entry in repository_files(root) {
         let name = entry
             .file_name()
             .map(|n| n.to_string_lossy().to_lowercase())
@@ -503,11 +507,34 @@ fn the_repository_has_no_roon_filter_files() {
             found.push(entry);
         }
     }
-    found.retain(|path| !path.to_string_lossy().contains("target"));
     assert!(
         found.is_empty(),
         "forbidden Roon data in the tree: {found:#?}"
     );
+}
+
+/// The files git tracks, relative to `root`, so a local, ignored filter folder (where a user
+/// may keep their own Roon tables) does not fail the check. Without git, every file under
+/// `root` except build output and dependencies.
+fn repository_files(root: &Path) -> Vec<PathBuf> {
+    let tracked = std::process::Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|output| output.status.success());
+    match tracked {
+        Some(output) => output
+            .stdout
+            .split(|&byte| byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| PathBuf::from(String::from_utf8_lossy(path).into_owned()))
+            .collect(),
+        None => walk_files(root)
+            .into_iter()
+            .filter_map(|path| path.strip_prefix(root).ok().map(Path::to_path_buf))
+            .collect(),
+    }
 }
 
 fn walk_files(dir: &Path) -> Vec<PathBuf> {

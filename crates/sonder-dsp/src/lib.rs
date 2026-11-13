@@ -5,13 +5,16 @@
 //! [`FilterSourceChain`]: Roon tables when the user supplied a folder and the table exists,
 //! otherwise Sonder's runtime design. See [`multistage`] for how large ratios are split.
 //! [`PeqStage`], [`LevelingStage`], [`Volume`] and [`Dither`] are the remaining PCM stages;
-//! the engine orders them headroom → SRC → PEQ → levelling → volume → dither.
+//! the engine orders them headroom → SRC → convolution → PEQ → crossfeed → levelling → volume →
+//! dither ([`Convolver`] and [`Crossfeed`] are the two optional shaping stages).
 
 mod dsd_tables {
     include!(concat!(env!("OUT_DIR"), "/dsd_tables.rs"));
 }
 
 pub mod biquad;
+pub mod convolver;
+pub mod crossfeed;
 pub mod dither;
 pub mod dsd2pcm;
 pub mod filter_source;
@@ -28,6 +31,8 @@ pub mod stage;
 pub mod volume;
 
 pub use biquad::{Biquad, BiquadCoeffs, BiquadKind};
+pub use convolver::{Convolver, ImpulseResponse, IrError, MAX_IR_SECONDS};
+pub use crossfeed::{Crossfeed, CrossfeedPreset};
 pub use dither::Dither;
 pub use dsd2pcm::{DSD_PCM_RATES, DsdToPcm};
 pub use filter_source::{

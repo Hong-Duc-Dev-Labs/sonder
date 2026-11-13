@@ -21,16 +21,17 @@ use sonder_decode::{
     DSD_SOURCE_BITS, DecodeError, DsdFormat, SourceDecoder, SourceFormat, TrackFormat,
 };
 use sonder_output::{
-    DeviceFormat, DeviceId, OutputBackend, OutputError, SampleProducer, Stream, StreamHandle,
-    StreamOptions, WriteTap, negotiate, negotiate_dop, negotiate_native, sample_ring,
+    DeviceFormat, DeviceId, OutputBackend, OutputError, SampleContainer, SampleProducer, Stream,
+    StreamHandle, StreamOptions, WriteTap, negotiate, negotiate_dop, negotiate_native, sample_ring,
 };
 
 use crate::dsp::{DspConfig, LoudnessSource, NoLoudness, TrackGain};
 use crate::queue::Queue;
 use crate::rate::{self, DeviceFormats, FilterResolver, SignalStage, SrcConfig, SrcPlan};
+use crate::sdm::SdmConfig;
 use crate::stage::{Dither, GainHandle, LevelingStage, Peq, PeqStage, Stage, Volume};
-use crate::worker::{DecodeWorker, DsdMode, OutputMode, OutputSpec};
-use sonder_dsp::{Gain, LevelingMode};
+use crate::worker::{DecodeWorker, DsdMode, OutputMode, OutputSpec, SdmPacking};
+use sonder_dsp::{Gain, LevelingMode, SdmOrder, SdmRate};
 
 /// How long a seek waits for the render thread to drop queued audio before reopening instead.
 const FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
@@ -83,6 +84,9 @@ pub enum Command {
         modes: HashMap<DeviceId, DsdMode>,
         pcm_rate: DsdPcmRate,
     },
+    /// Replaces the PCM→DSD output mode and modulator order. A playing PCM track restarts
+    /// from its position so the change is heard after one ring.
+    SetSdm(SdmConfig),
     Shutdown,
 }
 
@@ -200,6 +204,8 @@ pub struct PlayerConfig {
     pub src: SrcConfig,
     /// PCM shaping: EQ, levelling and dither.
     pub dsp: DspConfig,
+    /// PCM→DSD output: rate and modulator order. `Off` keeps PCM output.
+    pub sdm: SdmConfig,
     /// ReplayGain / loudness lookup for levelling; the default knows nothing.
     pub loudness: Arc<dyn LoudnessSource>,
 }
@@ -217,6 +223,7 @@ impl PlayerConfig {
             dsd_pcm_rate: DsdPcmRate::R176_4,
             src: SrcConfig::default(),
             dsp: DspConfig::default(),
+            sdm: SdmConfig::default(),
             loudness: Arc::new(NoLoudness),
         }
     }
@@ -336,6 +343,12 @@ impl Player {
             modes,
             pcm_rate,
         });
+    }
+
+    /// Replaces the PCM→DSD output mode and order. The current track restarts from its
+    /// position when the change reaches it.
+    pub fn set_sdm(&self, sdm: SdmConfig) {
+        self.send(Command::SetSdm(sdm));
     }
 }
 
@@ -529,6 +542,13 @@ struct Engine {
     /// Track whose fallback SRC was already tried after a refusal; a second refusal is a
     /// normal output failure.
     src_retry: Option<usize>,
+    /// The PCM→DSD rate applied to the current plan, if any.
+    sdm_rate: Option<SdmRate>,
+    /// The modulator-limit warning was announced for the current track.
+    sdm_warned: bool,
+    /// Device and rate the "cannot carry PCM→DSD" warning was last shown for, so it is said
+    /// once, not on every track.
+    sdm_carrier_warned: Option<(DeviceId, SdmRate)>,
     /// Device formats per (device, channels), queried once while the device is free.
     device_formats: DeviceFormats,
 }
@@ -583,6 +603,9 @@ impl Engine {
             dither_clipped: Arc::new(AtomicU64::new(0)),
             bitstream: false,
             src_retry: None,
+            sdm_rate: None,
+            sdm_warned: false,
+            sdm_carrier_warned: None,
             device_formats: HashMap::new(),
         };
         for warning in warnings {
@@ -690,6 +713,7 @@ impl Engine {
                 modes,
                 pcm_rate,
             } => self.set_dsd(default_mode, modes, pcm_rate),
+            Command::SetSdm(sdm) => self.set_sdm(sdm),
             Command::Shutdown => return false,
         }
         true
@@ -1071,7 +1095,12 @@ impl Engine {
         tail: &mut Vec<i32>,
         converted: bool,
     ) {
-        let target = self.target_for(rate, bits, channels);
+        // A PCM→DSD track always goes to the modulator's input rate; the explicit SRC
+        // policy and the fallback table only choose rates for PCM output.
+        let target = match self.sdm_rate {
+            Some(rate_sdm) => Some(rate_sdm.input_rate()).filter(|&target| target != rate),
+            None => self.target_for(rate, bits, channels),
+        };
         let key = (rate, channels, target);
         let plan_changed = self.plan_key != Some(key);
         self.channels = channels;
@@ -1120,6 +1149,13 @@ impl Engine {
     /// worker derives (DSD→PCM), which counts as shaped. A device that cannot be probed keeps
     /// the signal undithered because its width is unknown.
     fn refresh_dither(&mut self, channels: u16, converted: bool) -> bool {
+        if self.sdm_rate.is_some() {
+            // The modulator's own noise shaping replaces dither; quantising to a PCM word
+            // first would only add noise.
+            let changed = self.dither_bits.is_some();
+            self.dither_bits = None;
+            return changed;
+        }
         let shaping = converted
             || self.plan.is_some()
             || self.config.dsp.peq_active()
@@ -1246,13 +1282,19 @@ impl Engine {
 
     fn signal_path(&self, source: SourceFormat, spec: OutputSpec) -> SignalPath {
         let mut stages = Vec::new();
-        if spec.mode == OutputMode::Pcm
-            && let Some(plan) = &self.plan
-        {
+        // A plan only exists for a PCM source, and every PCM stage runs before either a PCM
+        // container or the modulator. DoP and native DSD from a DSD source run no stages
+        // (see `compose_stages`), so only stages that actually shape the signal are listed.
+        let shaped = !self.bitstream;
+        if let Some(plan) = &self.plan {
             stages.extend(plan.describe());
         }
-        if spec.mode == OutputMode::Pcm
-            && let Some(peq) = self.config.dsp.peq.as_ref().filter(|p| p.active())
+        if let Some(peq) = self
+            .config
+            .dsp
+            .peq
+            .as_ref()
+            .filter(|p| shaped && p.active())
         {
             let bands = peq.bands.iter().filter(|b| b.enabled).count();
             stages.push(SignalStage {
@@ -1260,7 +1302,7 @@ impl Engine {
                 detail: format!("{bands} bands, preamp {:+.1} dB", peq.preamp_db),
             });
         }
-        if spec.mode == OutputMode::Pcm && self.config.dsp.leveling.is_on() {
+        if shaped && self.config.dsp.leveling.is_on() {
             stages.push(SignalStage {
                 name: "Levelling".into(),
                 detail: format!(
@@ -1276,7 +1318,7 @@ impl Engine {
                 ),
             });
         }
-        if let Some(db) = self.volume_db {
+        if let Some(db) = self.volume_db.filter(|_| shaped) {
             stages.push(SignalStage {
                 name: "Volume".into(),
                 detail: format!("{db:+.1} dB"),
@@ -1286,6 +1328,30 @@ impl Engine {
             stages.push(SignalStage {
                 name: "Dither".into(),
                 detail: format!("TPDF to {bits}-bit"),
+            });
+        }
+        if let Some(rate) = self.sdm_rate.filter(|_| spec.mode != OutputMode::Pcm) {
+            stages.push(SignalStage {
+                name: "DSD modulator".into(),
+                detail: format!(
+                    "{}: {} order, {} → {} bit samples",
+                    rate.as_str(),
+                    match self.config.sdm.order {
+                        SdmOrder::Order5 => "5th",
+                        SdmOrder::Order7 => "7th",
+                    },
+                    rate.input_rate(),
+                    rate.bit_rate()
+                ),
+            });
+            stages.push(SignalStage {
+                name: if spec.mode == OutputMode::Dop {
+                    "DoP"
+                } else {
+                    "Native DSD"
+                }
+                .into(),
+                detail: format!("carrier {} Hz", spec.rate),
             });
         }
         let bit_perfect = stages.is_empty()
@@ -1336,6 +1402,21 @@ impl Engine {
             );
             self.restart(at.0, at.1);
         }
+    }
+
+    fn set_sdm(&mut self, sdm: SdmConfig) {
+        if self.config.sdm == sdm {
+            return;
+        }
+        let was_on = self.config.sdm.is_on();
+        self.config.sdm = sdm;
+        // A stopped player picks the mode up with the next track. A playing PCM track has to
+        // re-decode so the new output mode is reached after one ring, not the whole feed.
+        if sdm.is_on() != was_on && !sdm.is_on() {
+            self.sdm_rate = None;
+            self.sync_stages();
+        }
+        self.restart_if_playing();
     }
 
     fn set_device(&mut self, device: DeviceId) {
@@ -1459,6 +1540,60 @@ impl Engine {
         self.open_track(index, pos, false);
     }
 
+    /// Picks the carrier for a PCM track that should be modulated to DSD.
+    ///
+    /// `None` means "stay PCM": the mode is off, or the device takes neither DoP nor native
+    /// DSD at that rate. An open stream that already carries this rate is reused without asking
+    /// the device again (gapless tracks). A probe that fails because our own stream holds the
+    /// device assumes the requested carrier; [`open_output`](Self::open_output) re-decides once
+    /// the device is free, exactly like [`choose_dsd_mode`](Self::choose_dsd_mode).
+    fn choose_sdm(&self, source: SourceFormat) -> Option<(SdmRate, SdmPacking)> {
+        let rate = self.config.sdm.mode.rate()?;
+        let requested = self.config.dsd_mode_for(&self.config.device);
+        let backend = self.backend.as_ref();
+        let device = &self.config.device;
+        let channels = source.channels;
+        if let Some(out) = &self.out
+            && out.format.channels == channels
+        {
+            match out.mode {
+                OutputMode::NativeDsd
+                    if requested == DsdMode::Native && out.format.rate == rate.native_rate() =>
+                {
+                    return Some((rate, SdmPacking::Native));
+                }
+                OutputMode::Dop if out.format.rate == rate.dop_rate() => {
+                    return Some((rate, SdmPacking::Dop));
+                }
+                _ => {}
+            }
+        }
+        let native = || {
+            probe(negotiate_native(
+                backend,
+                device,
+                rate.native_rate(),
+                channels,
+            ))
+        };
+        let dop = || probe(negotiate_dop(backend, device, rate.dop_rate(), channels));
+        let packing = if requested == DsdMode::Native {
+            match native() {
+                Probe::Yes | Probe::Unknown => SdmPacking::Native,
+                Probe::No => match dop() {
+                    Probe::Yes | Probe::Unknown => SdmPacking::Dop,
+                    Probe::No => None?,
+                },
+            }
+        } else {
+            match dop() {
+                Probe::Yes | Probe::Unknown => SdmPacking::Dop,
+                Probe::No => None?,
+            }
+        };
+        Some((rate, packing))
+    }
+
     /// Picks how a DSD track reaches the current device, with a reason when the configured
     /// mode cannot be used.
     ///
@@ -1553,6 +1688,7 @@ impl Engine {
     /// tails belong in the stream; after a seek or stop they are discarded.
     fn open_track(&mut self, mut index: usize, mut pos: Pos, continuous: bool) {
         self.clipping_reported = false;
+        self.sdm_warned = false;
         loop {
             let Some(path) = self.queue.get(index).map(Path::to_path_buf) else {
                 if continuous {
@@ -1572,6 +1708,24 @@ impl Engine {
                     let mut spec = match decoder.format() {
                         TrackFormat::Pcm(_) => {
                             self.bitstream = false;
+                            let modulation = self.choose_sdm(source);
+                            let carrier_key = self
+                                .config
+                                .sdm
+                                .mode
+                                .rate()
+                                .map(|rate| (self.config.device.clone(), rate));
+                            if modulation.is_none()
+                                && carrier_key.is_some()
+                                && self.sdm_carrier_warned != carrier_key
+                            {
+                                self.sdm_carrier_warned = carrier_key;
+                                self.emit(PlayerEvent::Warning(format!(
+                                    "the device does not carry {} as DoP or native DSD; playing PCM",
+                                    self.config.sdm.mode.as_str()
+                                )));
+                            }
+                            self.sdm_rate = modulation.map(|(rate, _)| rate);
                             self.ensure_plan(
                                 source.rate,
                                 source.bits,
@@ -1580,20 +1734,31 @@ impl Engine {
                                 &mut tail,
                                 false,
                             );
-                            let mut spec = self.worker.prepare(source, &mut tail);
-                            if !self.worker.pipeline_is_empty()
-                                && spec.bits > 16
-                                && self
-                                    .probed_rates(24, source.channels)
-                                    .is_some_and(|rates| !rates.contains(&spec.rate))
-                            {
-                                // A 16-bit-only device still plays the resampled signal. A
-                                // device that could not be asked keeps the 24-bit request.
-                                spec.bits = source.bits.max(16);
+                            if let Some((rate, packing)) = modulation {
+                                self.worker.prepare_sdm(
+                                    source,
+                                    rate,
+                                    self.config.sdm.order,
+                                    packing,
+                                    &mut tail,
+                                )
+                            } else {
+                                let mut spec = self.worker.prepare(source, &mut tail);
+                                if !self.worker.pipeline_is_empty()
+                                    && spec.bits > 16
+                                    && self
+                                        .probed_rates(24, source.channels)
+                                        .is_some_and(|rates| !rates.contains(&spec.rate))
+                                {
+                                    // A 16-bit-only device still plays the resampled signal.
+                                    // A device that could not be asked keeps the 24-bit request.
+                                    spec.bits = source.bits.max(16);
+                                }
+                                spec
                             }
-                            spec
                         }
                         TrackFormat::Dsd(dsd) => {
+                            self.sdm_rate = None;
                             let (mode, reason) = self.choose_dsd_mode(dsd);
                             self.emit(PlayerEvent::DsdMode { mode, reason });
                             self.bitstream = mode != DsdMode::Pcm;
@@ -1702,6 +1867,13 @@ impl Engine {
         if clipped > 0 && !self.clipping_reported {
             self.clipping_reported = true;
             self.emit(PlayerEvent::Clipping(clipped));
+        }
+        if self.worker.take_modulator_limited() && !self.sdm_warned {
+            self.sdm_warned = true;
+            self.emit(PlayerEvent::Warning(
+                "the DSD modulator left its stable range and reset; lower the volume or EQ boost"
+                    .into(),
+            ));
         }
         true
     }
@@ -2110,12 +2282,14 @@ fn probe(result: Result<DeviceFormat, OutputError>) -> Probe {
 
 /// Whether an open stream in `current` can carry `spec` unchanged (same rate and channels, and
 /// a container wide enough for the bits). A 16-bit track after a 24-bit one stays bit-perfect
-/// in the 24-bit container, so it plays gapless.
+/// in the 24-bit container, so it plays gapless. Native DSD is not a PCM container, so it is
+/// reused when the word container matches instead of asking `holds`.
 fn reusable(current: DeviceFormat, mode: OutputMode, spec: OutputSpec) -> bool {
-    mode == spec.mode
-        && current.rate == spec.rate
-        && current.channels == spec.channels
-        && current.container.holds(spec.bits)
+    let container = match mode {
+        OutputMode::NativeDsd => current.container == SampleContainer::DsdU32Be,
+        _ => current.container.holds(spec.bits),
+    };
+    mode == spec.mode && current.rate == spec.rate && current.channels == spec.channels && container
 }
 
 fn open_decoder(path: &Path, pos: Pos) -> Result<SourceDecoder, DecodeError> {

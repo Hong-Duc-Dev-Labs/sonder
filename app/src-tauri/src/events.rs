@@ -154,11 +154,16 @@ fn apply(snap: &mut PlayerSnapshot, event: &PlayerEvent) -> bool {
             snap.underruns = *n;
             false
         }
+        PlayerEvent::SignalPath(path) => {
+            snap.signal_path = Some(path.clone().into());
+            true
+        }
         PlayerEvent::EndOfQueue => {
             snap.index = None;
             snap.elapsed_ms = 0;
             snap.duration_ms = None;
             snap.source = None;
+            snap.signal_path = None;
             true
         }
         _ => false,

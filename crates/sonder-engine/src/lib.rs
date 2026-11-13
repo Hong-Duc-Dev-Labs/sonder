@@ -5,7 +5,9 @@
 //! samples pass through as integers, which keeps the default path bit-perfect.
 //!
 //! DSD takes a separate path: DoP payload or native words packed by [`dop`], or the
-//! [`sonder_dsp::DsdToPcm`] decimator feeding the normal pipeline. See [`DsdMode`].
+//! [`sonder_dsp::DsdToPcm`] decimator feeding the normal pipeline. See [`DsdMode`]. The
+//! reverse direction, PCM→DSD, is [`SdmConfig`]: the PCM chain runs first, then
+//! [`sonder_dsp::Sdm`] and the same packers.
 
 pub mod dop;
 mod dsp;
@@ -13,6 +15,7 @@ pub mod pipeline;
 mod player;
 pub mod queue;
 pub mod rate;
+mod sdm;
 pub mod stage;
 mod worker;
 
@@ -23,5 +26,7 @@ pub use player::{
 };
 pub use queue::Queue;
 pub use rate::{FilterSourceConfig, SignalStage, SrcConfig, SrcTarget};
+pub use sdm::{SdmConfig, SdmMode};
+pub use sonder_dsp::{SdmOrder, SdmRate};
 pub use stage::{Stage, StreamFormat, Volume};
 pub use worker::{DsdMode, OutputMode, OutputSpec};

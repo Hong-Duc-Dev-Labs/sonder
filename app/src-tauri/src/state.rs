@@ -137,6 +137,7 @@ impl AppState {
         let mut config = PlayerConfig::new(device.clone());
         config.dsd_modes = settings.engine_dsd_modes();
         config.dsd_pcm_rate = settings.dsd_pcm_rate.into();
+        config.sdm = settings.engine_sdm();
         config.dsp = settings.engine_dsp();
         config.src = settings.engine_src();
         config.loudness = Arc::new(LibraryLoudness::new(loudness.clone()));

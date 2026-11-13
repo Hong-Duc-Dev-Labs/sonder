@@ -129,6 +129,7 @@ const emptySnapshot: PlayerSnapshot = {
   output: null,
   underruns: 0,
   volumeDb: null,
+  signalPath: null,
 };
 
 class AppState {
@@ -139,6 +140,8 @@ class AppState {
   queueOpen = $state(false);
   /** Now Playing shows the lyrics column in place of the title and badges. */
   lyricsOpen = $state(false);
+  /** Now Playing shows the engine's stage-by-stage signal path under the transport. */
+  signalPathOpen = $state(false);
   settings = $state<Settings>({ albumSort: "artist" });
   scan = $state<ScanState>({ phase: "idle", done: 0, total: 0, last: null, failures: [] });
   loudness = $state<LoudnessState>({ running: false, done: 0, total: 0, pending: null, last: null });

@@ -15,8 +15,10 @@
     type GlassQuality,
     type LevelingSetting,
     type PeqBandSetting,
+    type PcmToDsd,
     type PeqSetting,
     type RootFolder,
+    type SdmOrderSetting,
     type SrcSetting,
     type SrcTargetSetting,
   } from "../lib/bindings";
@@ -101,6 +103,16 @@
   const dsdRates: { value: DsdPcmRate; label: string }[] = [
     { value: "hz176400", label: rate(176400) },
     { value: "hz352800", label: rate(352800) },
+  ];
+  const pcmToDsdOptions: { value: PcmToDsd; label: string }[] = [
+    { value: "off", label: "Off" },
+    { value: "dsd64", label: "DSD64" },
+    { value: "dsd128", label: "DSD128" },
+    { value: "dsd256", label: "DSD256" },
+  ];
+  const sdmOrders: { value: SdmOrderSetting; label: string }[] = [
+    { value: "order5", label: "5th" },
+    { value: "order7", label: "7th" },
   ];
   let dsdMode = $derived<DsdMode>((selected && app.settings.dsdModes?.[selected.id]) || "dop");
 
@@ -347,6 +359,52 @@
             {/each}
           </div>
         </div>
+        <div class="row">
+          <span class="icon"><Icon name="signal" size={18} /></span>
+          <span class="info">
+            <span class="name" id="pcm-dsd-label">PCM to DSD</span>
+            <span class="dim small">
+              Modulates PCM tracks before output. DSD is carried over DoP or native DSD when the
+              device takes it; 0 dBFS PCM becomes 50 % modulation, the SACD convention.
+              {#if app.settings.pcmToDsd === "dsd256"}
+                DSD256 needs a fast CPU and can drop out on slower machines; DSD128 is recommended.
+              {/if}
+            </span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="pcm-dsd-label">
+            {#each pcmToDsdOptions as option (option.value)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(app.settings.pcmToDsd ?? "off") === option.value}
+                onclick={() => app.saveSettings({ ...app.settings, pcmToDsd: option.value })}
+              >
+                {option.label}
+              </button>
+            {/each}
+          </div>
+        </div>
+        {#if (app.settings.pcmToDsd ?? "off") !== "off"}
+          <div class="row">
+            <span class="icon"><Icon name="signal" size={18} /></span>
+            <span class="info">
+              <span class="name" id="sdm-order-label">Modulator order</span>
+              <span class="dim small">The 7th-order loop shapes harder; the 5th order is more forgiving.</span>
+            </span>
+            <div class="segmented" role="radiogroup" aria-labelledby="sdm-order-label">
+              {#each sdmOrders as order (order.value)}
+                <button
+                  class="chip"
+                  role="radio"
+                  aria-checked={(app.settings.sdmOrder ?? "order5") === order.value}
+                  onclick={() => app.saveSettings({ ...app.settings, sdmOrder: order.value })}
+                >
+                  {order.label}
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
       </div>
     </section>
 

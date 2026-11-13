@@ -1730,3 +1730,280 @@ fn levelling_keeps_dop_unless_the_dsd_track_has_a_gain() {
         SampleContainer::S24Packed
     );
 }
+
+// ----- PCM→DSD -----
+
+/// A 1 kHz tone, so the modulated stream can be decoded and measured.
+fn tone_wav(name: &str, rate: u32, bits: u16, frames: usize) -> PathBuf {
+    let path = temp_dir().join(name);
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: rate,
+        bits_per_sample: bits,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let max = f64::from((1i32 << (bits - 1)) - 1);
+    let mut w = hound::WavWriter::create(&path, spec).unwrap();
+    for frame in 0..frames {
+        let sample = (0.5
+            * (2.0 * std::f64::consts::PI * 1000.0 * frame as f64 / f64::from(rate)).sin()
+            * max) as i32;
+        w.write_sample(sample).unwrap();
+        w.write_sample(sample).unwrap();
+    }
+    w.finalize().unwrap();
+    path
+}
+
+fn signal_path(seen: &[PlayerEvent]) -> &sonder_engine::SignalPath {
+    seen.iter()
+        .find_map(|event| match event {
+            PlayerEvent::SignalPath(path) => Some(path),
+            _ => None,
+        })
+        .expect("signal path")
+}
+
+#[test]
+fn pcm_to_dsd64_reaches_the_device_over_dop() {
+    let track = tone_wav("sdm-dop.wav", 44_100, 16, 48_000);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.sdm.mode = sonder_engine::SdmMode::Dsd64;
+    let (player, events, control) = start_with(config, dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 1, "one DoP stream");
+    assert_eq!(
+        sessions[0].format,
+        DeviceFormat {
+            rate: 176_400,
+            container: SampleContainer::S24In32,
+            channels: 2,
+        }
+    );
+    let (payload, _idle) = decode_dop(&sessions[0].bytes, 2);
+    assert!(!payload.is_empty(), "the modulator produced no payload");
+    // 1.088 s at DSD64 is ~384k bytes per channel.
+    assert!(
+        payload.len() > 300_000,
+        "payload {} bytes is short",
+        payload.len()
+    );
+
+    // The payload decodes to the source tone, at the SACD 6 dB headroom.
+    let mut converter = sonder_dsp::DsdToPcm::new(2_822_400, 176_400, 2).unwrap();
+    let mut pcm = Vec::new();
+    converter.process(&payload, &mut pcm);
+    let body = &pcm[pcm.len() / 2..];
+    let rms = (body.iter().map(|s| s * s).sum::<f64>() / body.len() as f64).sqrt();
+    assert!(rms > 0.03, "decoded tone RMS {rms} is too low");
+
+    let path = signal_path(&seen);
+    assert_eq!(path.mode, sonder_engine::OutputMode::Dop);
+    assert_eq!(path.output_rate, 176_400);
+    assert!(!path.bit_perfect);
+    assert!(
+        path.stages.iter().any(|s| s.name == "DSD modulator"),
+        "signal path: {path:#?}"
+    );
+    assert!(
+        path.stages.iter().any(|s| s.name == "DoP"),
+        "signal path: {path:#?}"
+    );
+}
+
+#[test]
+fn pcm_to_dsd128_and_dsd256_use_the_wider_carriers() {
+    for (mode, carrier) in [
+        (sonder_engine::SdmMode::Dsd128, 352_800),
+        (sonder_engine::SdmMode::Dsd256, 705_600),
+    ] {
+        // A short track keeps the debug-build modulator well inside the wait timeout at
+        // DSD256; the carrier rate is all this test checks.
+        let track = tone_wav(&format!("sdm-{carrier}.wav"), 48_000, 24, 4_800);
+        let mut config = PlayerConfig::new(NullBackend::device_id());
+        config.sdm.mode = mode;
+        let (player, events, control) = start_with(config, dsd_device());
+        player.enqueue(vec![track]);
+        player.play();
+        let seen = wait_end(&events);
+        let sessions = control.sessions();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].format.rate, carrier);
+        assert!(
+            signal_path(&seen)
+                .stages
+                .iter()
+                .any(|s| s.detail.contains(mode.as_str())),
+            "events: {seen:#?}"
+        );
+    }
+}
+
+#[test]
+fn pcm_to_dsd_uses_native_words_when_the_device_prefers_them() {
+    let track = tone_wav("sdm-native.wav", 44_100, 16, 24_000);
+    let native = DeviceFormat {
+        rate: 88_200,
+        container: SampleContainer::DsdU32Be,
+        channels: 2,
+    };
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.sdm.mode = sonder_engine::SdmMode::Dsd64;
+    config.default_dsd_mode = DsdMode::Native;
+    let (player, events, control) =
+        start_with(config, NullBackend::new().with_formats(vec![native]));
+    player.enqueue(vec![track]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].format, native);
+    assert!(!sessions[0].bytes.is_empty());
+    let path = signal_path(&seen);
+    assert_eq!(path.mode, sonder_engine::OutputMode::NativeDsd);
+    assert_eq!(path.output_rate, 88_200);
+}
+
+#[test]
+fn pcm_to_dsd_stays_pcm_when_the_device_cannot_carry_it() {
+    let track = tone_wav("sdm-no-device.wav", 44_100, 16, 24_000);
+    let pcm_only = DeviceFormat {
+        rate: 44_100,
+        container: SampleContainer::S16,
+        channels: 2,
+    };
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.sdm.mode = sonder_engine::SdmMode::Dsd64;
+    let (player, events, control) =
+        start_with(config, NullBackend::new().with_formats(vec![pcm_only]));
+    player.enqueue(vec![track]);
+    player.play();
+    let seen = wait_end(&events);
+
+    assert!(
+        seen.iter().any(|event| matches!(
+            event,
+            PlayerEvent::Warning(message) if message.contains("DoP or native DSD")
+        )),
+        "events: {seen:#?}"
+    );
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].format, pcm_only);
+    let path = signal_path(&seen);
+    assert_eq!(path.mode, sonder_engine::OutputMode::Pcm);
+    assert!(path.bit_perfect);
+}
+
+#[test]
+fn pcm_to_dsd_native_stays_gapless_across_tracks() {
+    let a = tone_wav("sdm-native-a.wav", 44_100, 16, 12_000);
+    let b = tone_wav("sdm-native-b.wav", 44_100, 16, 12_000);
+    let native = DeviceFormat {
+        rate: 88_200,
+        container: SampleContainer::DsdU32Be,
+        channels: 2,
+    };
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.sdm.mode = sonder_engine::SdmMode::Dsd64;
+    config.default_dsd_mode = DsdMode::Native;
+    let (player, events, control) =
+        start_with(config, NullBackend::new().with_formats(vec![native]));
+    player.enqueue(vec![a, b]);
+    player.play();
+    wait_end(&events);
+
+    let sessions = control.sessions();
+    assert_eq!(
+        sessions.len(),
+        1,
+        "native DSD should stay on one stream: {sessions:#?}"
+    );
+    assert_eq!(sessions[0].format, native);
+}
+
+/// Native DSD is requested but the device only takes DoP. While the first track's DoP stream
+/// holds the device, the native probe can only answer "busy"; the open stream already proves
+/// DoP works, so the next track must reuse it instead of reopening for native and re-decoding.
+#[test]
+fn pcm_to_dsd_reuses_the_open_dop_stream_when_native_cannot_be_probed() {
+    let a = tone_wav("sdm-busy-a.wav", 44_100, 16, 12_000);
+    let b = tone_wav("sdm-busy-b.wav", 44_100, 16, 12_000);
+    let dop = DeviceFormat {
+        rate: 176_400,
+        container: SampleContainer::S24In32,
+        channels: 2,
+    };
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.sdm.mode = sonder_engine::SdmMode::Dsd64;
+    config.default_dsd_mode = DsdMode::Native;
+    let (player, events, control) = start_with(
+        config,
+        dsd_device().with_formats(vec![dop]).with_busy_probes(),
+    );
+    player.enqueue(vec![a, b]);
+    player.play();
+    wait_end(&events);
+
+    let sessions = control.sessions();
+    assert_eq!(
+        sessions.len(),
+        1,
+        "gapless DoP should stay on one stream: {sessions:#?}"
+    );
+    assert_eq!(sessions[0].format, dop);
+}
+
+#[test]
+fn pcm_to_dsd_warns_once_when_the_device_cannot_carry_it() {
+    let a = tone_wav("sdm-warn-a.wav", 44_100, 16, 6_000);
+    let b = tone_wav("sdm-warn-b.wav", 44_100, 16, 6_000);
+    let pcm_only = DeviceFormat {
+        rate: 44_100,
+        container: SampleContainer::S16,
+        channels: 2,
+    };
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.sdm.mode = sonder_engine::SdmMode::Dsd64;
+    let (player, events, _control) =
+        start_with(config, NullBackend::new().with_formats(vec![pcm_only]));
+    player.enqueue(vec![a, b]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let warnings = seen
+        .iter()
+        .filter(|event| {
+            matches!(event, PlayerEvent::Warning(message) if message.contains("DoP or native DSD"))
+        })
+        .count();
+    assert_eq!(warnings, 1, "events: {seen:#?}");
+}
+
+/// Levelling with no gain for a DSD track keeps DoP, so nothing touches the bits and the
+/// signal path must say so.
+#[test]
+fn dop_with_idle_levelling_reports_bit_perfect() {
+    let track = dsf("dop-leveling.dsf", &dsd_bytes(20_000, 12));
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.dsp.leveling = sonder_dsp::LevelingMode::Track;
+    let (player, events, _control) = start_with(config, dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    let seen = wait_end(&events);
+
+    assert_eq!(
+        dsd_modes(&seen),
+        vec![(DsdMode::Dop, None)],
+        "events: {seen:#?}"
+    );
+    let path = signal_path(&seen);
+    assert_eq!(path.mode, sonder_engine::OutputMode::Dop);
+    assert!(path.stages.is_empty(), "signal path: {path:#?}");
+    assert!(path.bit_perfect, "signal path: {path:#?}");
+}

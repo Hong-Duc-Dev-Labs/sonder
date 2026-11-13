@@ -17,3 +17,7 @@ criterion = { version = "0.8.1", default-features = false, features = ["cargo_be
 [[bench]]
 name = "resampler"
 harness = false
+
+[[bench]]
+name = "sdm"
+harness = false

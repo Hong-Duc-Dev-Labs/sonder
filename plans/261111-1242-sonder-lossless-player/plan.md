@@ -42,7 +42,7 @@ PEQ, levelling, PCM→DSD, dither. Source contract:
 | 5 | [DSD playback](./phase-05-dsd-playback.md) | In progress (code + tests done; manual DAC test open) |
 | 6 | [Resampler and filter sources](./phase-06-resampler-and-filter-sources.md) | In progress (code, tests and benchmarks done; manual listen open) |
 | 7 | [PEQ, dither and levelling](./phase-07-peq-dither-leveling.md) | In progress (code, tests and UI done; manual listen open) |
-| 8 | [SDM, signal path and verification](./phase-08-sdm-signal-path-verification.md) | Pending |
+| 8 | [SDM, signal path and verification](./phase-08-sdm-signal-path-verification.md) | In progress (code, tests, benchmark and docs done; real-device checks open) |
 
 Order: 1 → 2 → (3 ∥ 6) → 4 needs 2+3 → 5 needs 2+6 (shares the FIR core) → 7 needs 3+4+6 → 8 needs 4+5+6+7.
 

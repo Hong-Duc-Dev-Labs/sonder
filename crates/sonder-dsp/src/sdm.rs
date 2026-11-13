@@ -254,13 +254,19 @@ fn interp_phases() -> [[f64; PHASE_TAPS]; OVERSAMPLE] {
     phases
 }
 
+/// Highest modulator order; state and coefficient arrays are this long.
+const MAX_ORDER: usize = 7;
+
 /// The 8× interpolator and one-bit modulator state of one channel.
+#[derive(Clone, Copy)]
 struct Channel {
-    /// Interpolation history, newest at `history[(at + len - 1) % len]`.
-    history: [f64; PHASE_TAPS],
+    /// Interpolation history stored twice (`history[i] == history[i + PHASE_TAPS]`), so the
+    /// newest-first window starting at `at` is contiguous and needs no wrap-around.
+    history: [f64; 2 * PHASE_TAPS],
+    /// Slot the next sample goes to.
     at: usize,
     /// Integrator states.
-    state: [f64; 7],
+    state: [f64; MAX_ORDER],
     /// Quantiser output of the previous bit (delayed feedback).
     prev_y: f64,
 }
@@ -268,18 +274,43 @@ struct Channel {
 impl Channel {
     fn new() -> Self {
         Self {
-            history: [0.0; PHASE_TAPS],
+            history: [0.0; 2 * PHASE_TAPS],
             at: 0,
-            state: [0.0; 7],
+            state: [0.0; MAX_ORDER],
             prev_y: 1.0,
         }
     }
 
     fn reset(&mut self) {
-        self.history = [0.0; PHASE_TAPS];
-        self.at = 0;
-        self.state = [0.0; 7];
-        self.prev_y = 1.0;
+        *self = Self::new();
+    }
+
+    /// Adds one input sample and returns the eight interpolated, limited bit-rate samples it
+    /// produces.
+    #[inline(always)]
+    fn interpolate(
+        &mut self,
+        x: f64,
+        phases: &[[f64; PHASE_TAPS]; OVERSAMPLE],
+    ) -> [f64; OVERSAMPLE] {
+        self.history[self.at] = x;
+        self.history[self.at + PHASE_TAPS] = x;
+        self.at = (self.at + 1) % PHASE_TAPS;
+        // Newest first: window[k] is the sample k steps back.
+        let mut window = [0.0; PHASE_TAPS];
+        for (k, value) in window.iter_mut().enumerate() {
+            *value = self.history[self.at + PHASE_TAPS - 1 - k];
+        }
+        let mut out = [0.0; OVERSAMPLE];
+        for (value, branch) in out.iter_mut().zip(phases) {
+            let mut sum = 0.0;
+            for (&tap, &sample) in branch.iter().zip(&window) {
+                sum += tap * sample;
+            }
+            // Limit after interpolation, so inter-sample overshoot never reaches the loop.
+            *value = sum.clamp(-INPUT_SCALE, INPUT_SCALE);
+        }
+        out
     }
 }
 
@@ -287,8 +318,9 @@ impl Channel {
 pub struct Sdm {
     rate: SdmRate,
     order: SdmOrder,
-    a: &'static [f64],
-    g: &'static [f64],
+    /// Feedforward and resonator coefficients, zero-padded to [`MAX_ORDER`].
+    a: [f64; MAX_ORDER],
+    g: [f64; MAX_ORDER],
     phases: [[f64; PHASE_TAPS]; OVERSAMPLE],
     channels: Vec<Channel>,
     /// Output scratch: one byte per eight bits per channel.
@@ -305,12 +337,29 @@ impl Sdm {
 
     pub fn new(rate: SdmRate, order: SdmOrder, channels: u16) -> Self {
         let coeffs = coeffs(rate, order);
+        // Padding below would turn a short table into silent zeros instead of a failure.
+        let order_len = usize::from(order.as_u8());
+        debug_assert_eq!(
+            coeffs.a.len(),
+            order_len,
+            "{rate:?} {order:?} feedforward table"
+        );
+        debug_assert_eq!(
+            coeffs.g.len(),
+            order_len - 1,
+            "{rate:?} {order:?} resonator table"
+        );
         let channels = usize::from(channels.max(1));
+        let pad = |values: &[f64]| {
+            let mut padded = [0.0; MAX_ORDER];
+            padded[..values.len()].copy_from_slice(values);
+            padded
+        };
         Self {
             rate,
             order,
-            a: coeffs.a,
-            g: coeffs.g,
+            a: pad(coeffs.a),
+            g: pad(coeffs.g),
             phases: interp_phases(),
             channels: (0..channels).map(|_| Channel::new()).collect(),
             scratch: vec![0; Self::MAX_FRAMES * OVERSAMPLE / 8 * channels],
@@ -356,33 +405,49 @@ impl Sdm {
             self.scratch.resize(bytes, 0);
             out.reserve(bytes);
         }
-        self.scratch[..bytes].fill(0);
-        let order = usize::from(self.order.as_u8());
-        let (a, g) = (self.a, self.g);
-        for frame in 0..frames {
-            for index in 0..channel_count {
-                let channel = &mut self.channels[index];
-                let x = input[frame * channel_count + index] * INPUT_SCALE;
-                channel.history[channel.at] = x;
-                channel.at = (channel.at + 1) % PHASE_TAPS;
-                for phase in 0..OVERSAMPLE {
-                    let branch = self.phases[phase];
-                    let mut interpolated = 0.0;
-                    for (k, &tap) in branch.iter().enumerate() {
-                        let pos = (channel.at + PHASE_TAPS - 1 - k) % PHASE_TAPS;
-                        interpolated += tap * channel.history[pos];
-                    }
-                    // Limit after interpolation, so inter-sample overshoot never reaches the loop.
-                    let interpolated = interpolated.clamp(-INPUT_SCALE, INPUT_SCALE);
-                    let (bit, limited) = step(channel, interpolated, a, g, order);
-                    self.limited |= limited;
-                    let byte = &mut self.scratch
-                        [((frame * OVERSAMPLE + phase) / 8) * channel_count + index];
-                    *byte = (*byte << 1) | bit;
-                }
-            }
-        }
+        let input = &input[..frames * channel_count];
+        let limited = match self.order {
+            SdmOrder::Order5 => self.run::<5>(input, bytes),
+            SdmOrder::Order7 => self.run::<7>(input, bytes),
+        };
+        self.limited |= limited;
         out.extend_from_slice(&self.scratch[..bytes]);
+    }
+
+    /// Runs the channels in pairs: two independent loops interleaved bit by bit keep the CPU
+    /// busy while each one waits on its own previous bit. Returns whether any channel hit its
+    /// state limit.
+    fn run<const ORDER: usize>(&mut self, input: &[f64], bytes: usize) -> bool {
+        let stride = self.channels.len();
+        let out = &mut self.scratch[..bytes];
+        let mut limited = false;
+        let mut first = 0;
+        while first < stride {
+            let lanes = (stride - first).min(2);
+            limited |= if lanes == 2 {
+                modulate::<ORDER, 2>(
+                    &mut self.channels,
+                    first,
+                    input,
+                    out,
+                    &self.phases,
+                    &self.a,
+                    &self.g,
+                )
+            } else {
+                modulate::<ORDER, 1>(
+                    &mut self.channels,
+                    first,
+                    input,
+                    out,
+                    &self.phases,
+                    &self.a,
+                    &self.g,
+                )
+            };
+            first += lanes;
+        }
+        limited
     }
 
     /// Emits the tail still held by the interpolator, feeding it zeros.
@@ -395,36 +460,76 @@ impl Sdm {
     }
 }
 
+/// Modulates `LANES` adjacent channels starting at `first`, reading and writing interleaved
+/// data with the full channel stride. The channel state lives in locals for the whole block.
+#[inline(always)]
+fn modulate<const ORDER: usize, const LANES: usize>(
+    channels: &mut [Channel],
+    first: usize,
+    input: &[f64],
+    out: &mut [u8],
+    phases: &[[f64; PHASE_TAPS]; OVERSAMPLE],
+    a: &[f64; MAX_ORDER],
+    g: &[f64; MAX_ORDER],
+) -> bool {
+    let stride = channels.len();
+    let mut lanes: [Channel; LANES] = std::array::from_fn(|lane| channels[first + lane]);
+    let mut limited = false;
+    for (frame, bytes) in input.chunks_exact(stride).zip(out.chunks_exact_mut(stride)) {
+        let mut x: [[f64; OVERSAMPLE]; LANES] = std::array::from_fn(|lane| {
+            lanes[lane].interpolate(frame[first + lane] * INPUT_SCALE, phases)
+        });
+        let mut byte = [0u8; LANES];
+        for phase in 0..OVERSAMPLE {
+            for lane in 0..LANES {
+                let (bit, unstable) = step::<ORDER>(&mut lanes[lane], x[lane][phase], a, g);
+                byte[lane] = (byte[lane] << 1) | bit;
+                if unstable {
+                    limited = true;
+                    lanes[lane].reset();
+                    // The rest of this frame interpolates from the cleared history.
+                    x[lane] = [0.0; OVERSAMPLE];
+                }
+            }
+        }
+        bytes[first..first + LANES].copy_from_slice(&byte);
+    }
+    channels[first..first + LANES].copy_from_slice(&lanes);
+    limited
+}
+
 /// Runs one bit of the modulator; also reports whether the loop left its stable region.
-fn step(channel: &mut Channel, x: f64, a: &[f64], g: &[f64], order: usize) -> (u8, bool) {
+#[inline(always)]
+fn step<const ORDER: usize>(
+    channel: &mut Channel,
+    x: f64,
+    a: &[f64; MAX_ORDER],
+    g: &[f64; MAX_ORDER],
+) -> (u8, bool) {
     let old = channel.state;
-    let y_prev = channel.prev_y;
+    let s = &mut channel.state;
     // sox's CIFF loop: the integrators see the previous quantiser output. The last
-    // integrator has no resonator, so the tables carry only `order - 1` g values.
-    channel.state[0] = if order > 1 {
-        old[0] - g[0] * old[1] + x - y_prev
-    } else {
-        old[0] + x - y_prev
-    };
-    for i in 1..order.saturating_sub(1) {
-        channel.state[i] = old[i] + old[i - 1] - g[i] * old[i + 1];
+    // integrator has no resonator, so the tables carry only `ORDER - 1` g values.
+    s[0] = old[0] - g[0] * old[1] + x - channel.prev_y;
+    for i in 1..ORDER - 1 {
+        s[i] = old[i] + old[i - 1] - g[i] * old[i + 1];
     }
-    if order > 1 {
-        channel.state[order - 1] = old[order - 1] + old[order - 2];
+    s[ORDER - 1] = old[ORDER - 1] + old[ORDER - 2];
+    let mut v = x + a[0] * s[0];
+    for i in 1..ORDER {
+        v += a[i] * s[i];
     }
-    let mut v = x + a[0] * channel.state[0];
-    for (value, &state) in a.iter().zip(&channel.state).skip(1) {
-        v += value * state;
+    let bit = v >= 0.0;
+    channel.prev_y = if bit { 1.0 } else { -1.0 };
+    // One comparison per state catches both overflow and NaN (which compares false); the
+    // negation is the point, so `partial_cmp` would only hide it.
+    let mut unstable = false;
+    for value in &s[..ORDER] {
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        let out_of_range = !(value.abs() <= STATE_LIMIT);
+        unstable |= out_of_range;
     }
-    let y = if v >= 0.0 { 1.0 } else { -1.0 };
-    channel.prev_y = y;
-    let limited = channel.state[..order]
-        .iter()
-        .any(|s| !s.is_finite() || s.abs() > STATE_LIMIT);
-    if limited {
-        channel.reset();
-    }
-    (u8::from(y > 0.0), limited)
+    (u8::from(bit), unstable)
 }
 
 #[cfg(test)]
@@ -739,5 +844,164 @@ mod tests {
         let mut out = Vec::new();
         sdm.flush(&mut out);
         assert_eq!(out.len(), PHASE_TAPS * 2);
+    }
+
+    /// The straightforward form of the modulator: one channel after another, the order read
+    /// at run time and the stability check on every bit. The fast path must match it byte for
+    /// byte.
+    struct Reference {
+        a: &'static [f64],
+        g: &'static [f64],
+        order: usize,
+        phases: [[f64; PHASE_TAPS]; OVERSAMPLE],
+        history: Vec<[f64; PHASE_TAPS]>,
+        at: Vec<usize>,
+        state: Vec<[f64; 7]>,
+        prev_y: Vec<f64>,
+        limited: bool,
+    }
+
+    impl Reference {
+        fn new(rate: SdmRate, order: SdmOrder, channels: usize) -> Self {
+            let coeffs = coeffs(rate, order);
+            Self {
+                a: coeffs.a,
+                g: coeffs.g,
+                order: usize::from(order.as_u8()),
+                phases: interp_phases(),
+                history: vec![[0.0; PHASE_TAPS]; channels],
+                at: vec![0; channels],
+                state: vec![[0.0; 7]; channels],
+                prev_y: vec![1.0; channels],
+                limited: false,
+            }
+        }
+
+        // Indexes mirror the loop equations, which is what makes this the reference.
+        #[allow(clippy::needless_range_loop)]
+        fn process(&mut self, input: &[f64]) -> Vec<u8> {
+            let channels = self.state.len();
+            let frames = input.len() / channels;
+            let mut out = vec![0u8; frames * channels];
+            let order = self.order;
+            for frame in 0..frames {
+                for ch in 0..channels {
+                    let x = input[frame * channels + ch] * INPUT_SCALE;
+                    self.history[ch][self.at[ch]] = x;
+                    self.at[ch] = (self.at[ch] + 1) % PHASE_TAPS;
+                    for phase in 0..OVERSAMPLE {
+                        let mut v = 0.0;
+                        for (k, &tap) in self.phases[phase].iter().enumerate() {
+                            v += tap
+                                * self.history[ch][(self.at[ch] + PHASE_TAPS - 1 - k) % PHASE_TAPS];
+                        }
+                        let x = v.clamp(-INPUT_SCALE, INPUT_SCALE);
+                        let old = self.state[ch];
+                        let s = &mut self.state[ch];
+                        s[0] = old[0] - self.g[0] * old[1] + x - self.prev_y[ch];
+                        for i in 1..order - 1 {
+                            s[i] = old[i] + old[i - 1] - self.g[i] * old[i + 1];
+                        }
+                        s[order - 1] = old[order - 1] + old[order - 2];
+                        let mut v = x + self.a[0] * s[0];
+                        for i in 1..order {
+                            v += self.a[i] * s[i];
+                        }
+                        let y = if v >= 0.0 { 1.0 } else { -1.0 };
+                        self.prev_y[ch] = y;
+                        let byte = &mut out[frame * channels + ch];
+                        *byte = (*byte << 1) | u8::from(y > 0.0);
+                        if s[..order]
+                            .iter()
+                            .any(|s| !s.is_finite() || s.abs() > STATE_LIMIT)
+                        {
+                            self.limited = true;
+                            self.history[ch] = [0.0; PHASE_TAPS];
+                            self.at[ch] = 0;
+                            self.state[ch] = [0.0; 7];
+                            self.prev_y[ch] = 1.0;
+                        }
+                    }
+                }
+            }
+            out
+        }
+    }
+
+    /// A deterministic mix of music-like content, silence and an overload that trips the
+    /// stability reset.
+    fn torture(channels: usize, frames: usize) -> Vec<f64> {
+        let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+        };
+        (0..frames)
+            .flat_map(|frame| {
+                let section = frame * 4 / frames;
+                (0..channels)
+                    .map(|ch| match section {
+                        0 => 0.7 * (frame as f64 * 0.013 * (ch + 1) as f64).sin() + 0.2 * noise(),
+                        1 => 0.0,
+                        // Full-scale square wave: drives the loop out of its stable region.
+                        2 => {
+                            if (frame / 40) % 2 == 0 {
+                                1.0
+                            } else {
+                                -1.0
+                            }
+                        }
+                        _ => noise(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_fast_path_matches_the_reference_modulator_byte_for_byte() {
+        let mut resets = 0;
+        for rate in [SdmRate::Dsd64, SdmRate::Dsd128, SdmRate::Dsd256] {
+            for order in [SdmOrder::Order5, SdmOrder::Order7] {
+                for channels in [1usize, 2, 3] {
+                    let input = torture(channels, 20_000);
+                    let mut reference = Reference::new(rate, order, channels);
+                    let mut sdm = Sdm::new(rate, order, channels as u16);
+                    let mut out = Vec::new();
+                    // Odd block sizes cross every block boundary case.
+                    let blocks: Vec<&[f64]> = input.chunks(777 * channels).collect();
+                    let (head, tail) = blocks.split_at(blocks.len() / 2);
+                    for block in head {
+                        sdm.process(block, &mut out);
+                    }
+                    // Push the loop out of its stable region the same way in both: a NaN
+                    // resets on the next bit, a state just under the limit a few bits later,
+                    // in the middle of a frame.
+                    let split = head.iter().map(|b| b.len()).sum::<usize>();
+                    let mut expected = reference.process(&input[..split]);
+                    let last = channels - 1;
+                    sdm.channels[0].state[2] = f64::NAN;
+                    reference.state[0][2] = f64::NAN;
+                    sdm.channels[last].state[1] = 0.999 * STATE_LIMIT;
+                    reference.state[last][1] = 0.999 * STATE_LIMIT;
+                    for block in tail {
+                        sdm.process(block, &mut out);
+                    }
+                    expected.extend(reference.process(&input[split..]));
+                    let first_difference = out.iter().zip(&expected).position(|(a, b)| a != b);
+                    assert_eq!(
+                        first_difference, None,
+                        "{rate:?} {order:?} {channels} ch differs from the reference"
+                    );
+                    assert_eq!(out.len(), expected.len());
+                    assert_eq!(sdm.take_limited(), reference.limited, "{rate:?} {order:?}");
+                    resets += usize::from(reference.limited);
+                }
+            }
+        }
+        // Every case must have gone through the reset path, or it compared nothing there.
+        assert_eq!(resets, 3 * 2 * 3);
     }
 }

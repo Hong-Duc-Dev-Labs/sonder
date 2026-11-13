@@ -69,6 +69,17 @@ export type ScanState = {
   failures: string[];
 };
 
+/** The background loudness analysis, as its events describe it. */
+export type LoudnessState = {
+  running: boolean;
+  done: number;
+  total: number;
+  /** Tracks still waiting for a measurement; `null` until known. */
+  pending: number | null;
+  /** Summary of the last finished pass. */
+  last: string | null;
+};
+
 /** Set while a View Transition animates the page, so the content's own entrance stays still. */
 let viewTransitionRunning = false;
 export function viewTransitionActive(): boolean {
@@ -130,6 +141,7 @@ class AppState {
   lyricsOpen = $state(false);
   settings = $state<Settings>({ albumSort: "artist" });
   scan = $state<ScanState>({ phase: "idle", done: 0, total: 0, last: null, failures: [] });
+  loudness = $state<LoudnessState>({ running: false, done: 0, total: 0, pending: null, last: null });
   notices = $state<Notice[]>([]);
   searchQuery = $state("");
   /** Bumped whenever the library index changes; views reload when it moves. */
@@ -289,17 +301,41 @@ class AppState {
         this.scan = { phase: "idle", done: 0, total: 0, last, failures: r.failures };
         if (r.error) this.notify("error", last);
       }),
+      events.loudnessProgressEvent.listen((e) => {
+        this.loudness = { ...this.loudness, running: true, done: e.payload.done, total: e.payload.total };
+      }),
+      events.loudnessFinishedEvent.listen((e) => {
+        const r = e.payload;
+        const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+        // The backend already raised a notice for a failed pass.
+        const last =
+          r.error ??
+          (r.tracks || r.albums || r.failed
+            ? `${plural(r.tracks, "track")} measured, ${plural(r.albums, "album")} updated` +
+              (r.failed ? `, ${r.failed} could not be read` : "")
+            : "Nothing to measure");
+        this.loudness = { running: false, done: 0, total: 0, pending: r.error ? this.loudness.pending : r.pending, last };
+      }),
     ]);
-    const [player, queue, settings, scanning] = await Promise.all([
+    const [player, queue, settings, scanning, analyzing, pending] = await Promise.all([
       commands.playerSnapshot(),
       commands.queueItems(),
       commands.settingsGet(),
       commands.libraryIsScanning(),
+      commands.libraryIsAnalyzing(),
+      commands.libraryLoudnessPending(),
     ]);
     this.player = player;
     this.queue = queue;
     this.settings = settings;
     if (scanning && this.scan.phase === "idle") this.scan = { ...this.scan, phase: "walking" };
+    this.loudness = { ...this.loudness, running: this.loudness.running || analyzing, pending };
+  }
+
+  /** Starts (or queues) a loudness analysis pass; its events update `loudness`. */
+  async analyzeLoudness() {
+    this.loudness = { ...this.loudness, running: true, last: null };
+    await this.run(commands.libraryAnalyzeLoudness());
   }
 
   async saveSettings(next: Settings) {

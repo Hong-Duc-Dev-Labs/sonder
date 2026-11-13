@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use crossbeam_channel::Receiver;
@@ -12,6 +12,7 @@ use sonder_library::{Library, LibraryWatcher};
 use sonder_output::{DeviceFormat, DeviceId, DeviceInfo, OutputBackend};
 
 use crate::dto::{AppResult, Device, PlayState, PlayerSnapshot, QueueItem};
+use crate::loudness::LibraryLoudness;
 use crate::settings::{Settings, SettingsStore};
 
 /// Where Sonder keeps its files.
@@ -101,6 +102,11 @@ pub struct ScanControl {
 pub struct AppState {
     pub paths: AppPaths,
     pub library: Mutex<Library>,
+    /// A second connection for the engine's levelling lookups and the pending count, so
+    /// neither waits behind the UI queries that share `library`. Analysis passes open their own.
+    pub loudness: Arc<Mutex<Library>>,
+    /// The loudness analysis worker: at most one pass runs, further requests queue one more.
+    pub analysis: ScanControl,
     pub player: Player,
     /// Mirror of the engine queue: the engine holds paths, the UI needs track metadata. Every
     /// enqueue and clear goes through this lock so the two stay in the same order.
@@ -122,6 +128,7 @@ impl AppState {
         let store = SettingsStore::new(paths.settings.clone());
         let settings = store.load();
         let library = Library::open(&paths.db, &paths.art)?;
+        let loudness = Arc::new(Mutex::new(Library::open(&paths.db, &paths.art)?));
 
         let mut devices = DeviceList::new(backend());
         let found = devices.list().unwrap_or_default();
@@ -130,6 +137,9 @@ impl AppState {
         let mut config = PlayerConfig::new(device.clone());
         config.dsd_modes = settings.engine_dsd_modes();
         config.dsd_pcm_rate = settings.dsd_pcm_rate.into();
+        config.dsp = settings.engine_dsp();
+        config.src = settings.engine_src();
+        config.loudness = Arc::new(LibraryLoudness::new(loudness.clone()));
         let (player, events) = Player::spawn(backend(), config)?;
         if settings.volume_db.is_some() {
             player.set_volume(settings.volume_db);
@@ -142,6 +152,8 @@ impl AppState {
             AppState {
                 paths,
                 library: Mutex::new(library),
+                loudness,
+                analysis: ScanControl::default(),
                 player,
                 queue: Mutex::new(Vec::new()),
                 entry_ids: AtomicU32::new(1),

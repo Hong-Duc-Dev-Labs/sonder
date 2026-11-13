@@ -57,6 +57,31 @@ pub struct ScanFinishedEvent {
     pub error: Option<String>,
 }
 
+/// The background loudness analysis finished another album.
+#[derive(Debug, Clone, Serialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct LoudnessProgressEvent {
+    pub done: u32,
+    pub total: u32,
+    pub failed: u32,
+}
+
+/// A loudness analysis pass ended.
+#[derive(Debug, Clone, Serialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct LoudnessFinishedEvent {
+    /// Tracks measured in this pass.
+    pub tracks: u32,
+    /// Albums whose album value was (re)built.
+    pub albums: u32,
+    /// Tracks that could not be decoded; they stay pending.
+    pub failed: u32,
+    /// Tracks still waiting for a measurement after the pass.
+    pub pending: u32,
+    /// The pass itself failed (database error).
+    pub error: Option<String>,
+}
+
 /// The index changed (scan, watcher, root removed): reload what is on screen.
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct LibraryChangedEvent;
@@ -228,6 +253,11 @@ fn handle(app: &AppHandle, event: &PlayerEvent) -> bool {
             format!("DSD: {mode:?} ({reason})"),
         ),
         PlayerEvent::Warning(message) => notice(app, NoticeLevel::Warning, message),
+        PlayerEvent::Clipping(count) => notice(
+            app,
+            NoticeLevel::Warning,
+            format!("{count} samples clipped; lower the EQ boost or preamp."),
+        ),
         _ => {}
     }
     urgent

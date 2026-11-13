@@ -4,12 +4,21 @@
   import {
     commands,
     events,
+    type BiquadKindSetting,
     type CoverStyle,
     type Device,
     type DsdMode,
     type DsdPcmRate,
+    type FilterPhaseSetting,
+    type FilterSourceSetting,
+    type FilterVariantSetting,
     type GlassQuality,
+    type LevelingSetting,
+    type PeqBandSetting,
+    type PeqSetting,
     type RootFolder,
+    type SrcSetting,
+    type SrcTargetSetting,
   } from "../lib/bindings";
   import { rate } from "../lib/format";
   import Icon from "./Icon.svelte";
@@ -105,6 +114,108 @@
     const rates = [...new Set(d.formats.map((f) => f.rate))].sort((a, b) => a - b);
     const bits = Math.max(...d.formats.map((f) => f.bits));
     return `Up to ${bits}-bit · ${rates.map(rate).join(", ")}`;
+  }
+
+  // ----- DSP: PEQ, levelling, dither -----
+
+  const levelingModes: { value: LevelingSetting; label: string; hint: string }[] = [
+    { value: "off", label: "Off", hint: "No level changes" },
+    { value: "track", label: "Track", hint: "Every track to the target loudness" },
+    { value: "album", label: "Album", hint: "The album to the target, keeping tracks relative" },
+    { value: "auto", label: "Auto", hint: "Album while an album plays in order, track otherwise" },
+  ];
+  const biquadKinds: { value: BiquadKindSetting; label: string }[] = [
+    { value: "peak", label: "Peak" },
+    { value: "lowShelf", label: "Low shelf" },
+    { value: "highShelf", label: "High shelf" },
+    { value: "lowPass", label: "Low pass" },
+    { value: "highPass", label: "High pass" },
+    { value: "bandPass", label: "Band pass" },
+    { value: "notch", label: "Notch" },
+  ];
+  const srcTargets: { value: SrcTargetSetting; label: string }[] = [
+    { value: "off", label: "Off" },
+    { value: "maxDevice", label: "Device max" },
+    { value: "keepFamily", label: "Keep family" },
+    { value: "fixed", label: "Fixed" },
+  ];
+  const fixedRates = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000, 705_600, 768_000];
+
+  let peq = $derived<PeqSetting>(app.settings.peq ?? { preampDb: 0, bands: [] });
+  let peqPresets = $derived(app.settings.peqPresets ?? {});
+  let presetName = $state("");
+
+  function savePeq(next: PeqSetting) {
+    app.saveSettings({ ...app.settings, peq: next, peqPreset: null });
+  }
+
+  function setBand(index: number, change: Partial<PeqBandSetting>) {
+    const bands = (peq.bands ?? []).map((band, i) => (i === index ? { ...band, ...change } : band));
+    savePeq({ ...peq, bands });
+  }
+
+  function addBand() {
+    savePeq({
+      ...peq,
+      bands: [...(peq.bands ?? []), { kind: "peak", freqHz: 1000, gainDb: 0, q: 1, enabled: true }],
+    });
+  }
+
+  function removeBand(index: number) {
+    savePeq({ ...peq, bands: (peq.bands ?? []).filter((_, i) => i !== index) });
+  }
+
+  function applyPreset(name: string) {
+    if (!name) return;
+    const preset = peqPresets[name];
+    if (preset) app.saveSettings({ ...app.settings, peq: preset, peqPreset: name });
+  }
+
+  function savePreset() {
+    const name = presetName.trim();
+    if (!name) return;
+    app.saveSettings({
+      ...app.settings,
+      peq: peq,
+      peqPresets: { ...peqPresets, [name]: peq },
+      peqPreset: name,
+    });
+    presetName = "";
+  }
+
+  function deletePreset() {
+    const name = app.settings.peqPreset;
+    if (!name) return;
+    const next = { ...peqPresets };
+    delete next[name];
+    app.saveSettings({ ...app.settings, peqPresets: next, peqPreset: null });
+  }
+
+  function setLeveling(mode: LevelingSetting) {
+    app.saveSettings({ ...app.settings, leveling: mode });
+  }
+
+  function setTargetLufs(event: Event) {
+    const value = Number((event.currentTarget as HTMLInputElement).value);
+    if (Number.isFinite(value)) app.saveSettings({ ...app.settings, levelingTargetLufs: value });
+  }
+
+  // ----- DSP: rate conversion -----
+
+  let src = $derived<SrcSetting>(app.settings.src ?? {});
+
+  function saveSrc(change: Partial<SrcSetting>) {
+    app.saveSettings({ ...app.settings, src: { ...src, ...change } });
+  }
+
+  function setNumberField(event: Event, apply: (value: number) => void) {
+    const value = Number((event.currentTarget as HTMLInputElement).value);
+    if (Number.isFinite(value)) apply(value);
+  }
+
+  async function pickRoonFolder() {
+    const folder = await app.run(commands.settingsPickRoonFolder());
+    if (folder) saveSrc({ roonFolder: folder, filterSource: "roon" });
   }
 </script>
 
@@ -235,6 +346,362 @@
               </button>
             {/each}
           </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="peq-title">
+      <div class="group-head"><h3 id="peq-title">Parametric EQ</h3></div>
+      <div class="card soft">
+        <div class="row">
+          <span class="icon"><Icon name="palette" size={18} /></span>
+          <span class="info">
+            <span class="name">Preset</span>
+            <span class="dim small">Bands run in order behind the preamp. Saving stores the current bands.</span>
+          </span>
+          <select
+            class="text"
+            aria-label="EQ preset"
+            value={app.settings.peqPreset ?? ""}
+            onchange={(e) => applyPreset(e.currentTarget.value)}
+          >
+            <option value="">Custom</option>
+            {#each Object.keys(peqPresets) as name (name)}
+              <option value={name}>{name}</option>
+            {/each}
+          </select>
+        </div>
+        <div class="row">
+          <span class="icon"><Icon name="volume" size={18} /></span>
+          <span class="info">
+            <span class="name">Preamp</span>
+            <span class="dim small">Negative headroom keeps boosted bands below full scale.</span>
+          </span>
+          <input
+            class="range"
+            type="range"
+            min="-24"
+            max="12"
+            step="0.5"
+            aria-label="EQ preamp"
+            aria-valuetext="{(peq.preampDb ?? 0).toFixed(1)} dB"
+            value={peq.preampDb ?? 0}
+            onchange={(e) => savePeq({ ...peq, preampDb: Number(e.currentTarget.value) })}
+          />
+          <span class="badge warn">{(peq.preampDb ?? 0).toFixed(1)} dB</span>
+        </div>
+        {#each peq.bands ?? [] as band, i (i)}
+          <div class="band">
+            <select
+              class="text"
+              aria-label="Band {i + 1} type"
+              value={band.kind ?? "peak"}
+              onchange={(e) => setBand(i, { kind: e.currentTarget.value as BiquadKindSetting })}
+            >
+              {#each biquadKinds as kind (kind.value)}
+                <option value={kind.value}>{kind.label}</option>
+              {/each}
+            </select>
+            <input
+              class="num"
+              type="number"
+              min="10"
+              max="24000"
+              step="1"
+              aria-label="Band {i + 1} frequency in Hz"
+              value={band.freqHz ?? 1000}
+              onchange={(e) => setNumberField(e, (v) => setBand(i, { freqHz: v }))}
+            />
+            <input
+              class="num"
+              type="number"
+              min="-24"
+              max="24"
+              step="0.5"
+              aria-label="Band {i + 1} gain in dB"
+              value={band.gainDb ?? 0}
+              onchange={(e) => setNumberField(e, (v) => setBand(i, { gainDb: v }))}
+            />
+            <input
+              class="num"
+              type="number"
+              min="0.1"
+              max="20"
+              step="0.1"
+              aria-label="Band {i + 1} Q"
+              value={band.q ?? 1}
+              onchange={(e) => setNumberField(e, (v) => setBand(i, { q: v }))}
+            />
+            <label class="inline">
+              <input
+                type="checkbox"
+                role="switch"
+                class="switch"
+                checked={band.enabled ?? true}
+                onchange={(e) => setBand(i, { enabled: e.currentTarget.checked })}
+              />
+              On
+            </label>
+            <button class="link" onclick={() => removeBand(i)}>Remove</button>
+          </div>
+        {/each}
+        <div class="row actions">
+          <button class="btn small" onclick={addBand}><Icon name="add" size={16} /> Add band</button>
+          <input class="text" placeholder="Preset name" aria-label="New preset name" bind:value={presetName} />
+          <button class="btn small" disabled={!presetName.trim()} onclick={savePreset}>Save preset</button>
+          {#if app.settings.peqPreset}
+            <button class="btn small" onclick={deletePreset}>Delete preset</button>
+          {/if}
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="level-title">
+      <div class="group-head"><h3 id="level-title">Loudness levelling and dither</h3></div>
+      <div class="card soft">
+        <div class="row">
+          <span class="icon"><Icon name="volume" size={18} /></span>
+          <span class="info">
+            <span class="name" id="level-mode-label">Levelling</span>
+            <span class="dim small">
+              {levelingModes.find((m) => m.value === (app.settings.leveling ?? "off"))?.hint}
+              Boosts stop at the track peak.
+            </span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="level-mode-label">
+            {#each levelingModes as mode (mode.value)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(app.settings.leveling ?? "off") === mode.value}
+                onclick={() => setLeveling(mode.value)}
+              >
+                {mode.label}
+              </button>
+            {/each}
+          </div>
+        </div>
+        <div class="row">
+          <span class="icon"><Icon name="volume" size={18} /></span>
+          <span class="info">
+            <span class="name">Target loudness</span>
+            <span class="dim small">Integrated loudness levelling aims for, in LUFS.</span>
+          </span>
+          <input
+            class="num"
+            type="number"
+            min="-30"
+            max="-5"
+            step="0.5"
+            aria-label="Levelling target in LUFS"
+            value={app.settings.levelingTargetLufs ?? -18}
+            onchange={setTargetLufs}
+          />
+          <span class="badge">LUFS</span>
+        </div>
+        <div class="row">
+          <span class="icon"><Icon name="disc" size={18} /></span>
+          <span class="info">
+            <span class="name">Dither</span>
+            <span class="dim small">
+              TPDF dither when the device takes fewer bits than the processed signal.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            class="switch"
+            checked={app.settings.dither ?? true}
+            onchange={(e) => app.saveSettings({ ...app.settings, dither: e.currentTarget.checked })}
+          />
+        </div>
+        <div class="row">
+          <span class="icon"><Icon name="refresh" size={18} /></span>
+          <span class="info">
+            <span class="name">Measure loudness</span>
+            <span class="dim small">
+              Tracks without ReplayGain tags are decoded and measured (EBU R128) so levelling can
+              use them. This runs by itself after a scan or a folder change.
+              {#if app.loudness.pending != null}{app.loudness.pending} waiting.{/if}
+            </span>
+          </span>
+          <button
+            class="btn small"
+            disabled={app.loudness.running || app.loudness.pending === 0}
+            onclick={() => app.analyzeLoudness()}
+          >
+            {app.loudness.running
+              ? app.loudness.total
+                ? `Analysing ${app.loudness.done}/${app.loudness.total}…`
+                : "Analysing…"
+              : "Analyse"}
+          </button>
+        </div>
+        {#if app.loudness.last}
+          <p class="note" aria-live="polite">{app.loudness.last}</p>
+        {/if}
+      </div>
+    </section>
+
+    <section aria-labelledby="src-title">
+      <div class="group-head"><h3 id="src-title">Upsampling</h3></div>
+      <div class="card soft">
+        <div class="row">
+          <span class="icon"><Icon name="disc" size={18} /></span>
+          <span class="info">
+            <span class="name" id="src-target-label">Resample to</span>
+            <span class="dim small">Off keeps the source rate unless the device refuses it.</span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="src-target-label">
+            {#each srcTargets as target (target.value)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(src.target ?? "off") === target.value}
+                onclick={() => saveSrc({ target: target.value })}
+              >
+                {target.label}
+              </button>
+            {/each}
+          </div>
+        </div>
+        {#if (src.target ?? "off") === "fixed"}
+          <div class="row">
+            <span class="icon"><Icon name="speaker" size={18} /></span>
+            <span class="info">
+              <span class="name">Target rate</span>
+              <span class="dim small">Must be one the device accepts, or the fallback picks another.</span>
+            </span>
+            <select
+              class="text"
+              aria-label="Fixed target rate"
+              value={src.fixedRate ?? 192000}
+              onchange={(e) => saveSrc({ fixedRate: Number(e.currentTarget.value) })}
+            >
+              {#each fixedRates as hz (hz)}
+                <option value={hz}>{rate(hz)}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+        <div class="row">
+          <span class="icon"><Icon name="folder" size={18} /></span>
+          <span class="info">
+            <span class="name" id="filter-source-label">Filters</span>
+            <span class="dim small">
+              Sonder designs its own at runtime. Roon tables load from a folder you own and are never
+              bundled; a missing table falls back per ratio.
+            </span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="filter-source-label">
+            {#each [{ value: "sonder", label: "Sonder" }, { value: "roon", label: "Roon" }] as source (source.value)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(src.filterSource ?? "sonder") === source.value}
+                onclick={() => saveSrc({ filterSource: source.value as FilterSourceSetting })}
+              >
+                {source.label}
+              </button>
+            {/each}
+          </div>
+        </div>
+        {#if (src.filterSource ?? "sonder") === "roon"}
+          <div class="row">
+            <span class="icon"><Icon name="folder" size={18} /></span>
+            <span class="info">
+              <span class="path" title={src.roonFolder ?? ""}>{src.roonFolder ?? "No folder chosen"}</span>
+              <span class="dim small">Folder holding Roon's polyphase tables.</span>
+            </span>
+            <button class="btn small" onclick={pickRoonFolder}>Choose…</button>
+          </div>
+        {/if}
+        <div class="row">
+          <span class="icon"><Icon name="disc" size={18} /></span>
+          <span class="info">
+            <span class="name" id="phase-label">Phase</span>
+            <span class="dim small">Linear keeps transients symmetric; minimum trades that for latency.</span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="phase-label">
+            {#each [{ value: "linear", label: "Linear" }, { value: "minimum", label: "Minimum" }] as phase (phase.value)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(src.phase ?? "linear") === phase.value}
+                onclick={() => saveSrc({ phase: phase.value as FilterPhaseSetting })}
+              >
+                {phase.label}
+              </button>
+            {/each}
+          </div>
+        </div>
+        <div class="row">
+          <span class="icon"><Icon name="disc" size={18} /></span>
+          <span class="info">
+            <span class="name" id="variant-label">Filter</span>
+            <span class="dim small">Precise has the steepest stopband; Smooth is shorter and lighter.</span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="variant-label">
+            {#each [{ value: "precise", label: "Precise" }, { value: "smooth", label: "Smooth" }] as variant (variant.value)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(src.variant ?? "precise") === variant.value}
+                onclick={() => saveSrc({ variant: variant.value as FilterVariantSetting })}
+              >
+                {variant.label}
+              </button>
+            {/each}
+          </div>
+        </div>
+        <div class="row">
+          <span class="icon"><Icon name="volume" size={18} /></span>
+          <span class="info">
+            <span class="name">Headroom</span>
+            <span class="dim small">Inserted before resampling so interpolation overshoot cannot clip.</span>
+          </span>
+          <input
+            class="num"
+            type="number"
+            min="-60"
+            max="0"
+            step="0.5"
+            aria-label="Headroom in dB"
+            value={src.headroomDb ?? -3}
+            onchange={(e) =>
+              setNumberField(e, (v) => saveSrc({ headroomDb: Number.isFinite(v) ? v : null }))}
+          />
+          <span class="badge">dB</span>
+        </div>
+        <div class="row">
+          <span class="icon"><Icon name="refresh" size={18} /></span>
+          <span class="info">
+            <span class="name">Automatic fallback</span>
+            <span class="dim small">
+              Resample when the device refuses the source rate, labelled not bit-perfect.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            class="switch"
+            checked={src.autoFallback ?? true}
+            onchange={(e) => saveSrc({ autoFallback: e.currentTarget.checked })}
+          />
+        </div>
+        <div class="row">
+          <span class="icon"><Icon name="refresh" size={18} /></span>
+          <span class="info">
+            <span class="name">Lift rates below 44.1 kHz</span>
+            <span class="dim small">Bring 22.05/32 kHz material up into its own family.</span>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            class="switch"
+            checked={src.forceUpsampleBelow44k ?? false}
+            onchange={(e) => saveSrc({ forceUpsampleBelow44k: e.currentTarget.checked })}
+          />
         </div>
       </div>
     </section>
@@ -702,5 +1169,50 @@
   .segmented .chip:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  /* DSP editors: a compact grid of inputs. */
+  .text,
+  .num {
+    background: rgb(0 0 0 / 0.25);
+    color: var(--ink);
+    font: inherit;
+    font-size: var(--fs-small);
+    padding: 8px 10px;
+    border-radius: var(--r-sm);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+  }
+  .text {
+    min-width: 140px;
+  }
+  .num {
+    width: 96px;
+  }
+  .band {
+    display: grid;
+    grid-template-columns: minmax(110px, 1.2fr) 1fr 1fr 1fr auto auto;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: var(--r-md);
+  }
+  .band:hover {
+    background: var(--soft);
+  }
+  .band .num,
+  .band .text {
+    width: 100%;
+    min-width: 0;
+  }
+  .note {
+    margin: 0;
+    padding: 0 14px 14px;
+    color: var(--ink-2);
+    font-size: var(--fs-small);
+  }
+  @media (max-width: 720px) {
+    .band {
+      grid-template-columns: 1fr 1fr;
+    }
   }
 </style>

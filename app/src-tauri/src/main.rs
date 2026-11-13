@@ -8,6 +8,7 @@ mod art;
 mod commands;
 mod dto;
 mod events;
+mod loudness;
 mod media;
 mod scan;
 mod settings;
@@ -59,6 +60,10 @@ fn bindings() -> Builder<tauri::Wry> {
             commands::device_select,
             commands::settings_get,
             commands::settings_set,
+            commands::settings_pick_roon_folder,
+            commands::library_analyze_loudness,
+            commands::library_loudness_pending,
+            commands::library_is_analyzing,
             commands::lyrics_get,
         ])
         .events(collect_events![
@@ -66,6 +71,8 @@ fn bindings() -> Builder<tauri::Wry> {
             events::QueueChangedEvent,
             events::ScanProgressEvent,
             events::ScanFinishedEvent,
+            events::LoudnessProgressEvent,
+            events::LoudnessFinishedEvent,
             events::LibraryChangedEvent,
             events::DevicesChangedEvent,
             events::NoticeEvent,

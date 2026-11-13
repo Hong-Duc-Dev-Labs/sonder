@@ -27,6 +27,6 @@ pub use player::{
 pub use queue::Queue;
 pub use rate::{FilterSourceConfig, SignalStage, SrcConfig, SrcTarget};
 pub use sdm::{SdmConfig, SdmMode};
-pub use sonder_dsp::{SdmOrder, SdmRate};
+pub use sonder_dsp::{CrossfeedPreset, ImpulseResponse, IrError, SdmOrder, SdmRate};
 pub use stage::{Stage, StreamFormat, Volume};
 pub use worker::{DsdMode, OutputMode, OutputSpec};

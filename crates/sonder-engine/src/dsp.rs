@@ -6,8 +6,9 @@
 //! loudness without depending on the library's database.
 
 use std::path::Path;
+use std::sync::Arc;
 
-use sonder_dsp::{Gain, LevelingMode, Peq};
+use sonder_dsp::{CrossfeedPreset, Gain, ImpulseResponse, IrError, LevelingMode, Peq};
 
 /// Values levelling needs for one playable unit.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -38,11 +39,16 @@ impl LoudnessSource for NoLoudness {
 pub const MIN_TARGET_LUFS: f64 = -30.0;
 pub const MAX_TARGET_LUFS: f64 = -5.0;
 
-/// PCM shaping settings: parametric EQ, levelling and dither.
+/// PCM shaping settings: convolution, parametric EQ, crossfeed, levelling and dither.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DspConfig {
+    /// Impulse response to convolve with. `Err` keeps the stage off; the engine reports the
+    /// reason once.
+    pub convolution: Option<Result<Arc<ImpulseResponse>, IrError>>,
     /// Parametric EQ; `None` or an inactive preset leaves the samples alone.
     pub peq: Option<Peq>,
+    /// Headphone crossfeed for stereo tracks.
+    pub crossfeed: Option<CrossfeedPreset>,
     pub leveling: LevelingMode,
     /// Integrated loudness levelling aims for.
     pub leveling_target_lufs: f64,
@@ -53,7 +59,9 @@ pub struct DspConfig {
 impl Default for DspConfig {
     fn default() -> Self {
         Self {
+            convolution: None,
             peq: None,
+            crossfeed: None,
             leveling: LevelingMode::Off,
             leveling_target_lufs: -18.0,
             dither: true,

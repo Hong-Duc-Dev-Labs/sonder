@@ -57,6 +57,13 @@ export const commands = {
 	/**  Asks for the folder that holds Roon's filter tables. Returns `None` when the user cancels. */
 	settingsPickRoonFolder: () => __TAURI_INVOKE<string | null>("settings_pick_roon_folder"),
 	/**
+	 *  Asks for an impulse response WAV file and describes it. Returns `None` when the user
+	 *  cancels; a file Sonder cannot use is an error naming the reason.
+	 */
+	settingsPickImpulseResponse: () => __TAURI_INVOKE<ImpulseResponseInfo | null>("settings_pick_impulse_response"),
+	/**  Describes the impulse response at `path`, or says why it cannot be used. */
+	impulseResponseInfo: (path: string) => __TAURI_INVOKE<ImpulseResponseInfo>("impulse_response_info", { path }),
+	/**
 	 *  Starts measuring every track that has no ReplayGain tags, or queues a pass behind the one
 	 *  running. Progress and the result arrive as `LoudnessProgressEvent` and
 	 *  `LoudnessFinishedEvent`.
@@ -134,12 +141,34 @@ export type ArtistInfo = {
 /**  The RBJ filter shapes the EQ offers. */
 export type BiquadKindSetting = "peak" | "lowShelf" | "highShelf" | "lowPass" | "highPass" | "bandPass" | "notch";
 
+/**  Convolution with an impulse response file. */
+export type ConvolutionSetting = {
+	enabled?: boolean,
+	/**  WAV file holding the response. */
+	path?: string | null,
+};
+
 /**  How Now Playing shows the cover. */
 export type CoverStyle = 
 /**  The cover as the label of a spinning record, under a tonearm. */
 "vinyl" | 
 /**  The flat square cover. */
 "square";
+
+/**  Headphone crossfeed presets (libbs2b's). */
+export type CrossfeedPresetSetting = 
+/**  700 Hz, 4.5 dB. */
+"default" | 
+/**  700 Hz, 6.0 dB. */
+"chuMoy" | 
+/**  650 Hz, 9.5 dB. */
+"janMeier";
+
+/**  Headphone crossfeed. */
+export type CrossfeedSetting = {
+	enabled?: boolean,
+	preset?: CrossfeedPresetSetting,
+};
 
 export type Device = {
 	id: string,
@@ -189,6 +218,17 @@ export type GlassQuality = "full" |
 "reduced" | 
 /**  Opaque surfaces, no blur. */
 "off";
+
+/**  What Settings shows about an impulse response file. */
+export type ImpulseResponseInfo = {
+	path: string,
+	name: string,
+	rate: number,
+	channels: number,
+	seconds: number | null,
+	/**  Highest gain of the response; a positive value is the headroom it needs. */
+	peakGainDb: number | null,
+};
 
 /**  Where levelling gets its gain. */
 export type LevelingSetting = "off" | "track" | "album" | "auto";
@@ -356,8 +396,12 @@ export type Settings = {
 	pcmToDsd?: PcmToDsd,
 	/**  Sigma-delta modulator order for PCM→DSD. */
 	sdmOrder?: SdmOrderSetting,
+	/**  Convolution with an impulse response (runs before the EQ). */
+	convolution?: ConvolutionSetting,
 	/**  Parametric EQ preset in use. */
 	peq?: PeqSetting,
+	/**  Headphone crossfeed (runs after the EQ). */
+	crossfeed?: CrossfeedSetting,
 	/**  Saved EQ presets, by name. */
 	peqPresets?: { [key in string]: PeqSetting },
 	/**  Name of the preset `peq` came from, when it has not been edited since. */

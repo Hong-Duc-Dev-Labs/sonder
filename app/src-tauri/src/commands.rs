@@ -14,8 +14,8 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
 
 use crate::dto::{
-    Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, Device, Lyrics,
-    PlayerSnapshot, QueueItem, RootFolder, SortOrder, TrackItem,
+    Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, Device,
+    ImpulseResponseInfo, Lyrics, PlayerSnapshot, QueueItem, RootFolder, SortOrder, TrackItem,
 };
 use crate::events::{LibraryChangedEvent, QueueChangedEvent};
 use crate::settings::Settings;
@@ -526,6 +526,37 @@ pub async fn settings_pick_roon_folder(app: AppHandle) -> AppResult<Option<Strin
     };
     let path = picked.into_path().map_err(AppError::from)?;
     Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// Asks for an impulse response WAV file and describes it. Returns `None` when the user
+/// cancels; a file Sonder cannot use is an error naming the reason.
+#[tauri::command]
+#[specta::specta]
+pub async fn settings_pick_impulse_response(
+    app: AppHandle,
+) -> AppResult<Option<ImpulseResponseInfo>> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("WAV impulse response", &["wav"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(AppError::from)?;
+    let path = path.to_string_lossy().into_owned();
+    let info =
+        tauri::async_runtime::spawn_blocking(move || ImpulseResponseInfo::describe(&path)).await?;
+    Ok(Some(info?))
+}
+
+/// Describes the impulse response at `path`, or says why it cannot be used.
+#[tauri::command]
+#[specta::specta]
+pub async fn impulse_response_info(path: String) -> AppResult<ImpulseResponseInfo> {
+    let info =
+        tauri::async_runtime::spawn_blocking(move || ImpulseResponseInfo::describe(&path)).await?;
+    Ok(info?)
 }
 
 /// Tracks still waiting for a loudness measurement.

@@ -11,6 +11,7 @@ cargo test --workspace
 cargo test -p sonder-verify            # the acceptance suite on its own
 cargo clippy --workspace --all-targets -- -D warnings
 cargo bench -p sonder-dsp --bench sdm  # PCM→DSD cost
+cargo bench -p sonder-dsp --bench convolver  # convolution cost at 192 kHz
 bash scripts/check-forbidden-files.sh
 pwsh tools/check_bundle.ps1            # -Build builds the installer first
 ```
@@ -65,6 +66,14 @@ channels interleaved; a test checks it emits the same bytes as the straightforwa
 including stability resets. The resampler now costs more than the modulator on the whole
 path. If a slower CPU does underrun, the decode worker starves and the transport's underrun
 counter reports it.
+
+Convolution (`cargo bench -p sonder-dsp --bench convolver`, one second of 192 kHz stereo in
+4096-frame blocks, a decaying-noise stereo response):
+
+| Response | P-core | E-core | Unpinned | Worst realtime factor |
+|----------|--------|--------|----------|-----------------------|
+| 65 536 taps | 38 ms | 75 ms | 92 ms | 10.9× |
+| 1 s (192 000 taps) | 70 ms | 124 ms | 149 ms | 6.7× |
 
 Modulator quality (`tools/design_sdm.py`): every shipped table is stable (all poles inside the
 unit circle), and the SDM tests measure ≥ 90 dB in-band SNR at DSD64 with the 5th-order table

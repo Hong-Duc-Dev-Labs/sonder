@@ -29,9 +29,11 @@ use crate::dsp::{DspConfig, LoudnessSource, NoLoudness, TrackGain};
 use crate::queue::Queue;
 use crate::rate::{self, DeviceFormats, FilterResolver, SignalStage, SrcConfig, SrcPlan};
 use crate::sdm::SdmConfig;
-use crate::stage::{Dither, GainHandle, LevelingStage, Peq, PeqStage, Stage, Volume};
+use crate::stage::{
+    Convolver, Crossfeed, Dither, GainHandle, LevelingStage, Peq, PeqStage, Stage, Volume,
+};
 use crate::worker::{DecodeWorker, DsdMode, OutputMode, OutputSpec, SdmPacking};
-use sonder_dsp::{Gain, LevelingMode, SdmOrder, SdmRate};
+use sonder_dsp::{CrossfeedPreset, Gain, ImpulseResponse, LevelingMode, SdmOrder, SdmRate};
 
 /// How long a seek waits for the render thread to drop queued audio before reopening instead.
 const FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
@@ -43,6 +45,8 @@ const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
 const FEED_AHEAD_SAMPLES: usize = 32_768;
 /// Smallest ring, whatever the configured duration.
 const MIN_RING_FRAMES: usize = 1024;
+/// Highest rate convolution runs at; above it the response runs before the converter.
+const MAX_CONVOLUTION_RATE: u32 = 384_000;
 
 /// Requests to the engine thread.
 #[derive(Debug)]
@@ -470,7 +474,10 @@ struct Now {
 struct StageKey {
     /// Source, target and channels of the rate-conversion plan.
     plan: Option<(u32, u32, u16)>,
+    /// The response's identity and whether it runs before the converter.
+    convolution: Option<(usize, bool)>,
     peq: Option<Peq>,
+    crossfeed: Option<CrossfeedPreset>,
     leveling: Option<LevelingMode>,
     volume: Option<u64>,
     dither: Option<u32>,
@@ -530,6 +537,13 @@ struct Engine {
     dither_bits: Option<u32>,
     /// Channel count of the planned track, so stage changes can re-decide dither.
     channels: u16,
+    /// Rate the planned track enters the chain at (the DSD→PCM rate for a converted DSD
+    /// track), so the signal path can say where convolution runs.
+    chain_rate: u32,
+    /// Response and channel count the "does not fit" warning was last given for.
+    convolution_warned: Option<(usize, u16)>,
+    /// Channel count the "crossfeed needs stereo" warning was last given for.
+    crossfeed_warned: Option<u16>,
     /// Whether clipping was already reported for the current track.
     clipping_reported: bool,
     /// What the worker's chain currently contains, so it is rebuilt only when it changes.
@@ -598,6 +612,9 @@ impl Engine {
             leveling: GainHandle::default(),
             dither_bits: None,
             channels: 2,
+            chain_rate: 0,
+            convolution_warned: None,
+            crossfeed_warned: None,
             clipping_reported: false,
             stages_key: None,
             dither_clipped: Arc::new(AtomicU64::new(0)),
@@ -611,7 +628,72 @@ impl Engine {
         for warning in warnings {
             engine.emit(PlayerEvent::Warning(warning));
         }
+        engine.report_convolution_error();
         engine
+    }
+
+    /// Says why a configured impulse response cannot be used; playback goes on without it.
+    fn report_convolution_error(&self) {
+        if let Some(Err(error)) = &self.config.dsp.convolution {
+            self.emit(PlayerEvent::Warning(format!("convolution is off: {error}")));
+        }
+    }
+
+    /// The response the convolution stage runs, when one is loaded and fits the track.
+    fn convolution(&self) -> Option<&Arc<ImpulseResponse>> {
+        match &self.config.dsp.convolution {
+            Some(Ok(ir)) if !self.bitstream && ir.fits(self.channels) => Some(ir),
+            _ => None,
+        }
+    }
+
+    /// Whether convolution runs before the converter: when the converter feeds the DSD
+    /// modulator (or any target above [`MAX_CONVOLUTION_RATE`]), the response runs at the
+    /// source rate instead of being stretched to millions of taps.
+    fn convolution_before_src(&self) -> bool {
+        self.plan
+            .as_ref()
+            .is_some_and(|plan| plan.target_rate > MAX_CONVOLUTION_RATE)
+    }
+
+    /// The crossfeed preset, when crossfeed is on and the track is stereo.
+    fn crossfeed(&self) -> Option<CrossfeedPreset> {
+        self.config
+            .dsp
+            .crossfeed
+            .filter(|_| !self.bitstream && self.channels == 2)
+    }
+
+    /// Warns once per response and channel count when a configured stage cannot run on the
+    /// planned track.
+    fn report_unfit_stages(&mut self) {
+        if self.bitstream {
+            return;
+        }
+        if let Some(Ok(ir)) = &self.config.dsp.convolution
+            && !ir.fits(self.channels)
+        {
+            let key = (Arc::as_ptr(ir) as usize, self.channels);
+            if self.convolution_warned != Some(key) {
+                self.convolution_warned = Some(key);
+                self.emit(PlayerEvent::Warning(format!(
+                    "convolution skipped: {} has {} channels, the track has {}",
+                    ir.name(),
+                    ir.channel_count(),
+                    self.channels
+                )));
+            }
+        }
+        if self.config.dsp.crossfeed.is_some()
+            && self.channels != 2
+            && self.crossfeed_warned != Some(self.channels)
+        {
+            self.crossfeed_warned = Some(self.channels);
+            self.emit(PlayerEvent::Warning(format!(
+                "crossfeed skipped: it needs a stereo track, this one has {} channels",
+                self.channels
+            )));
+        }
     }
 
     fn run(mut self) {
@@ -985,7 +1067,12 @@ impl Engine {
         if self.config.dsp == dsp {
             return;
         }
+        let new_error = matches!(&dsp.convolution, Some(Err(_)))
+            && dsp.convolution != self.config.dsp.convolution;
         self.config.dsp = dsp;
+        if new_error {
+            self.report_convolution_error();
+        }
         self.refresh_dither(self.channels, false);
         self.sync_stages();
         self.restart_if_playing();
@@ -1026,18 +1113,30 @@ impl Engine {
         }
     }
 
-    /// The full stage list in Roon's order: headroom, SRC, PEQ, levelling, volume, dither.
-    /// Empty while DoP or native DSD plays: those send the source bits untouched.
+    /// The full stage list in Roon's order: headroom, SRC, convolution, PEQ, crossfeed,
+    /// levelling, volume, dither. Convolution moves ahead of SRC when SRC feeds the DSD
+    /// modulator (see [`Self::convolution_before_src`]). Empty while DoP or native DSD plays:
+    /// those send the source bits untouched.
     fn compose_stages(&self) -> Vec<Box<dyn Stage>> {
         let mut stages: Vec<Box<dyn Stage>> = Vec::new();
         if self.bitstream {
             return stages;
         }
+        let mut convolver = self
+            .convolution()
+            .map(|ir| Box::new(Convolver::new(ir.clone())) as Box<dyn Stage>);
+        if self.convolution_before_src() {
+            stages.extend(convolver.take());
+        }
         if let Some(plan) = &self.plan {
             stages.extend(plan.stages());
         }
+        stages.extend(convolver);
         if let Some(peq) = self.config.dsp.peq.clone().filter(Peq::active) {
             stages.push(Box::new(PeqStage::new(peq)));
+        }
+        if let Some(preset) = self.crossfeed() {
+            stages.push(Box::new(Crossfeed::new(preset)));
         }
         if self.config.dsp.leveling.is_on() {
             stages.push(Box::new(LevelingStage::new(self.leveling.clone())));
@@ -1060,7 +1159,11 @@ impl Engine {
                 .plan
                 .as_ref()
                 .map(|p| (p.source_rate, p.target_rate, p.channels)),
+            convolution: self
+                .convolution()
+                .map(|ir| (Arc::as_ptr(ir) as usize, self.convolution_before_src())),
             peq: self.config.dsp.peq.clone().filter(Peq::active),
+            crossfeed: self.crossfeed(),
             leveling: self
                 .config
                 .dsp
@@ -1076,6 +1179,7 @@ impl Engine {
     /// Rebuilds the worker's chain when its contents changed. The old chain's history is
     /// dropped; callers that need continuity flush its tail first.
     fn sync_stages(&mut self) {
+        self.report_unfit_stages();
         let key = self.stage_key();
         if self.stages_key.as_ref() == Some(&key) {
             return;
@@ -1104,6 +1208,7 @@ impl Engine {
         let key = (rate, channels, target);
         let plan_changed = self.plan_key != Some(key);
         self.channels = channels;
+        self.chain_rate = rate;
         if plan_changed {
             let plan = target.and_then(|target| {
                 let plan = self.resolver.plan(rate, target, channels, &self.config.src);
@@ -1127,13 +1232,11 @@ impl Engine {
         self.sync_stages();
     }
 
-    /// Removes the rate-conversion plan from the worker, keeping the shaping stages.
+    /// Removes the rate-conversion plan from the worker before a DoP or native DSD track,
+    /// whose chain is empty. `continuous` first drains what the old chain holds: the
+    /// converter's history, and convolution's held frames and tail even without a plan.
     fn drop_plan(&mut self, continuous: bool, tail: &mut Vec<i32>) {
         self.plan_key = None;
-        if self.plan.is_none() {
-            self.sync_stages();
-            return;
-        }
         if continuous {
             self.worker.flush_tail(tail);
         }
@@ -1158,6 +1261,8 @@ impl Engine {
         }
         let shaping = converted
             || self.plan.is_some()
+            || self.convolution().is_some()
+            || self.crossfeed().is_some()
             || self.config.dsp.peq_active()
             || self.config.dsp.leveling.is_on()
             || self.volume_db.is_some();
@@ -1286,9 +1391,30 @@ impl Engine {
         // container or the modulator. DoP and native DSD from a DSD source run no stages
         // (see `compose_stages`), so only stages that actually shape the signal are listed.
         let shaped = !self.bitstream;
+        let before_src = self.convolution_before_src();
+        let mut convolution = self.convolution().map(|ir| {
+            let rate = match &self.plan {
+                Some(plan) if !before_src => plan.target_rate,
+                _ => self.chain_rate,
+            };
+            let taps = (ir.frames() as u64 * u64::from(rate)).div_ceil(u64::from(ir.rate()));
+            let resampled = if rate == ir.rate() {
+                String::new()
+            } else {
+                format!(", resampled from {} Hz", ir.rate())
+            };
+            SignalStage {
+                name: "Convolution".into(),
+                detail: format!("{}: {taps} taps at {rate} Hz{resampled}", ir.name()),
+            }
+        });
+        if before_src {
+            stages.extend(convolution.take());
+        }
         if let Some(plan) = &self.plan {
             stages.extend(plan.describe());
         }
+        stages.extend(convolution);
         if let Some(peq) = self
             .config
             .dsp
@@ -1300,6 +1426,17 @@ impl Engine {
             stages.push(SignalStage {
                 name: "PEQ".into(),
                 detail: format!("{bands} bands, preamp {:+.1} dB", peq.preamp_db),
+            });
+        }
+        if let Some(preset) = self.crossfeed() {
+            stages.push(SignalStage {
+                name: "Crossfeed".into(),
+                detail: format!(
+                    "{} ({:.0} Hz, {:.1} dB)",
+                    preset.label(),
+                    preset.cutoff_hz(),
+                    preset.feed_db()
+                ),
             });
         }
         if shaped && self.config.dsp.leveling.is_on() {

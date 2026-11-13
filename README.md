@@ -2,7 +2,7 @@
 
 A local lossless music player: Rust core, Tauri UI, bit-perfect PCM and DSD playback through
 exclusive-mode output on Windows, macOS and Linux, with a Roon-style DSP chain (headroom → SRC
-→ PEQ → levelling → volume → dither, plus PCM→DSD).
+→ convolution → PEQ → crossfeed → levelling → volume → dither, plus PCM→DSD).
 
 ## What it plays
 
@@ -62,6 +62,15 @@ cargo run -p sonder-cli -- play ~/Music/album --verify-hash
   copies them into its own files. A missing table for one ratio falls back to Sonder's filter
   and the signal path says which source was used. The tables are not distributed with Sonder
   (see `.gitignore` and `scripts/check-forbidden-files.sh`).
+- **Convolution** — `Settings → Convolution → Choose…` takes a WAV impulse response (16/24/32-bit
+  integer or 32-bit float, up to 2 s): one channel for every output channel, or one channel per
+  output channel. It runs after upsampling, resampled once per stream rate; when the converter
+  feeds the DSD modulator above 384 kHz it runs at the source rate instead. Settings shows the
+  response's peak gain; a positive value is how much to lower the EQ preamp or headroom. A file
+  that cannot be read turns convolution off with a notice; playback continues.
+- **Crossfeed** — bs2b headphone crossfeed for stereo tracks, after the EQ, with libbs2b's
+  presets: Default (700 Hz, 4.5 dB), Chu Moy (700 Hz, 6 dB) and Jan Meier (650 Hz, 9.5 dB).
+  Centred sounds keep their level in the bass and dip 1–1.75 dB above the cut-off, as in bs2b.
 
 The Now Playing view shows the signal path stage by stage (the icon next to the device line).
 
@@ -71,6 +80,7 @@ The Now Playing view shows the signal path stage by stage (the icon next to the 
 cargo test --workspace          # unit + integration, includes the acceptance suite
 cargo clippy --workspace --all-targets -- -D warnings
 cargo bench -p sonder-dsp --bench sdm
+cargo bench -p sonder-dsp --bench convolver
 bash scripts/check-forbidden-files.sh
 pwsh tools/check_bundle.ps1     # add -Build to build the installer first
 python tools/design_sdm.py      # modulator stability and noise shaping

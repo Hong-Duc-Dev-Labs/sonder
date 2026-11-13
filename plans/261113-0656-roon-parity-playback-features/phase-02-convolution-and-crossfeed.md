@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Phase 2: Convolution and crossfeed"
-status: todo
+status: completed
 priority: P2
 effort: "1w"
 dependencies: []
@@ -29,31 +29,31 @@ headroom → SRC → **convolution** → PEQ → **crossfeed** → levelling →
 ## Requirements
 
 ### Convolution
-- [ ] `Convolver` stage: uniformly partitioned overlap-save, partition size 1024 frames
+- [x] `Convolver` stage: uniformly partitioned overlap-save, partition size 1024 frames
       (latency = one partition), complex multiply-accumulate over a frequency-domain delay
       line; all buffers allocated in `configure`.
-- [ ] IR loading off the audio thread: WAV (16/24/32-bit int, 32-bit float), 1 channel
+- [x] IR loading off the audio thread: WAV (16/24/32-bit int, 32-bit float), 1 channel
       (applied to every channel) or exactly the stream's channel count; other counts are an
       error shown in settings. Max IR length 2^20 frames after resampling.
-- [ ] IR rate ≠ stream rate: resample the IR once with Sonder's resampler at configure time;
+- [x] IR rate ≠ stream rate: resample the IR once with Sonder's resampler at configure time;
       the signal path says "IR resampled from X to Y".
-- [ ] IR gain: no automatic normalisation; the existing headroom setting covers boost.
+- [x] IR gain: no automatic normalisation; the existing headroom setting covers boost.
       Settings show the IR's peak frequency-response gain so the user can set headroom.
-- [ ] `flush` emits the IR tail; `reset` clears history.
-- [ ] Settings: `convolution: { enabled, path }`; missing/unreadable file ⇒ stage off and a
+- [x] `flush` emits the IR tail; `reset` clears history.
+- [x] Settings: `convolution: { enabled, path }`; missing/unreadable file ⇒ stage off and a
       warning in the signal path, never a playback failure.
 
 ### Crossfeed
-- [ ] `Crossfeed` stage, bs2b topology (low-pass on the cross path, high-shelf on the direct
+- [x] `Crossfeed` stage, bs2b topology (low-pass on the cross path, high-shelf on the direct
       path, level-compensated), presets: Default (700 Hz / 4.5 dB), Chu Moy (700 Hz / 6 dB),
       Jan Meier (650 Hz / 9.5 dB).
-- [ ] Stereo only; other channel counts bypass and the signal path says so.
-- [ ] Settings: `crossfeed: { enabled, preset }`.
+- [x] Stereo only; other channel counts bypass and the signal path says so.
+- [x] Settings: `crossfeed: { enabled, preset }`.
 
 ### Wiring
-- [ ] `DspConfig` gains `convolution` and `crossfeed`; `StageKey` includes them.
-- [ ] Signal path lists each stage with its parameters; both mark the path "not bit-perfect".
-- [ ] Tauri settings DTOs (serde defaults keep old settings files loading), a "Pick IR file"
+- [x] `DspConfig` gains `convolution` and `crossfeed`; `StageKey` includes them.
+- [x] Signal path lists each stage with its parameters; both mark the path "not bit-perfect".
+- [x] Tauri settings DTOs (serde defaults keep old settings files loading), a "Pick IR file"
       command using the native picker (like `settings_pick_roon_folder`), regenerated
       `bindings.ts`, and controls in `SettingsView.svelte`.
 
@@ -81,12 +81,12 @@ headroom → SRC → **convolution** → PEQ → **crossfeed** → levelling →
 
 ## Todo
 
-- [ ] Convolver + tests
-- [ ] IR loader + resampling + errors
-- [ ] Crossfeed + tests
-- [ ] Engine chain, StageKey, signal path
-- [ ] Settings, picker command, bindings, UI
-- [ ] README settings list
+- [x] Convolver + tests
+- [x] IR loader + resampling + errors
+- [x] Crossfeed + tests
+- [x] Engine chain, StageKey, signal path
+- [x] Settings, picker command, bindings, UI
+- [x] README settings list
 
 ## Success Criteria
 
@@ -94,6 +94,48 @@ headroom → SRC → **convolution** → PEQ → **crossfeed** → levelling →
 - A 65 536-tap stereo IR at 192 kHz runs ≥ 10× realtime on this machine (criterion bench
   added to `benches/`).
 - With both stages off, `dsp_off_is_byte_exact_for_every_pcm_depth_and_rate` still passes.
+
+**Implementation note.** `sonder-dsp::convolver` holds `ImpulseResponse`, which loads WAV
+files with `hound`, caches the last file by path, mtime and length, and caches resampled copies
+per rate. Resampling uses Sonder's precise linear filters, removes their delay (read from a
+unit impulse) and scales by `from / to` so the gain is unchanged. `Convolver` is a uniformly
+partitioned overlap-save convolver on `realfft`. It holds up to one partition and emits the
+exact convolution, so no silence is added; `flush` emits the held frames plus `len − 1` tail
+frames. `sonder-dsp::crossfeed` follows libbs2b's `init` and `cross_feed` exactly. In the
+engine, `DspConfig` gains `convolution: Option<Result<Arc<ImpulseResponse>, IrError>>` and
+`crossfeed`, and `StageKey` keys the response by identity. The chain is headroom → SRC →
+convolution → PEQ → crossfeed → …. The signal path names the file, taps, rate and any
+resampling. Tests:
+- `sonder-dsp`: 12 tests: Dirac identity, direct-form match ≤ 1e-9, block-size invariance,
+  per-channel stereo, pass-through on a channel mismatch, resampled timing and 0 dB gain, peak
+  gain, limits, and WAV loading.
+- `sonder-verify`: a Dirac response stays byte-exact across a gapless join with no frames lost;
+  stage order and detail in the signal path; an unreadable file gives a warning and keeps
+  bit-perfect output.
+- `sonder-engine`: convolution moves ahead of SRC only above 384 kHz.
+- App: settings mapping and old settings files still load.
+
+Bench, IR 65 536 taps, 192 kHz stereo: 38 ms on a P-core, 75 ms on an E-core, 92 ms unpinned,
+≥ 10.9× realtime.
+
+**Deviations.**
+- Partition size adapts to the response: 1024–8192 frames, about 128 partitions, instead of a
+  fixed 1024. A 1 s response at 192 kHz would need 188 partitions of 1024; at 8192 the delay
+  line stays short. Latency is not affected, because the output is not delayed.
+- The limit is 2 s of response at its own rate, not 2^20 frames after resampling. A frame count
+  would either reject ordinary 65k-tap responses at 768 kHz or allow ~100 MB per channel; a
+  duration is what users understand.
+- New: above 384 kHz (PCM→DSD128/256), convolution runs before SRC at the source rate. Without
+  this, a response would be stretched to millions of taps at the modulator's input rate.
+- An unreadable file or a channel mismatch is reported as a player notice
+  (`PlayerEvent::Warning`), not as a stage in the signal path. A stage that does not run would
+  wrongly mark the path "not bit-perfect".
+- Crossfeed acceptance: bs2b keeps a centred sound's level at low frequencies (≤ 0.05 dB) but
+  dips it 1.06 dB (Jan Meier) to 1.75 dB (Default) above the cut-off. This is libbs2b's design,
+  so the "L = R within 0.1 dB at 100 Hz–10 kHz" criterion was wrong. The test asserts the bass
+  level, no boost, the documented dip bound, and a low-frequency separation equal to the
+  preset's feed level.
+- Not checked in the running app: the Settings controls and the IR picker (UI type check only).
 
 ## Risk Assessment
 

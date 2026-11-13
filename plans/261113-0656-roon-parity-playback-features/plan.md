@@ -35,7 +35,7 @@ Builds on the finished engine of [the lossless player plan](../261111-1242-sonde
 | 2 | [Convolution and crossfeed](./phase-02-convolution-and-crossfeed.md) | Done |
 | 3 | [Repeat and crossfade](./phase-03-repeat-and-crossfade.md) | Done |
 | 4 | [Playlists](./phase-04-playlists.md) | Done (in-app walkthrough open) |
-| 5 | [Real-device verification](./phase-05-real-device-verification.md) | Pending |
+| 5 | [Real-device verification](./phase-05-real-device-verification.md) | Done |
 
 Order: 1, 2 and 4 are independent (different crates); 3 touches `player.rs` after 2 lands its
 chain change there; 5 runs last so it also covers the faster SDM and the new stages.

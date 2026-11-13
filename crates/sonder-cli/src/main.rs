@@ -45,7 +45,8 @@ enum Command {
         volume: Option<f64>,
         /// Hash the bytes written into the device buffer and compare them with the decoded
         /// samples packed into the same container. Needs every track to share one stream.
-        #[arg(long, conflicts_with_all = ["volume", "pcm_to_dsd"])]
+        /// With `--volume` the check must fail: that run proves the harness sees changed bytes.
+        #[arg(long, conflicts_with = "pcm_to_dsd")]
         verify_hash: bool,
         /// How DSD files (DSF, DFF) reach the device. `dop` and `native` fall back to the
         /// next option the device accepts, ending at PCM conversion.

@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Phase 1: Workspace and WASAPI exclusive spike"
-status: in-progress
+status: completed
 priority: P1
 effort: "1w"
 dependencies: []
@@ -72,7 +72,7 @@ pub struct DeviceFormat { rate: u32, container: SampleContainer, channels: u16 }
 - [x] sample packing + tests
 - [x] WASAPI exclusive backend
 - [x] CLI play/devices
-- [ ] Manual DAC test at three rates
+- [x] Manual DAC test at three rates (TP35, 2026-11-13: `--verify-hash` PASSED at 16/44.1, 24/96 and 24/192; see docs/verification.md)
 
 ## Success Criteria
 

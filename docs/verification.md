@@ -23,13 +23,13 @@ The suite uses the null backend, so it needs no audio hardware and runs on every
 | # | Criterion | Automated evidence | Real-device evidence |
 |---|-----------|--------------------|----------------------|
 | 1 | Mixed FLAC/ALAC/WAV/AIFF/DSF/DFF library browsable by album/artist/track with cover art | `cargo test -p sonder-library`; phase 3/4 tests; UI scans and browses | UI click-through unrecorded |
-| 2 | DSP off ⇒ bit-identical output for 16/44.1, 24/96, 24/192 | `dsp_off_is_byte_exact_for_every_pcm_depth_and_rate` (also 24/48, 16/48, 24/192); `the_device_bytes_match_the_decoded_samples` exercises the `--verify-hash` tap | `sonder-cli play <files> --verify-hash` on WASAPI exclusive: **not yet run** |
+| 2 | DSP off ⇒ bit-identical output for 16/44.1, 24/96, 24/192 | `dsp_off_is_byte_exact_for_every_pcm_depth_and_rate` (also 24/48, 16/48, 24/192); `the_device_bytes_match_the_decoded_samples` exercises the `--verify-hash` tap | TP35, WASAPI exclusive, 2026-11-13: PASSED for FLAC 16/44.1, 24/96, 24/192 and WAV 24/192; `--volume -0.1` FAILED as required ([run](#real-device-run-tp35-2026-11-13)) |
 | 3 | Gapless within a format; correct rate switching | `crates/sonder-engine/tests/player.rs`: `same_format_tracks_play_gapless_and_byte_exact`, `narrower_track_stays_in_the_open_wider_container`, rate-switch tests | listening test: **not yet run** |
-| 4 | DSD over DoP on a DoP DAC, DSD→PCM otherwise | `dop_playback_roundtrips_the_source_dsd_bytes`, `native_dsd_sends_four_source_bytes_per_word`, `dsd_mode_pcm_converts_instead_of_packing`, `dop_round_trip_preserves_every_byte` | DAC locks on DSD when playing a DSF file: **not yet run** |
-| 5 | Upsampling with Sonder or Roon tables, no clipping, image rejection; PCM→DSD plays as DoP | `resampler_rejects_images_by_more_than_100_db`, `pcm_to_dsd64_reaches_the_device_over_dop`, `pcm_to_dsd128_and_dsd256_use_the_wider_carriers`, `pcm_to_dsd_uses_native_words_when_the_device_prefers_them`, `sdm_output_decodes_to_the_input_tone` | S/PDIF loopback capture or a DTS/HDCD-flagged file the DAC recognises only when untouched: **not yet run**; DAC showing DSD with PCM→DSD on: **not yet run** |
+| 4 | DSD over DoP on a DoP DAC, DSD→PCM otherwise | `dop_playback_roundtrips_the_source_dsd_bytes`, `native_dsd_sends_four_source_bytes_per_word`, `dsd_mode_pcm_converts_instead_of_packing`, `dop_round_trip_preserves_every_byte` | TP35, 2026-11-13: DSF DSD64 over DoP plays clean music (a DAC that ignores DoP plays it as loud hiss); the TP35 shows no DSD indicator, its LED follows the carrier rate ([run](#real-device-run-tp35-2026-11-13)) |
+| 5 | Upsampling with Sonder or Roon tables, no clipping, image rejection; PCM→DSD plays as DoP | `resampler_rejects_images_by_more_than_100_db`, `pcm_to_dsd64_reaches_the_device_over_dop`, `pcm_to_dsd128_and_dsd256_use_the_wider_carriers`, `pcm_to_dsd_uses_native_words_when_the_device_prefers_them`, `sdm_output_decodes_to_the_input_tone` | S/PDIF loopback capture or a DTS/HDCD-flagged file the DAC recognises only when untouched: **not yet run**; PCM→DSD on the TP35, 2026-11-13: DSD64/5th, DSD128/5th and DSD128/7th play a clean tone over DoP with 0 underruns; DSD256 falls back to PCM because DoP needs a 705.6 kHz carrier and the TP35 stops at 384 kHz ([run](#real-device-run-tp35-2026-11-13)) |
 | 6 | PEQ, levelling, TPDF dither selectable and measured | `peq_matches_the_rbj_response`, `dither_replaces_truncation_distortion_with_noise`; phase 7 unit tests for levelling and dither | listening test with an EQ boost: **not yet run** |
 | 7 | Signal path visible in the UI | `the_signal_path_lists_every_active_stage`; `PlayerSnapshot.signal_path` feeds the Now Playing panel; `cargo test -p sonder-verify` and the UI type check | panel inspected by hand: **not yet run** |
-| 8 | Roon filter files absent from git and release bundles | `scripts/check-forbidden-files.sh` (CI), `the_repository_has_no_roon_filter_files`, `pwsh tools/check_bundle.ps1` | release bundle check on a built installer: **not yet run** |
+| 8 | Roon filter files absent from git and release bundles | `scripts/check-forbidden-files.sh` (CI), `the_repository_has_no_roon_filter_files`, `pwsh tools/check_bundle.ps1` | `pwsh tools/check_bundle.ps1 -Build`, 2026-11-13: both bundles (`Sonder_0.1.0_x64_en-US.msi`, `Sonder_0.1.0_x64-setup.exe`) built and the MSI unpacked; "Bundle check passed: no Roon filter files" |
 
 ## Measured results
 
@@ -93,10 +93,58 @@ DSP measurements recorded by the suite (values from the run in CI/host, 2026-11-
 - SDM: decoded tone within 0.04 of the expected 0.35 amplitude at all four rate/order pairs,
   second harmonic below −60 dB.
 
+## Real-device run: TP35, 2026-11-13
+
+Device `[2] Speakers (TP35)`, WASAPI exclusive, PCM 44.1–384 kHz at 16, 24 (packed) and 32
+bits; Windows 11 26300; release `sonder-cli`. Test files from
+`cargo run -p sonder-verify --example hardware_fixtures -- <folder>` (1 kHz sine at −20 dBFS,
+10 s; FLAC written with verbatim frames, checked by
+`hardware_fixture_flac_decodes_to_the_written_samples`). The user listened and watched the
+DAC for the DSD rows.
+
+Bit-perfect, `sonder-cli play <file> --device 2 --verify-hash`:
+
+| File | Device format | Decoded = device SHA-256 | Underruns | Result |
+|------|---------------|--------------------------|-----------|--------|
+| FLAC 16/44.1 | 44.1 kHz, 16-bit | `87cfb57b…79bdecf4` | 0 | PASSED |
+| FLAC 24/96 | 96 kHz, 24-bit packed | `8d45daa0…3d35f01a` | 0 | PASSED |
+| FLAC 24/192 | 192 kHz, 24-bit packed | `f0005c18…56fe502f` | 0 | PASSED |
+| WAV 24/192 (same samples) | 192 kHz, 24-bit packed | `f0005c18…56fe502f` | 0 | PASSED |
+| FLAC 16/44.1 with `--volume -0.1` | 44.1 kHz, 24-bit packed | decoded `9e11e15f…`, device `35bc0e17…` | 0 | FAILED, as required |
+
+DSD, user observation:
+
+| Command | Device stream | What the user heard and saw |
+|---------|---------------|-----------------------------|
+| DSF DSD64 (music), `--dsd-mode dop` | DoP, 176.4 kHz / 32-bit | Clean music; LED light blue |
+| Same DSF, `--dsd-mode pcm --dsd-pcm-rate 176400` (control) | PCM 176.4 kHz / 24-bit | LED light blue |
+| Sine 16/44.1, plain PCM (control) | PCM 44.1 kHz / 16-bit | LED red |
+| Sine, `--pcm-to-dsd dsd64 --sdm-order 5` | DoP, 176.4 kHz | Clean tone; 0 underruns |
+| Sine, `--pcm-to-dsd dsd128 --sdm-order 5` | DoP, 352.8 kHz | Clean tone; LED purple; 0 underruns |
+| Sine, `--pcm-to-dsd dsd128 --sdm-order 7` | DoP, 352.8 kHz | Clean tone; LED purple; 0 underruns |
+| Sine, `--pcm-to-dsd dsd256 --sdm-order 7` | PCM 44.1 kHz, with "the device does not carry DSD256 as DoP or native DSD; playing PCM" | Clean tone; LED red |
+
+The TP35's LED shows the stream rate (red 44.1 kHz, light blue 176.4 kHz, purple
+352.8 kHz) and has no DSD indicator: DoP and the PCM control at the same rate light it the
+same. That DoP is decoded rests on the sound. A DAC that does not decode DoP plays the marker
+bytes and the raw bitstream as PCM, which is loud hiss over the music. DSD256 over DoP cannot
+run on this DAC; the order-7 modulator was covered at DSD128, and the DSD256 cost is in
+[Measured results](#measured-results).
+
+Release app (`target/release/sonder.exe`) on the TP35, the user listening:
+
+| Setting | What happened |
+|---------|---------------|
+| Crossfade 4 s, Next between tracks of different albums and different output formats | No fade; the signal path said "crossfade skipped: different output format", as specified |
+| Crossfade 4 s, Next between two same-format tracks of different albums | Smooth fade, no clicks or dropouts |
+| Convolution with `dirac-44100.wav` (fixture example), toggled on and off during a 44.1 kHz track | Sounds identical either way |
+
 ## Real-hardware checklist (manual)
 
 Windows (WASAPI exclusive):
 
+0. Test files: `cargo run -p sonder-verify --example hardware_fixtures -- <folder>` writes the
+   tones and Dirac responses below into a folder outside the repository.
 1. `sonder-cli devices`, then `sonder-cli play <16/44.1 file> --verify-hash` — the command
    prints the decoded and device SHA-256s and ends with "Bit-perfect check PASSED", or fails
    naming the difference. Repeat for 24/96 and 24/192, and with `--volume -0.1` (must fail

@@ -20,6 +20,7 @@
 mod art;
 mod group;
 mod loudness;
+mod playlist;
 mod query;
 mod scan;
 mod schema;
@@ -35,6 +36,7 @@ pub use loudness::{
     Loudness, LoudnessMeter, LoudnessProgress, LoudnessReport, REPLAYGAIN_REFERENCE_LUFS,
     TrackLoudness,
 };
+pub use playlist::{PlaylistDetail, PlaylistItem, PlaylistSummary};
 pub use query::{AlbumDetail, AlbumSort, AlbumSummary, ArtistDetail, ArtistSummary, Track};
 pub use scan::{ScanFailure, ScanProgress, ScanReport};
 pub use schema::SCHEMA_VERSION;
@@ -58,6 +60,10 @@ pub enum LibraryError {
     NotADirectory(PathBuf),
     #[error("{} overlaps the library folder {}", .path.display(), .existing.display())]
     RootOverlaps { path: PathBuf, existing: PathBuf },
+    #[error("a playlist needs a name")]
+    EmptyPlaylistName,
+    #[error("playlist {0} does not exist")]
+    PlaylistNotFound(i64),
     #[error("file watcher error: {0}")]
     Watch(#[from] notify_debouncer_mini::notify::Error),
 }

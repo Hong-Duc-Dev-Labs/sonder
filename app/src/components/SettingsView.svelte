@@ -219,15 +219,20 @@
     { value: "janMeier", label: "Jan Meier", hint: "650 Hz, 9.5 dB: the lightest" },
   ];
 
+  // Path last described; plain (not reactive), so saving any other setting does not re-read
+  // the file, even while it is unreadable.
+  let describedPath: string | null = null;
+
   // Describe the chosen file when Settings opens or the file changes.
   $effect(() => {
-    const path = convolution.path;
+    const path = convolution.path ?? null;
+    if (path === describedPath) return;
+    describedPath = path;
     if (!path) {
       irInfo = null;
       irError = null;
       return;
     }
-    if (irInfo?.path === path) return;
     commands.impulseResponseInfo(path).then(
       (info) => {
         irInfo = info;
@@ -249,6 +254,7 @@
     if (!info) return;
     irInfo = info;
     irError = null;
+    describedPath = info.path;
     saveConvolution({ path: info.path, enabled: true });
   }
 

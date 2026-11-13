@@ -4,12 +4,13 @@
 //! conversion), which is what makes the default path bit-perfect. With stages, samples run
 //! through the [`Pipeline`] in `f64` and are converted back at the end.
 //!
-//! DSD has three paths: packed payload for DoP, four-byte words for native DSD, or the
-//! [`DsdToPcm`] decimator feeding the normal pipeline. DoP and native DSD never touch `f64`
-//! and must run with the pipeline empty.
+//! DSD has four paths: packed payload for DoP, four-byte words for native DSD, the
+//! [`DsdToPcm`] decimator feeding the normal pipeline, and PCM→DSD modulation by [`Sdm`]
+//! before the same packers. DoP and native DSD from a DSD source never touch `f64` and must
+//! run with the pipeline empty; the modulator path always runs `f64` stages first.
 
 use sonder_decode::{DecodeError, Decoder, DsdFormat, SourceDecoder, SourceFormat};
-use sonder_dsp::DsdToPcm;
+use sonder_dsp::{DsdToPcm, Sdm, SdmOrder, SdmRate};
 
 use crate::dop::Packer;
 use crate::pipeline::Pipeline;
@@ -61,6 +62,19 @@ enum DsdPath {
         dsd_rate: u32,
         out_rate: u32,
     },
+    /// PCM source modulated to DSD, then packed for DoP or native output.
+    Sdm {
+        sdm: Box<Sdm>,
+        packer: Packer,
+        packing: SdmPacking,
+    },
+}
+
+/// Which carrier layout a modulated stream uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SdmPacking {
+    Dop,
+    Native,
 }
 
 pub(crate) struct DecodeWorker {
@@ -105,6 +119,8 @@ impl DecodeWorker {
             rate: source.rate,
             channels: source.channels,
         };
+        // A PCM track replaces whatever converter the previous track needed.
+        self.dsd_path = None;
         if self.pipeline.is_empty() {
             return OutputSpec {
                 rate: source.rate,
@@ -126,6 +142,70 @@ impl DecodeWorker {
             bits: source.bits.max(DSP_OUTPUT_BITS),
             channels: output.channels,
             mode: OutputMode::Pcm,
+        }
+    }
+
+    /// Prepares a PCM track for modulation to `rate` and packs the bitstream for DoP or
+    /// native DSD.
+    ///
+    /// The pipeline must already hold the stages that bring `source.rate` to
+    /// [`SdmRate::input_rate`]. Its history is kept when the input format is unchanged, so
+    /// consecutive tracks stay gapless; a modulator of the same rate, order and channel
+    /// count is reused too.
+    pub(crate) fn prepare_sdm(
+        &mut self,
+        source: SourceFormat,
+        rate: SdmRate,
+        order: SdmOrder,
+        packing: SdmPacking,
+        tail: &mut Vec<i32>,
+    ) -> OutputSpec {
+        let input = StreamFormat {
+            rate: source.rate,
+            channels: source.channels,
+        };
+        let output = match self.pipeline.input_format() {
+            Some(current) if current == input => self.output_format(),
+            Some(_) => {
+                self.flush_tail(tail);
+                self.pipeline.configure(input)
+            }
+            None => self.pipeline.configure(input),
+        };
+        debug_assert_eq!(
+            output.rate,
+            rate.input_rate(),
+            "the engine must resample to the modulator input rate"
+        );
+        let reuse = matches!(
+            &self.dsd_path,
+            Some(DsdPath::Sdm { sdm, packing: current, .. })
+                if sdm.rate() == rate && sdm.order() == order && *current == packing
+        );
+        if !reuse {
+            self.dsd_path = Some(DsdPath::Sdm {
+                sdm: Box::new(Sdm::new(rate, order, output.channels)),
+                packer: match packing {
+                    SdmPacking::Dop => Packer::dop(output.channels),
+                    SdmPacking::Native => Packer::native(output.channels),
+                },
+                packing,
+            });
+        }
+        OutputSpec {
+            rate: match packing {
+                SdmPacking::Dop => rate.dop_rate(),
+                SdmPacking::Native => rate.native_rate(),
+            },
+            bits: match packing {
+                SdmPacking::Dop => DSD_PCM_BITS,
+                SdmPacking::Native => 32,
+            },
+            channels: output.channels,
+            mode: match packing {
+                SdmPacking::Dop => OutputMode::Dop,
+                SdmPacking::Native => OutputMode::NativeDsd,
+            },
         }
     }
 
@@ -239,6 +319,11 @@ impl DecodeWorker {
                         }
                         true
                     }
+                    Some(DsdPath::Sdm { .. }) => {
+                        return Err(DecodeError::Decode(
+                            "PCM→DSD path received a DSD track".into(),
+                        ));
+                    }
                     None => {
                         return Err(DecodeError::Decode("DSD path not configured".into()));
                     }
@@ -262,10 +347,21 @@ impl DecodeWorker {
         decoder: &mut Decoder,
         out: &mut Vec<i32>,
     ) -> Result<usize, DecodeError> {
-        if self.pipeline.is_empty() {
+        let modulated = matches!(self.dsd_path, Some(DsdPath::Sdm { .. }));
+        if self.pipeline.is_empty() && !modulated {
             return decoder.next_i32(out);
         }
         let frames = decoder.next_f64(&mut self.float_in)?;
+        if let Some(DsdPath::Sdm { sdm, packer, .. }) = &mut self.dsd_path {
+            let (pipeline, float_in) = (&mut self.pipeline, &self.float_in);
+            let bytes = &mut self.dsd_bytes;
+            bytes.clear();
+            pipeline.process(float_in, |block| sdm.process(block, bytes));
+            // A block is a whole number of bytes per channel, so the packer only ever holds
+            // a partial carrier frame, never a partial byte.
+            packer.push(bytes, out);
+            return Ok(frames);
+        }
         self.pipeline.process(&self.float_in, |block| {
             self.clipped += append_converted(block, out)
         });
@@ -274,6 +370,17 @@ impl DecodeWorker {
 
     /// Appends whatever the stages still hold (end of queue or format change).
     pub(crate) fn flush_tail(&mut self, out: &mut Vec<i32>) {
+        if let Some(DsdPath::Sdm { sdm, packer, .. }) = &mut self.dsd_path {
+            let (pipeline, sdm, bytes) = (&mut self.pipeline, sdm, &mut self.dsd_bytes);
+            if pipeline.input_format().is_some() {
+                bytes.clear();
+                pipeline.flush(|block| sdm.process(block, bytes));
+            }
+            sdm.flush(bytes);
+            packer.push(bytes, out);
+            packer.finish(out);
+            return;
+        }
         if self.pipeline.input_format().is_some() {
             self.pipeline
                 .flush(|block| self.clipped += append_converted(block, out));
@@ -286,10 +393,22 @@ impl DecodeWorker {
         match &mut self.dsd_path {
             Some(DsdPath::Dop(packer)) | Some(DsdPath::Native(packer)) => packer.reset(),
             Some(DsdPath::Pcm { converter, .. }) => converter.reset(),
+            Some(DsdPath::Sdm { sdm, packer, .. }) => {
+                sdm.reset();
+                packer.reset();
+            }
             None => {}
         }
         self.dsd_bytes.clear();
         self.dsd_float.clear();
+    }
+
+    /// Whether the modulator hit its state limit since the last call.
+    pub(crate) fn take_modulator_limited(&mut self) -> bool {
+        match &mut self.dsd_path {
+            Some(DsdPath::Sdm { sdm, .. }) => sdm.take_limited(),
+            _ => false,
+        }
     }
 
     /// Samples the conversion had to clamp since the last call, for the clip counter.

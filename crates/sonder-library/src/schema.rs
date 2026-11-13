@@ -14,6 +14,7 @@ use crate::LibraryError;
 const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_initial.sql"),
     include_str!("migrations/0002_art_colors.sql"),
+    include_str!("migrations/0003_loudness.sql"),
 ];
 
 /// Schema version this build creates and understands.

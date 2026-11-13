@@ -915,3 +915,160 @@ fn artists_carry_a_cover_from_their_own_albums_first() {
     assert!(brubeck.art.is_some());
     assert_eq!(lib.artist(miles.id).unwrap().unwrap().artist.art, miles.art);
 }
+
+#[test]
+fn loudness_analysis_fills_untagged_tracks_and_their_album() {
+    let env = Env::new();
+    let quiet = env.path("Measured/01 Quiet.wav");
+    let loud = env.path("Measured/02 Loud.wav");
+    fixtures::wav_tone(
+        &quiet,
+        44_100,
+        2.0,
+        0.02,
+        &Meta {
+            title: Some("Quiet"),
+            album: Some("Measured"),
+            album_artist: Some("Artist"),
+            track: Some(1),
+            ..Default::default()
+        },
+    );
+    fixtures::wav_tone(
+        &loud,
+        44_100,
+        3.0,
+        0.2,
+        &Meta {
+            title: Some("Loud"),
+            album: Some("Measured"),
+            album_artist: Some("Artist"),
+            track: Some(2),
+            ..Default::default()
+        },
+    );
+
+    let mut lib = env.open();
+    lib.add_root(&env.music, false).unwrap();
+    lib.scan().unwrap();
+    assert_eq!(lib.loudness_pending().unwrap(), 2);
+
+    let seen = std::sync::Mutex::new(Vec::new());
+    let report = lib
+        .analyze_loudness_with_progress(&|p| seen.lock().unwrap().push(p))
+        .unwrap();
+    assert_eq!(report.tracks, 2);
+    assert_eq!(report.albums, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(
+        seen.lock().unwrap().last().copied(),
+        Some(sonder_library::LoudnessProgress {
+            done: 2,
+            total: 2,
+            failed: 0,
+        })
+    );
+    assert_eq!(lib.loudness_pending().unwrap(), 0);
+
+    let quiet = lib.track_loudness(&quiet).unwrap().unwrap();
+    let loud = lib.track_loudness(&loud).unwrap().unwrap();
+    let quiet_loudness = quiet.loudness.unwrap();
+    let loud_loudness = loud.loudness.unwrap();
+    assert!(quiet_loudness.lufs < loud_loudness.lufs);
+    assert!(quiet_loudness.peak < loud_loudness.peak);
+
+    // The album value sits between its tracks and is repeated on both rows.
+    let album = quiet.album.unwrap();
+    assert_eq!(quiet.album, loud.album);
+    assert!(
+        album.lufs > quiet_loudness.lufs && album.lufs < loud_loudness.lufs,
+        "{album:?}"
+    );
+    assert!((album.peak - loud_loudness.peak).abs() < 1e-9);
+
+    // Track gains preserve the loudness difference, which is what album levelling relies on.
+    let (quiet_gain, quiet_peak) = quiet.track_gain(-18.0).unwrap();
+    let (loud_gain, _) = loud.track_gain(-18.0).unwrap();
+    assert!((quiet_gain - loud_gain - (loud_loudness.lufs - quiet_loudness.lufs)).abs() < 1e-9);
+    assert_eq!(quiet_peak, quiet_loudness.peak);
+}
+
+/// Duration-weighted energy average of two measured tracks, as the analysis computes it.
+fn album_lufs(tracks: &[(f64, f64)]) -> f64 {
+    let (energy, weight) = tracks.iter().fold((0.0, 0.0), |(e, w), &(lufs, seconds)| {
+        (e + 10f64.powf((lufs + 0.691) / 10.0) * seconds, w + seconds)
+    });
+    -0.691 + 10.0 * (energy / weight).log10()
+}
+
+#[test]
+fn rescans_remeasure_changed_tracks_and_rebuild_their_album_without_placeholders() {
+    let env = Env::new();
+    let meta = |title, track| Meta {
+        title: Some(title),
+        album: Some("Mix"),
+        album_artist: Some("Artist"),
+        track: Some(track),
+        ..Default::default()
+    };
+    let loud = env.path("Mix/01 Loud.wav");
+    let quiet = env.path("Mix/02 Quiet.wav");
+    let silent = env.path("Mix/03 Silent.wav");
+    fixtures::wav_tone(&loud, 44_100, 2.0, 0.2, &meta("Loud", 1));
+    fixtures::wav_tone(&quiet, 44_100, 2.0, 0.02, &meta("Quiet", 2));
+    // Long digital silence: stored as the placeholder, it must neither get a gain nor drag
+    // the album value down.
+    fixtures::wav_tone(&silent, 44_100, 10.0, 0.0, &meta("Silent", 3));
+
+    let mut lib = env.open();
+    lib.add_root(&env.music, false).unwrap();
+    lib.scan().unwrap();
+    lib.analyze_loudness().unwrap();
+
+    let read = |lib: &Library, path: &Path| lib.track_loudness(path).unwrap().unwrap();
+    let silent_row = read(&lib, &silent);
+    assert!(!silent_row.loudness.unwrap().is_measured());
+    assert_eq!(silent_row.track_gain(-18.0), None);
+    let loud_lufs = read(&lib, &loud).loudness.unwrap().lufs;
+    let quiet_lufs = read(&lib, &quiet).loudness.unwrap().lufs;
+    let album = read(&lib, &loud).album.unwrap();
+    let expected = album_lufs(&[(loud_lufs, 2.0), (quiet_lufs, 2.0)]);
+    assert!(
+        (album.lufs - expected).abs() < 0.01,
+        "{album:?} vs {expected}"
+    );
+    assert_eq!(silent_row.album, Some(album));
+
+    // Replace the quiet track with louder, longer audio: the rescan drops its measurement and
+    // the album value, and the next pass measures it again.
+    fixtures::wav_tone(&quiet, 44_100, 3.0, 0.2, &meta("Quiet", 2));
+    let report = lib.scan().unwrap();
+    assert_eq!(report.updated, 1);
+    assert_eq!(read(&lib, &quiet).loudness, None);
+    assert_eq!(read(&lib, &loud).album, None);
+    assert_eq!(lib.loudness_pending().unwrap(), 1);
+    lib.analyze_loudness().unwrap();
+    let remeasured = read(&lib, &quiet).loudness.unwrap().lufs;
+    assert!(
+        remeasured > quiet_lufs + 15.0,
+        "{remeasured} vs {quiet_lufs}"
+    );
+    let album = read(&lib, &loud).album.unwrap();
+    let expected = album_lufs(&[(loud_lufs, 2.0), (remeasured, 3.0)]);
+    assert!(
+        (album.lufs - expected).abs() < 0.01,
+        "{album:?} vs {expected}"
+    );
+
+    // Removing a track leaves nothing to decode, but the album value is still rebuilt.
+    fs::remove_file(&loud).unwrap();
+    lib.scan().unwrap();
+    assert_eq!(lib.loudness_pending().unwrap(), 0);
+    let report = lib.analyze_loudness().unwrap();
+    assert_eq!((report.tracks, report.albums), (0, 1));
+    let album = read(&lib, &quiet).album.unwrap();
+    assert!(
+        (album.lufs - remeasured).abs() < 0.01,
+        "{album:?} vs {remeasured}"
+    );
+}

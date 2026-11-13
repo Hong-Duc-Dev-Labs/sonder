@@ -19,6 +19,7 @@
 
 mod art;
 mod group;
+mod loudness;
 mod query;
 mod scan;
 mod schema;
@@ -30,6 +31,10 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 pub use art::{ArtCache, ArtImage, MAX_COVER_COLORS, THUMB_SIZES, cover_colors};
+pub use loudness::{
+    Loudness, LoudnessMeter, LoudnessProgress, LoudnessReport, REPLAYGAIN_REFERENCE_LUFS,
+    TrackLoudness,
+};
 pub use query::{AlbumDetail, AlbumSort, AlbumSummary, ArtistDetail, ArtistSummary, Track};
 pub use scan::{ScanFailure, ScanProgress, ScanReport};
 pub use schema::SCHEMA_VERSION;

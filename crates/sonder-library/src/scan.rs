@@ -267,6 +267,9 @@ impl Library {
                 }
             }
         }
+        // A changed album holds a different mix of tracks: drop its album loudness so the next
+        // analysis pass rebuilds it from the tracks it has now.
+        crate::loudness::invalidate_album_loudness(&tx, &touched)?;
         refresh_albums(&tx, touched)?;
         let orphan_art = delete_orphans(&tx)?;
         tx.commit()?;
@@ -562,7 +565,8 @@ fn write_track(
                  title = ?6, artist = ?7, album_artist = ?8, compilation = ?9, track_no = ?10,
                  disc_no = ?11, year = ?12, genre = ?13, codec = ?14, rate = ?15, bits = ?16,
                  channels = ?17, duration_ms = ?18, rg_track_gain = ?19, rg_track_peak = ?20,
-                 rg_album_gain = ?21, rg_album_peak = ?22, art_id = ?23
+                 rg_album_gain = ?21, rg_album_peak = ?22, art_id = ?23,
+                 loudness_lufs = NULL, loudness_peak = NULL, album_lufs = NULL, album_peak = NULL
                  WHERE id = ?24",
             )?
             .execute(rusqlite::params_from_iter(

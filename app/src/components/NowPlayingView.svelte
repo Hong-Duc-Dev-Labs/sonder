@@ -150,9 +150,15 @@
 
       {#if output && !app.lyricsOpen}
         <div class="path-row">
-          <p class="path">
-            Device opened at {outputLabel(output)}{app.player.underruns ? ` · ${plural(app.player.underruns, "underrun")}` : ""}
-          </p>
+          <p class="path">Device opened at {outputLabel(output)}</p>
+          {#if app.player.underruns}
+            <span
+              class="underruns"
+              title="The device ran out of audio this many times since it opened; a dropout may have been heard"
+            >
+              {plural(app.player.underruns, "underrun")}
+            </span>
+          {/if}
           {#if path}
             <button
               class="path-toggle"
@@ -367,14 +373,23 @@
     font-family: var(--mono);
     color: var(--ink-2);
   }
+  .underruns {
+    padding: 2px 8px;
+    border-radius: var(--r-pill);
+    font-size: 11px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 14%, transparent);
+  }
   .path-toggle {
     display: grid;
     place-items: center;
-    width: 24px;
-    height: 24px;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
     background: transparent;
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
   .path-toggle:hover,
   .path-toggle.on {

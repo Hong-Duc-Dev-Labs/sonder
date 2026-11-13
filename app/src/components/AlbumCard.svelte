@@ -85,7 +85,7 @@
     outline: none;
     box-shadow: none;
   }
-  .open:focus-visible::after {
+  :global(:root:not([data-modality="pointer"])) .open:focus-visible::after {
     outline: 2px solid var(--ink);
     outline-offset: 4px;
   }

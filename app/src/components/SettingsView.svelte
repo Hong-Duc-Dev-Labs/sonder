@@ -29,6 +29,7 @@
   } from "../lib/bindings";
   import { rate } from "../lib/format";
   import Icon from "./Icon.svelte";
+  import { rangeFill } from "../lib/rangeFill";
 
   let roots = $state<RootFolder[]>([]);
   let devices = $state<Device[] | null>(null);
@@ -208,6 +209,57 @@
     app.saveSettings({ ...app.settings, peqPresets: next, peqPreset: null });
   }
 
+  /** An EQ with no bands and no preamp has nothing to export. */
+  let peqEmpty = $derived((peq.bands?.length ?? 0) === 0 && (peq.preampDb ?? 0) === 0);
+
+  /** `base`, or `base (2)`, `base (3)`… while that name is taken. */
+  function freePresetName(base: string): string {
+    let name = base;
+    for (let n = 2; Object.hasOwn(peqPresets, name); n += 1) name = `${base} (${n})`;
+    return name;
+  }
+
+  /** Reads an Equalizer APO parametric file, saves it as a preset and applies it. */
+  async function importPeq() {
+    const imported = await app.run(commands.peqImport());
+    if (!imported) return;
+    let name = imported.name;
+    if (Object.hasOwn(peqPresets, name)) {
+      const kept = freePresetName(name);
+      const replace = await app.ask({
+        title: "Preset already exists",
+        message: `${name} already exists. Replace it, or keep both by importing as ${kept}.`,
+        confirm: "Replace",
+      });
+      if (replace == null) name = kept;
+    }
+    const saved = await app.saveSettings({
+      ...app.settings,
+      peq: imported.peq,
+      peqPresets: { ...peqPresets, [name]: imported.peq },
+      peqPreset: name,
+    });
+    if (!saved) return;
+    const bands = imported.peq.bands?.length ?? 0;
+    const warnings = imported.warnings ?? [];
+    const count = bands === 1 ? "1 band" : `${bands} bands`;
+    // One notice, as the plan asks, but a broken file can carry a hundred reasons.
+    const shown = warnings.slice(0, 3);
+    const more = warnings.length - shown.length;
+    const skipped = warnings.length
+      ? ` — ${shown.join(" · ")}${more > 0 ? ` · and ${more} more` : ""}`
+      : "";
+    app.notify(warnings.length ? "warning" : "info", `Imported ${name}: ${count}${skipped}`);
+  }
+
+  /** Writes the current EQ as Equalizer APO parametric text. */
+  async function exportPeq() {
+    const name = app.settings.peqPreset ?? "Sonder";
+    const saved = await app.run(commands.peqExport(peq, name));
+    if (!saved) return;
+    app.notify("info", `Exported EQ to ${saved.split(/[\\/]/).pop()}`);
+  }
+
   // ----- DSP: convolution and crossfeed -----
 
   let convolution = $derived<ConvolutionSetting>(app.settings.convolution ?? {});
@@ -355,9 +407,10 @@
               aria-label="Software volume"
               aria-valuetext="{volumeDraft.toFixed(1)} dB"
               bind:value={volumeDraft}
+              use:rangeFill={volumeDraft}
               onchange={() => setVolume(volumeDraft)}
             />
-            <span class="badge warn">{volumeDraft.toFixed(1)} dB</span>
+            <span class="badge value warn">{volumeDraft.toFixed(1)} dB</span>
           </div>
         {/if}
       </div>
@@ -517,9 +570,10 @@
             aria-valuetext="{fadeSeconds.toFixed(1)} seconds"
             disabled={!(crossfade.enabled ?? false)}
             bind:value={fadeSeconds}
+            use:rangeFill={fadeSeconds}
             onchange={() => saveCrossfade({ seconds: fadeSeconds })}
           />
-          <span class="badge">{fadeSeconds.toFixed(1)} s</span>
+          <span class="badge value">{fadeSeconds.toFixed(1)} s</span>
         </div>
       </div>
     </section>
@@ -593,15 +647,16 @@
           <input
             class="range"
             type="range"
-            min="-24"
+            min="-60"
             max="12"
             step="0.5"
             aria-label="EQ preamp"
             aria-valuetext="{(peq.preampDb ?? 0).toFixed(1)} dB"
             value={peq.preampDb ?? 0}
+            use:rangeFill={peq.preampDb ?? 0}
             onchange={(e) => savePeq({ ...peq, preampDb: Number(e.currentTarget.value) })}
           />
-          <span class="badge warn">{(peq.preampDb ?? 0).toFixed(1)} dB</span>
+          <span class="badge value" class:warn={(peq.preampDb ?? 0) > 0}>{(peq.preampDb ?? 0).toFixed(1)} dB</span>
         </div>
         {#each peq.bands ?? [] as band, i (i)}
           <div class="band">
@@ -665,7 +720,10 @@
           {#if app.settings.peqPreset}
             <button class="btn small" onclick={deletePreset}>Delete preset</button>
           {/if}
+          <button class="btn small" onclick={importPeq}>Import…</button>
+          <button class="btn small" disabled={peqEmpty} onclick={exportPeq}>Export…</button>
         </div>
+        <p class="note">Import a ParametricEQ.txt from AutoEQ or Equalizer APO.</p>
       </div>
     </section>
 
@@ -1107,8 +1165,11 @@
     padding: 0 6px 6px 8px;
   }
   h3 {
-    font-size: 15px;
+    font-size: var(--fs-label);
     font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-2);
   }
 
   .hero {
@@ -1164,9 +1225,13 @@
     position: relative;
   }
 
+  /* Icon, text, then every control on the same line: extra children add columns instead of
+     wrapping under the icon. */
   .row {
     display: grid;
-    grid-template-columns: 40px 1fr auto;
+    grid-template-columns: 40px minmax(0, 1fr);
+    grid-auto-flow: column;
+    grid-auto-columns: auto;
     align-items: center;
     gap: 14px;
     min-height: 60px;
@@ -1222,7 +1287,6 @@
   }
 
   .choice {
-    grid-template-columns: 40px 1fr auto;
     cursor: pointer;
     transition: background var(--dur-fast) var(--ease-standard);
   }
@@ -1232,7 +1296,7 @@
   .choice.selected {
     background: var(--soft-hover);
   }
-  .choice:focus-within {
+  :global(:root:not([data-modality="pointer"])) .choice:focus-within {
     outline: 2px solid var(--ink);
     outline-offset: -2px;
   }
@@ -1294,10 +1358,28 @@
 
   .range {
     width: 100%;
-    accent-color: var(--ink);
-    padding: 0;
-    background: none;
-    box-shadow: none;
+  }
+  /* beside a description the slider takes a fixed length, its value label after it */
+  .info ~ .range {
+    width: 180px;
+  }
+  .value {
+    min-width: 64px;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+  }
+  /* rows in one card read as one list, split by hairlines that start after the icon */
+  .card > .row:not(.choice) + .row:not(.choice) {
+    position: relative;
+  }
+  .card > .row:not(.choice) + .row:not(.choice)::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 66px;
+    right: 12px;
+    height: 1px;
+    background: var(--hairline);
   }
 
   .scan {
@@ -1377,7 +1459,7 @@
     background: var(--soft-hover);
     box-shadow: inset 0 0 0 2px var(--ink);
   }
-  .tile:focus-within {
+  :global(:root:not([data-modality="pointer"])) .tile:focus-within {
     outline: 2px solid var(--ink);
     outline-offset: 2px;
   }

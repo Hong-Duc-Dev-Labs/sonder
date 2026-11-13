@@ -1,5 +1,6 @@
 <script lang="ts">
-  // The queue as a glass card over the content (nothing behind it reflows). Rows are keyed by
+  // The queue in the inspector column: beside the page on wide windows, a card over it
+  // otherwise (see App.svelte). Rows are keyed by
   // their queue entry, so the highlight never jumps when entries move. Click or Enter plays a
   // row, the × removes it, Escape closes the card and returns focus to the queue button.
   import { onMount } from "svelte";
@@ -19,16 +20,7 @@
   let remainingMs = $derived(upNext.reduce((sum, e) => sum + e.item.durationMs, 0));
 
   function close() {
-    app.queueOpen = false;
-    // The visible queue button: the player pill's is inert while Now Playing shows its own.
-    [...document.querySelectorAll<HTMLElement>("[data-queue-toggle]")].find((el) => !el.closest("[inert]"))?.focus();
-  }
-
-  function onKey(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      close();
-    }
+    app.closeInspector();
   }
 
   onMount(() => {
@@ -62,8 +54,8 @@
   </div>
 {/snippet}
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<aside class="panel glass" bind:this={panel} aria-label="Queue" onkeydown={onKey}>
+<!-- svelte:window in App.svelte closes it on Escape, so focus outside the panel is covered. -->
+<aside class="panel glass" bind:this={panel} aria-label="Queue">
   <div class="head">
     <div>
       <h2>Queue</h2>
@@ -108,7 +100,7 @@
 
 <style>
   .panel {
-    width: 360px;
+    width: 100%;
     height: 100%;
     border-radius: var(--r-lg);
     display: flex;

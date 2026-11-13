@@ -72,6 +72,8 @@ fn bindings() -> Builder<tauri::Wry> {
             commands::settings_pick_roon_folder,
             commands::settings_pick_impulse_response,
             commands::impulse_response_info,
+            commands::peq_import,
+            commands::peq_export,
             commands::library_analyze_loudness,
             commands::library_loudness_pending,
             commands::library_is_analyzing,

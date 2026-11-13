@@ -16,6 +16,7 @@ import { tick } from "svelte";
 import { reducedMotion } from "./motion";
 
 export type View =
+  | { kind: "home" }
   | { kind: "albums" }
   | { kind: "album"; id: number }
   | { kind: "artists" }
@@ -136,6 +137,20 @@ function focusHeading() {
   document.querySelector<HTMLElement>("[data-view-heading]")?.focus({ preventScroll: true });
 }
 
+/** Narrowest window that docks the inspector; below it the inspector floats over the page. */
+const INSPECTOR_DOCK_MIN_PX = 1280;
+/** Widest window that always shows the sidebar as an icon rail. */
+const SIDEBAR_RAIL_MAX_PX = 1099;
+const SIDEBAR_KEY = "sonder.sidebarCollapsed";
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 const emptySnapshot: PlayerSnapshot = {
   state: "stopped",
   index: null,
@@ -149,14 +164,34 @@ const emptySnapshot: PlayerSnapshot = {
   repeat: "off",
 };
 
-class AppState {
-  view = $state<View>({ kind: "albums" });
+export class AppState {
+  view = $state<View>({ kind: "home" });
   history = $state<View[]>([]);
   player = $state<PlayerSnapshot>(emptySnapshot);
   queue = $state<QueueItem[]>([]);
   queueOpen = $state(false);
-  /** Now Playing shows the lyrics column in place of the title and badges. */
+  /**
+   * Lyrics are open: on Now Playing in place of the title and badges, on every other page in
+   * the inspector column.
+   */
   lyricsOpen = $state(false);
+  /** The window has room to dock the inspector beside the page instead of over it. */
+  wide = $state(false);
+  /** The window is too narrow for the full sidebar; it shows as an icon rail regardless. */
+  narrow = $state(false);
+  /** The user folded the sidebar into its icon rail; remembered on this machine. */
+  sidebarCollapsed = $state(readSidebarCollapsed());
+  /** The sidebar shows as an icon rail. */
+  rail = $derived(this.sidebarCollapsed || this.narrow);
+  /** What the right-hand inspector shows: one panel at a time, none on Now Playing's lyrics. */
+  inspector = $derived<"queue" | "lyrics" | null>(
+    this.queueOpen ? "queue" : this.lyricsOpen && this.view.kind !== "now" ? "lyrics" : null,
+  );
+  /**
+   * The inspector sits beside the page, which narrows to make room for it. Now Playing keeps
+   * its full width for the stage, so its queue stays a card over it.
+   */
+  docked = $derived(this.inspector != null && this.wide && this.view.kind !== "now");
   /** Now Playing shows the engine's stage-by-stage signal path under the transport. */
   signalPathOpen = $state(false);
   settings = $state<Settings>({ albumSort: "artist" });
@@ -257,6 +292,7 @@ class AppState {
 
   back() {
     const prev = this.history.at(-1);
+    // History is empty only while the initial Home view is showing, so there is nothing to do.
     if (!prev) return;
     // Leaving the album page the cover morphed into: it morphs back into its card.
     const morph = this.view.kind === "album" && this.view.id === this.morphAlbumId;
@@ -266,6 +302,46 @@ class AppState {
       this.view = prev;
     }, morph);
     this.flightLaunch(flight);
+  }
+
+  /** Folds the sidebar into its icon rail or opens it out, and remembers the choice. */
+  toggleSidebar() {
+    this.sidebarCollapsed = !this.sidebarCollapsed;
+    try {
+      localStorage.setItem(SIDEBAR_KEY, this.sidebarCollapsed ? "1" : "0");
+    } catch {
+      // storage blocked: the choice lasts for this session only
+    }
+  }
+
+  /** Opens or closes the queue. One panel at a time, on Now Playing too, so no toggle can
+   * claim a panel that is not showing. */
+  toggleQueue() {
+    const open = !this.queueOpen;
+    if (open) this.lyricsOpen = false;
+    this.queueOpen = open;
+  }
+
+  /** Opens or closes the lyrics. One panel at a time, as with the queue. */
+  toggleLyrics() {
+    const open = !this.lyricsOpen;
+    if (open) this.queueOpen = false;
+    this.lyricsOpen = open;
+  }
+
+  /** Closes the open inspector and puts focus back on the toggle that opened it. */
+  closeInspector() {
+    const was = this.inspector;
+    if (!was) return;
+    if (was === "queue") this.queueOpen = false;
+    else this.lyricsOpen = false;
+    // After the panel is gone, so the button that takes focus is the one the user can see.
+    void tick().then(() => {
+      const selector = was === "queue" ? "[data-queue-toggle]" : "[data-lyrics-toggle]";
+      [...document.querySelectorAll<HTMLElement>(selector)]
+        .find((el) => !el.closest("[inert]"))
+        ?.focus();
+    });
   }
 
   notify(level: Notice["level"], message: string) {
@@ -356,6 +432,12 @@ class AppState {
   }
 
   async init() {
+    const roomy = window.matchMedia(`(min-width: ${INSPECTOR_DOCK_MIN_PX}px)`);
+    this.wide = roomy.matches;
+    roomy.addEventListener("change", (e) => (this.wide = e.matches));
+    const cramped = window.matchMedia(`(max-width: ${SIDEBAR_RAIL_MAX_PX}px)`);
+    this.narrow = cramped.matches;
+    cramped.addEventListener("change", (e) => (this.narrow = e.matches));
     await Promise.all([
       events.playerStateEvent.listen((e) => this.setPlayer(e.payload)),
       events.queueChangedEvent.listen((e) => (this.queue = e.payload)),
@@ -421,9 +503,11 @@ class AppState {
     await this.run(commands.libraryAnalyzeLoudness());
   }
 
+  /** Saves settings on the backend; the saved copy, or nothing when the save failed. */
   async saveSettings(next: Settings) {
     const saved = await this.run(commands.settingsSet(next));
     if (saved) this.settings = saved;
+    return saved;
   }
 }
 

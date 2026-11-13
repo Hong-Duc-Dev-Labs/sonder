@@ -50,7 +50,7 @@
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 16px;
-    padding: 32px var(--page-x) 22px calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 32px var(--page-x) 22px var(--page-x);
   }
   .titles {
     display: flex;

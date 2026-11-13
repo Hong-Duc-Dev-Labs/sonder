@@ -1,102 +1,167 @@
-// Kept as a component so Now Playing reads as one thought at a time: the panel is the
-// Roon-style "signal path" list, source at the top, device at the bottom, every stage in
-// between named by the engine that ran it.
 <script lang="ts">
+  // The Roon-style signal path as a chain read top to bottom: the source file, every stage the
+  // engine ran (named by the engine itself), then the device. Source and device are solid
+  // nodes, stages hollow ones, joined by one line. The verdict up top says whether the device
+  // receives the decoded samples unchanged, in words as well as colour.
   import type { SignalPathInfo } from "../lib/bindings";
   import { rate } from "../lib/format";
+  import Icon from "./Icon.svelte";
 
   let { path }: { path: SignalPathInfo } = $props();
 
   let outputMode = $derived(
     path.mode === "dop" ? "DoP" : path.mode === "nativeDsd" ? "Native DSD" : "PCM",
   );
-  let source = $derived(`${path.source.bits}-bit / ${rate(path.source.rate)}`);
-  let output = $derived(`${path.outputBits}-bit / ${rate(path.outputRate)}`);
+  let source = $derived(`${path.source.bits}-bit / ${rate(path.source.rate)} · ${path.source.channels} ch`);
+  let output = $derived(`${outputMode} ${path.outputBits}-bit / ${rate(path.outputRate)} · ${path.outputChannels} ch`);
 </script>
 
 <section class="sp" aria-label="Signal path">
   <header>
     <h3>Signal path</h3>
-    <span class:ok={path.bitPerfect} class:warn={!path.bitPerfect}>
-      {path.bitPerfect ? "Bit-perfect" : "DSP active"}
+    <span class="verdict" class:ok={path.bitPerfect} class:warn={!path.bitPerfect}>
+      {#if path.bitPerfect}<Icon name="check" size={14} />{/if}
+      {path.bitPerfect ? "Bit-perfect" : "Processed"}
     </span>
   </header>
-  <ol>
-    <li>
+
+  <ol class="chain">
+    <li class="node end">
       <span class="name">Source</span>
-      <span class="detail">{source} · {path.source.channels} ch</span>
+      <span class="detail">{source}</span>
     </li>
     {#each path.stages as stage (stage.name + stage.detail)}
-      <li>
+      <li class="node">
         <span class="name">{stage.name}</span>
         <span class="detail">{stage.detail}</span>
       </li>
+    {:else}
+      <li class="direct">No processing</li>
     {/each}
-    <li>
+    <li class="node end">
       <span class="name">Output</span>
-      <span class="detail">{outputMode} {output} · {path.outputChannels} ch</span>
+      <span class="detail">{output}</span>
     </li>
-    {#if path.transition}
-      <li>
-        <span class="name">Transition</span>
-        <span class="detail">{path.transition}</span>
-      </li>
-    {/if}
   </ol>
+
+  {#if path.transition}
+    <p class="transition"><span class="name">Transition</span> {path.transition}</p>
+  {/if}
 </section>
 
 <style>
   .sp {
-    border-radius: 12px;
+    padding: 14px 16px 12px;
+    border-radius: var(--r-md);
     background: var(--soft);
-    border: 1px solid var(--hairline);
-    padding: 10px 12px;
-    font-size: 12px;
+    box-shadow: inset 0 0 0 1px var(--hairline);
     text-align: left;
-    max-height: 240px;
+    max-height: 280px;
     overflow: auto;
   }
   header {
     display: flex;
     justify-content: space-between;
-    align-items: baseline;
+    align-items: center;
     gap: 10px;
-    margin-bottom: 6px;
+    margin-bottom: 12px;
   }
   h3 {
     margin: 0;
-    font-size: 12px;
+    font-size: var(--fs-label);
     font-weight: 700;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-2);
   }
-  .ok {
+  .verdict {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: var(--r-pill);
+    font-size: var(--fs-label);
+    font-weight: 700;
+  }
+  .verdict.ok {
     color: var(--ok);
+    background: color-mix(in srgb, var(--ok) 14%, transparent);
   }
-  .warn {
+  .verdict.warn {
     color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 14%, transparent);
   }
-  ol {
+
+  /* One line runs down the left; each step hangs a dot on it. */
+  .chain {
+    position: relative;
     margin: 0;
-    padding: 0;
+    padding: 0 0 0 22px;
     list-style: none;
     display: flex;
     flex-direction: column;
-    gap: 6px;
-  }
-  li {
-    display: grid;
-    grid-template-columns: minmax(74px, auto) 1fr;
     gap: 10px;
-    align-items: baseline;
+  }
+  .chain::before {
+    content: "";
+    position: absolute;
+    left: 5px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    border-radius: 1px;
+    background: rgb(255 255 255 / 0.14);
+  }
+  .node {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .node::before {
+    content: "";
+    position: absolute;
+    left: -21px;
+    top: 4px;
+    width: 10px;
+    height: 10px;
+    box-sizing: border-box;
+    border-radius: 50%;
+    border: 2px solid var(--ink-2);
+    background: #141417;
+  }
+  .node.end::before {
+    border-color: var(--ink);
+    background: var(--ink);
   }
   .name {
+    font-size: var(--fs-small);
+    font-weight: 650;
+    color: var(--ink);
+  }
+  .node:not(.end) .name {
     color: var(--ink-2);
-    font-weight: 600;
   }
   .detail {
     font-family: var(--mono);
-    font-size: 11px;
-    color: var(--ink);
+    font-size: 11.5px;
+    color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
     overflow-wrap: anywhere;
+  }
+  .direct {
+    font-size: var(--fs-label);
+    font-style: italic;
+    color: var(--ink-3);
+  }
+  .transition {
+    margin: 12px 0 0;
+    padding-top: 10px;
+    border-top: 1px solid var(--hairline);
+    font-size: var(--fs-small);
+    color: var(--ink-2);
+  }
+  .transition .name {
+    margin-right: 6px;
   }
 </style>

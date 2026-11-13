@@ -76,6 +76,16 @@ export const commands = {
 	/**  Describes the impulse response at `path`, or says why it cannot be used. */
 	impulseResponseInfo: (path: string) => __TAURI_INVOKE<ImpulseResponseInfo>("impulse_response_info", { path }),
 	/**
+	 *  Picks an Equalizer APO parametric file (the `ParametricEQ.txt` AutoEQ publishes) and returns
+	 *  its EQ. Nothing is saved here, so a cancelled dialog changes nothing.
+	 */
+	peqImport: () => __TAURI_INVOKE<PeqImport | null>("peq_import"),
+	/**
+	 *  Saves `peq` as Equalizer APO parametric text, defaulting to `<name> ParametricEQ.txt`, and
+	 *  returns the saved path. Nothing is written when the dialog is cancelled.
+	 */
+	peqExport: (peq: PeqSetting, name: string) => __TAURI_INVOKE<string | null>("peq_export", { peq, name }),
+	/**
 	 *  Starts measuring every track that has no ReplayGain tags, or queues a pass behind the one
 	 *  running. Progress and the result arrive as `LoudnessProgressEvent` and
 	 *  `LoudnessFinishedEvent`.
@@ -320,6 +330,15 @@ export type PeqBandSetting = {
 	gainDb?: number | null,
 	q?: number | null,
 	enabled?: boolean,
+};
+
+/**  What an imported Equalizer APO parametric file yields: a named EQ and what had to change. */
+export type PeqImport = {
+	/**  Preset name from the file name: its stem without a trailing ` ParametricEQ`. */
+	name: string,
+	peq: PeqSetting,
+	/**  Lines the parser skipped and values it clamped. */
+	warnings: string[],
 };
 
 /**  A whole EQ preset: preamp plus bands. */

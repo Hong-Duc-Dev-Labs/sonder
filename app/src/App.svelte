@@ -9,27 +9,44 @@
   import AlbumsView from "./components/AlbumsView.svelte";
   import AlbumView from "./components/AlbumView.svelte";
   import AmbientBackdrop from "./components/AmbientBackdrop.svelte";
+  import Cover from "./components/Cover.svelte";
   import DiscFlight from "./components/DiscFlight.svelte";
   import Dialog from "./components/Dialog.svelte";
   import ArtistsView from "./components/ArtistsView.svelte";
   import ArtistView from "./components/ArtistView.svelte";
+  import HomeView from "./components/HomeView.svelte";
   import Icon, { type IconName } from "./components/Icon.svelte";
   import MiniDisc from "./components/MiniDisc.svelte";
   import NowPlayingView from "./components/NowPlayingView.svelte";
   import PlaylistsView from "./components/PlaylistsView.svelte";
   import PlaylistView from "./components/PlaylistView.svelte";
+  import LyricsInspector from "./components/LyricsInspector.svelte";
   import QueuePanel from "./components/QueuePanel.svelte";
   import SearchView from "./components/SearchView.svelte";
   import SettingsView from "./components/SettingsView.svelte";
   import TransportBar from "./components/TransportBar.svelte";
 
   type NavItem = { view: View; label: string; icon: IconName; hint?: string };
+  const top: NavItem[] = [
+    { view: { kind: "home" }, label: "Home", icon: "home" },
+    { view: { kind: "search" }, label: "Search", icon: "search", hint: "Ctrl F" },
+  ];
   const library: NavItem[] = [
     { view: { kind: "albums" }, label: "Albums", icon: "albums" },
     { view: { kind: "artists" }, label: "Artists", icon: "artists" },
-    { view: { kind: "playlists" }, label: "Playlists", icon: "playlist" },
   ];
-  const tools: NavItem[] = [{ view: { kind: "search" }, label: "Search", icon: "search", hint: "Ctrl F" }];
+  /** Playlists listed in the sidebar itself; the rest are one click away in "All playlists". */
+  const SIDEBAR_PLAYLISTS = 8;
+  let sidePlaylists = $derived(app.playlists.slice(0, SIDEBAR_PLAYLISTS));
+  let openPlaylist = $derived(app.view.kind === "playlist" ? app.view.id : null);
+  let allPlaylistsActive = $derived(
+    app.view.kind === "playlists" || (openPlaylist != null && !sidePlaylists.some((p) => p.id === openPlaylist)),
+  );
+
+  async function newPlaylist() {
+    const created = await app.createPlaylist();
+    if (created) app.go({ kind: "playlist", id: created.id });
+  }
 
   let ready = $state(false);
   onMount(() => {
@@ -53,6 +70,15 @@
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
       e.preventDefault();
       app.go({ kind: "search" });
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b" && !app.narrow) {
+      e.preventDefault();
+      app.toggleSidebar();
+    } else if (e.key === "Escape" && !e.defaultPrevented && !app.dialog && app.inspector) {
+      // The inspector's own keydown only fires with focus inside it; opening it from the pill
+      // leaves focus on the toggle, so Escape has to be handled here. A control that already
+      // consumed it (a menu, a tonearm drag) keeps it.
+      e.preventDefault();
+      app.closeInspector();
     } else if (e.altKey && e.key === "ArrowLeft") {
       app.back();
     }
@@ -60,12 +86,7 @@
 
   function isActive(v: View): boolean {
     const k = app.view.kind;
-    return (
-      v.kind === k ||
-      (v.kind === "albums" && k === "album") ||
-      (v.kind === "artists" && k === "artist") ||
-      (v.kind === "playlists" && k === "playlist")
-    );
+    return v.kind === k || (v.kind === "albums" && k === "album") || (v.kind === "artists" && k === "artist");
   }
 
   function slidePanel(_node: Element) {
@@ -96,10 +117,16 @@
 
 <div
   class="shell"
+  class:rail={app.rail}
   data-glass={app.settings.glass ?? "full"}
   style:--wash={app.wash ?? "transparent"}
+  style:--inset-right={app.docked ? "calc(var(--inspector-w) + var(--gutter) * 2)" : "0px"}
 >
-  <AmbientBackdrop colors={app.current?.artColors ?? []} strength={onNow ? 1 : 0.45} />
+  <AmbientBackdrop
+    colors={app.current?.artColors ?? []}
+    strength={onNow ? 1 : 0.6}
+    still={(app.settings.glass ?? "full") === "off"}
+  />
 
   <main class:full={onNow}>
     {#if detail && app.history.length}
@@ -113,7 +140,9 @@
              content (sidebar, player) is touched by a view change. -->
         {#key app.view}
           <div class="view" in:pageIn>
-            {#if app.view.kind === "albums"}
+            {#if app.view.kind === "home"}
+              <HomeView />
+            {:else if app.view.kind === "albums"}
               <AlbumsView />
             {:else if app.view.kind === "album"}
               <AlbumView id={app.view.id} />
@@ -147,12 +176,61 @@
         <circle cx="12" cy="12" r="1" fill="#0b0b0d" />
       </svg>
       <span class="label">Sonder</span>
+      {#if !app.narrow}
+        <button
+          class="icon-btn fold"
+          aria-label={app.sidebarCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"}
+          title={app.sidebarCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"}
+          aria-expanded={!app.sidebarCollapsed}
+          onclick={() => app.toggleSidebar()}
+        >
+          <Icon name="sidebar" size={18} />
+        </button>
+      {/if}
     </div>
 
-    <span class="group kicker">Library</span>
-    {#each library as item (item.label)}{@render navButton(item)}{/each}
-    <span class="group-gap"></span>
-    {#each tools as item (item.label)}{@render navButton(item)}{/each}
+    <!-- The middle scrolls on short windows; the brand, Now Playing and Settings stay put. -->
+    <div class="nav-scroll">
+      {#each top as item (item.label)}{@render navButton(item)}{/each}
+
+      <span class="group-gap"></span>
+      <span class="group kicker">Library</span>
+      {#each library as item (item.label)}{@render navButton(item)}{/each}
+
+      <span class="group-gap"></span>
+      <div class="group-row">
+        <span class="group kicker">Playlists</span>
+        <button class="add icon-btn" aria-label="New playlist" title="New playlist" onclick={newPlaylist}>
+          <Icon name="add" size={16} />
+        </button>
+      </div>
+      {#if !app.playlists.length}
+        <span class="hint">None yet. Press + to make one.</span>
+      {/if}
+      {#each sidePlaylists as playlist (playlist.id)}
+        <button
+          class="nav playlist"
+          class:active={openPlaylist === playlist.id}
+          aria-current={openPlaylist === playlist.id ? "page" : undefined}
+          title={playlist.name}
+          onclick={() => app.go({ kind: "playlist", id: playlist.id })}
+        >
+          <span class="pl-art"><Cover hash={playlist.art} alt="" /></span>
+          <span class="label">{playlist.name}</span>
+        </button>
+      {/each}
+      <button
+        class="nav"
+        class:active={allPlaylistsActive}
+        aria-current={allPlaylistsActive ? "page" : undefined}
+        title="All playlists"
+        onclick={() => app.go({ kind: "playlists" })}
+      >
+        <Icon name="playlist" size={20} />
+        <span class="label">All playlists</span>
+      </button>
+    </div>
+
     <button
       class="nav"
       class:active={onNow}
@@ -168,8 +246,6 @@
       <span class="label">Now Playing</span>
     </button>
 
-    <span class="spacer"></span>
-
     {#if app.scan.phase !== "idle"}
       <button class="scan" title="Scanning the library" aria-live="polite" onclick={() => app.go({ kind: "settings" })}>
         <span class="spinner" aria-hidden="true"></span>
@@ -179,9 +255,13 @@
     {@render navButton({ view: { kind: "settings" }, label: "Settings", icon: "settings" })}
   </nav>
 
-  {#if app.queueOpen}
-    <div class="queue-slot" transition:slidePanel>
-      <QueuePanel />
+  {#if app.inspector}
+    <div class="inspector" class:docked={app.docked} transition:slidePanel>
+      {#if app.inspector === "queue"}
+        <QueuePanel />
+      {:else}
+        <LyricsInspector />
+      {/if}
     </div>
   {/if}
 
@@ -238,12 +318,39 @@
     --inset-left: calc(var(--sidebar) + var(--gutter) * 2);
   }
 
-  /* Content spans the whole window and scrolls under the glass sidebar; each page keeps its
-     own text clear of it with --inset-left, while backdrops run to the window's edge. */
+  /* Three blocks side by side: the glass sidebar, this page sheet, and the inspector when it
+     is docked. The sheet is a tinted panel (not glass) that clips its page, and the player
+     pill floats inside its bottom edge. Now Playing instead spans the whole window under the
+     sidebar, its text kept clear of it with --inset-left. */
   main {
     position: absolute;
-    inset: 0;
     z-index: 1;
+    top: var(--gutter);
+    bottom: var(--gutter);
+    left: var(--inset-left);
+    right: max(var(--gutter), var(--inset-right));
+    border-radius: var(--r-lg);
+    overflow: hidden;
+    background: color-mix(in srgb, var(--wash) 5%, rgb(255 255 255 / 0.035));
+    transition: background 900ms var(--ease-standard);
+  }
+  /* the sheet's edge, drawn over the page so full-bleed heroes do not hide it */
+  main::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    pointer-events: none;
+  }
+  main.full {
+    inset: 0;
+    border-radius: 0;
+    background: none;
+  }
+  main.full::after {
+    content: none;
   }
   .content {
     view-transition-name: content;
@@ -255,8 +362,8 @@
   .back {
     position: absolute;
     top: 20px;
-    left: calc(var(--inset-left) + 20px);
-    z-index: 5;
+    left: 20px;
+    z-index: 7;
     width: 44px;
     height: 44px;
     border-radius: 50%;
@@ -299,8 +406,23 @@
     flex: none;
     color: var(--ink);
   }
+  .fold {
+    width: 36px;
+    height: 36px;
+    margin-right: -4px;
+  }
+  .rail .fold {
+    margin-right: 0;
+  }
   .group {
     padding: 0 14px 6px;
+    /* on glass: the fainter kicker ink is for the canvas and soft surfaces only */
+    color: var(--ink-2);
+  }
+  .hint {
+    padding: 2px 14px 8px;
+    font-size: var(--fs-small);
+    color: var(--ink-2);
   }
   .group-gap {
     height: 14px;
@@ -354,8 +476,49 @@
     flex: none;
     margin: 0 -1px;
   }
-  .spacer {
+  .nav-scroll {
     flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0 -6px;
+    padding: 0 6px 8px;
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+  .nav-scroll::-webkit-scrollbar {
+    display: none;
+  }
+  .group-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-right: 6px;
+  }
+  .group-row .group {
+    padding-bottom: 0;
+  }
+  .add {
+    width: 32px;
+    height: 32px;
+    color: var(--ink-2);
+  }
+  .nav.playlist {
+    height: 40px;
+    gap: 12px;
+    padding-left: 12px;
+    font-weight: 550;
+  }
+  .label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pl-art {
+    width: 24px;
+    flex: none;
+    border-radius: 6px;
+    overflow: hidden;
   }
   .scan {
     display: flex;
@@ -383,19 +546,26 @@
     }
   }
 
-  .queue-slot {
+  /* Queue or lyrics. Floating, it is a card over the page that stops above the player pill;
+     docked, it runs the full height and the page and pill narrow beside it (--inset-right).
+     The page's width changes at once rather than animating, so long grids reflow once. */
+  .inspector {
     position: absolute;
     z-index: 15;
     top: var(--gutter);
     right: var(--gutter);
-    bottom: calc(var(--dock-h) + var(--gutter) * 2);
+    bottom: calc(var(--dock-h) + var(--gutter) * 3);
+    width: var(--inspector-w);
     display: flex;
+  }
+  .inspector.docked {
+    bottom: var(--gutter);
   }
 
   .toasts {
     position: absolute;
     z-index: 30;
-    right: calc(var(--gutter) * 2);
+    right: calc(var(--gutter) * 2 + var(--inset-right));
     bottom: calc(var(--gutter) * 2);
     display: flex;
     flex-direction: column;
@@ -404,7 +574,7 @@
     transition: bottom var(--dur-slow) var(--ease-out);
   }
   .toasts.raised {
-    bottom: calc(var(--dock-h) + var(--gutter) * 3);
+    bottom: calc(var(--dock-h) + var(--gutter) * 4);
   }
   .region {
     display: flex;
@@ -452,28 +622,34 @@
     color: var(--ink);
   }
 
-  /* Narrow windows: the sidebar becomes an icon rail. */
-  @media (max-width: 1099px) {
-    .shell {
-      --sidebar: 72px;
-    }
-    .sidebar {
-      padding: 16px 10px 10px;
-      align-items: center;
-    }
-    .brand {
-      padding: 4px 0 18px;
-    }
-    .label,
-    kbd,
-    .group {
-      display: none;
-    }
-    .nav,
-    .scan {
-      width: 52px;
-      padding: 0;
-      justify-content: center;
-    }
+  /* The icon rail: folded by the user, or forced on narrow windows (app.rail). */
+  .shell.rail {
+    --sidebar: 72px;
+  }
+  .rail .sidebar {
+    padding: 16px 10px 10px;
+    align-items: center;
+  }
+  .rail .brand {
+    flex-direction: column;
+    gap: 10px;
+    padding: 4px 0 18px;
+  }
+  .rail .label,
+  .rail kbd,
+  .rail .group,
+  .rail .group-row,
+  .rail .hint,
+  .rail .nav.playlist {
+    display: none;
+  }
+  .rail .nav-scroll {
+    align-items: center;
+  }
+  .rail .nav,
+  .rail .scan {
+    width: 52px;
+    padding: 0;
+    justify-content: center;
   }
 </style>

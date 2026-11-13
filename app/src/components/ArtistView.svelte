@@ -94,14 +94,14 @@
     height: 100%;
   }
   .missing {
-    padding: 96px var(--page-x) 96px calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 96px var(--page-x) 96px var(--page-x);
   }
   .hero {
     position: relative;
     min-height: clamp(300px, 42vh, 420px);
     display: flex;
     align-items: flex-end;
-    padding: 84px var(--page-x) 32px calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 84px var(--page-x) 32px var(--page-x);
     overflow: hidden;
   }
   .backdrop {
@@ -143,7 +143,7 @@
     margin-top: 12px;
   }
   .body {
-    padding: 8px var(--page-x) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 8px var(--page-x) var(--dock-reserve) var(--page-x);
   }
   h2 {
     margin: 22px 0 18px;

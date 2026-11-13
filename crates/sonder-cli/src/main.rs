@@ -10,7 +10,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use sha2::{Digest, Sha256};
 use sonder_decode::Decoder;
-use sonder_engine::{DsdMode, DsdPcmRate, Player, PlayerConfig, PlayerEvent};
+use sonder_engine::{DsdMode, DsdPcmRate, Player, PlayerConfig, PlayerEvent, SdmMode, SdmOrder};
 use sonder_output::format::pack;
 use sonder_output::{DeviceFormat, DeviceInfo, OutputBackend, SampleContainer, WriteTap};
 
@@ -45,7 +45,7 @@ enum Command {
         volume: Option<f64>,
         /// Hash the bytes written into the device buffer and compare them with the decoded
         /// samples packed into the same container. Needs every track to share one stream.
-        #[arg(long, conflicts_with = "volume")]
+        #[arg(long, conflicts_with_all = ["volume", "pcm_to_dsd"])]
         verify_hash: bool,
         /// How DSD files (DSF, DFF) reach the device. `dop` and `native` fall back to the
         /// next option the device accepts, ending at PCM conversion.
@@ -54,6 +54,12 @@ enum Command {
         /// Output rate when DSD is converted to PCM.
         #[arg(long, value_enum, default_value_t = DsdRateArg::R176400)]
         dsd_pcm_rate: DsdRateArg,
+        /// Modulate PCM tracks to DSD (DoP or native, as `--dsd-mode` allows).
+        #[arg(long, value_enum, default_value_t = DsdOutArg::Off)]
+        pcm_to_dsd: DsdOutArg,
+        /// Sigma-delta modulator order for `--pcm-to-dsd`.
+        #[arg(long, value_enum, default_value_t = SdmOrderArg::Fifth)]
+        sdm_order: SdmOrderArg,
     },
     /// Add folders to a library database and scan every library folder, printing timings.
     Scan {
@@ -108,6 +114,46 @@ impl From<DsdRateArg> for DsdPcmRate {
     }
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum DsdOutArg {
+    /// Leave PCM tracks as PCM.
+    Off,
+    #[value(name = "dsd64")]
+    Dsd64,
+    #[value(name = "dsd128")]
+    Dsd128,
+    #[value(name = "dsd256")]
+    Dsd256,
+}
+
+impl From<DsdOutArg> for SdmMode {
+    fn from(arg: DsdOutArg) -> Self {
+        match arg {
+            DsdOutArg::Off => SdmMode::Off,
+            DsdOutArg::Dsd64 => SdmMode::Dsd64,
+            DsdOutArg::Dsd128 => SdmMode::Dsd128,
+            DsdOutArg::Dsd256 => SdmMode::Dsd256,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SdmOrderArg {
+    #[value(name = "5")]
+    Fifth,
+    #[value(name = "7")]
+    Seventh,
+}
+
+impl From<SdmOrderArg> for SdmOrder {
+    fn from(arg: SdmOrderArg) -> Self {
+        match arg {
+            SdmOrderArg::Fifth => SdmOrder::Order5,
+            SdmOrderArg::Seventh => SdmOrder::Order7,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Devices => list_devices(),
@@ -118,6 +164,8 @@ fn main() -> Result<()> {
             verify_hash,
             dsd_mode,
             dsd_pcm_rate,
+            pcm_to_dsd,
+            sdm_order,
         } => play(
             paths,
             device,
@@ -125,6 +173,8 @@ fn main() -> Result<()> {
             verify_hash,
             dsd_mode.into(),
             dsd_pcm_rate.into(),
+            pcm_to_dsd.into(),
+            sdm_order.into(),
         ),
         Command::Scan {
             paths,
@@ -282,6 +332,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn play(
     paths: Vec<PathBuf>,
     device: Option<usize>,
@@ -289,6 +340,8 @@ fn play(
     verify_hash: bool,
     dsd_mode: DsdMode,
     dsd_pcm_rate: DsdPcmRate,
+    sdm_mode: SdmMode,
+    sdm_order: SdmOrder,
 ) -> Result<()> {
     let tracks = collect_tracks(&paths)?;
     let backend = backend()?;
@@ -299,6 +352,8 @@ fn play(
     let mut config = PlayerConfig::new(device.id.clone());
     config.default_dsd_mode = dsd_mode;
     config.dsd_pcm_rate = dsd_pcm_rate;
+    config.sdm.mode = sdm_mode;
+    config.sdm.order = sdm_order;
     let digests: Digests = Arc::default();
     if verify_hash {
         let digests = digests.clone();

@@ -73,9 +73,10 @@
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b" && !app.narrow) {
       e.preventDefault();
       app.toggleSidebar();
-    } else if (e.key === "Escape" && !app.dialog && app.inspector) {
+    } else if (e.key === "Escape" && !e.defaultPrevented && !app.dialog && app.inspector) {
       // The inspector's own keydown only fires with focus inside it; opening it from the pill
-      // leaves focus on the toggle, so Escape has to be handled here.
+      // leaves focus on the toggle, so Escape has to be handled here. A control that already
+      // consumed it (a menu, a tonearm drag) keeps it.
       e.preventDefault();
       app.closeInspector();
     } else if (e.altKey && e.key === "ArrowLeft") {

@@ -364,8 +364,11 @@
           <span class="info">
             <span class="name" id="pcm-dsd-label">PCM to DSD</span>
             <span class="dim small">
-              Modulates PCM tracks for this zone. DSD is carried over DoP or native DSD when the
+              Modulates PCM tracks before output. DSD is carried over DoP or native DSD when the
               device takes it; 0 dBFS PCM becomes 50 % modulation, the SACD convention.
+              {#if app.settings.pcmToDsd === "dsd256"}
+                DSD256 needs a fast CPU and can drop out on slower machines; DSD128 is recommended.
+              {/if}
             </span>
           </span>
           <div class="segmented" role="radiogroup" aria-labelledby="pcm-dsd-label">

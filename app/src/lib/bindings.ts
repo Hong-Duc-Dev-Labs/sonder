@@ -49,8 +49,23 @@ export const commands = {
 	/**  Switches output to `id` (playback continues there) and remembers the choice. */
 	deviceSelect: (id: string) => __TAURI_INVOKE<null>("device_select", { id }),
 	settingsGet: () => __TAURI_INVOKE<Settings>("settings_get"),
-	/**  Saves `settings` and applies the device, volume and DSD handling in them. */
+	/**
+	 *  Saves `settings` and applies the device, volume, DSD, DSP and rate-conversion settings in
+	 *  them.
+	 */
 	settingsSet: (settings: Settings) => __TAURI_INVOKE<Settings>("settings_set", { settings }),
+	/**  Asks for the folder that holds Roon's filter tables. Returns `None` when the user cancels. */
+	settingsPickRoonFolder: () => __TAURI_INVOKE<string | null>("settings_pick_roon_folder"),
+	/**
+	 *  Starts measuring every track that has no ReplayGain tags, or queues a pass behind the one
+	 *  running. Progress and the result arrive as `LoudnessProgressEvent` and
+	 *  `LoudnessFinishedEvent`.
+	 */
+	libraryAnalyzeLoudness: () => __TAURI_INVOKE<null>("library_analyze_loudness"),
+	/**  Tracks still waiting for a loudness measurement. */
+	libraryLoudnessPending: () => __TAURI_INVOKE<number>("library_loudness_pending"),
+	/**  Whether a loudness analysis pass is running. */
+	libraryIsAnalyzing: () => __TAURI_INVOKE<boolean>("library_is_analyzing"),
 	/**
 	 *  Lyrics for a library track: its own (tags, then a `.lrc` beside it), else online when the
 	 *  setting allows, through the on-disk cache. `None` when there are none anywhere.
@@ -62,6 +77,8 @@ export const commands = {
 export const events = {
 	devicesChangedEvent: makeEvent<DevicesChangedEvent, DevicesChangedEvent>("devices-changed-event"),
 	libraryChangedEvent: makeEvent<LibraryChangedEvent, LibraryChangedEvent>("library-changed-event"),
+	loudnessFinishedEvent: makeEvent<LoudnessFinishedEvent, LoudnessFinishedEvent>("loudness-finished-event"),
+	loudnessProgressEvent: makeEvent<LoudnessProgressEvent, LoudnessProgressEvent>("loudness-progress-event"),
 	noticeEvent: makeEvent<NoticeEvent, NoticeEvent>("notice-event"),
 	playerStateEvent: makeEvent<PlayerStateEvent, PlayerStateEvent>("player-state-event"),
 	queueChangedEvent: makeEvent<QueueChangedEvent, QueueChangedEvent>("queue-changed-event"),
@@ -114,6 +131,9 @@ export type ArtistInfo = {
 	appearsOn: Album[],
 };
 
+/**  The RBJ filter shapes the EQ offers. */
+export type BiquadKindSetting = "peak" | "lowShelf" | "highShelf" | "lowPass" | "highPass" | "bandPass" | "notch";
+
 /**  How Now Playing shows the cover. */
 export type CoverStyle = 
 /**  The cover as the label of a spinning record, under a tonearm. */
@@ -147,6 +167,19 @@ export type DsdMode =
 /**  Output rate of DSD→PCM conversion. */
 export type DsdPcmRate = "hz176400" | "hz352800";
 
+/**  Filter phase choice for Sonder-designed tables. */
+export type FilterPhaseSetting = "linear" | "minimum";
+
+/**  Which tables serve a rate conversion. */
+export type FilterSourceSetting = 
+/**  Sonder designs its own filters at runtime (shipped). */
+"sonder" | 
+/**  Roon's tables from a folder the user owns. */
+"roon";
+
+/**  Filter sharpness choice for Sonder-designed tables. */
+export type FilterVariantSetting = "precise" | "smooth";
+
 /**
  *  How much frosted glass the UI draws. Blur is the costliest effect in the UI; `Off` keeps the
  *  same layout with opaque surfaces.
@@ -157,8 +190,32 @@ export type GlassQuality = "full" |
 /**  Opaque surfaces, no blur. */
 "off";
 
+/**  Where levelling gets its gain. */
+export type LevelingSetting = "off" | "track" | "album" | "auto";
+
 /**  The index changed (scan, watcher, root removed): reload what is on screen. */
 export type LibraryChangedEvent = null;
+
+/**  A loudness analysis pass ended. */
+export type LoudnessFinishedEvent = {
+	/**  Tracks measured in this pass. */
+	tracks: number,
+	/**  Albums whose album value was (re)built. */
+	albums: number,
+	/**  Tracks that could not be decoded; they stay pending. */
+	failed: number,
+	/**  Tracks still waiting for a measurement after the pass. */
+	pending: number,
+	/**  The pass itself failed (database error). */
+	error: string | null,
+};
+
+/**  The background loudness analysis finished another album. */
+export type LoudnessProgressEvent = {
+	done: number,
+	total: number,
+	failed: number,
+};
 
 export type Lyrics = {
 	/**  "Embedded", "LRC file" or the online service's name. */
@@ -192,6 +249,21 @@ export type OutputInfo = {
 	containerBits: number,
 	channels: number,
 	label: string,
+};
+
+/**  One parametric EQ band as the settings file and the UI store it. */
+export type PeqBandSetting = {
+	kind?: BiquadKindSetting,
+	freqHz?: number | null,
+	gainDb?: number | null,
+	q?: number | null,
+	enabled?: boolean,
+};
+
+/**  A whole EQ preset: preamp plus bands. */
+export type PeqSetting = {
+	preampDb?: number | null,
+	bands?: PeqBandSetting[],
 };
 
 export type PlayState = "stopped" | "playing" | "paused";
@@ -272,6 +344,20 @@ export type Settings = {
 	dsdModes?: { [key in string]: DsdMode },
 	/**  Output rate when DSD is converted to PCM. */
 	dsdPcmRate?: DsdPcmRate,
+	/**  Parametric EQ preset in use. */
+	peq?: PeqSetting,
+	/**  Saved EQ presets, by name. */
+	peqPresets?: { [key in string]: PeqSetting },
+	/**  Name of the preset `peq` came from, when it has not been edited since. */
+	peqPreset?: string | null,
+	/**  Volume levelling source. */
+	leveling?: LevelingSetting,
+	/**  Integrated loudness levelling aims for. */
+	levelingTargetLufs?: number | null,
+	/**  Add TPDF dither when the device container is narrower than the processed signal. */
+	dither?: boolean,
+	/**  Rate-conversion policy, filter source and headroom. */
+	src?: SrcSetting,
 };
 
 export type SortOrder = "artist" | "title" | "added" | "year";
@@ -282,6 +368,34 @@ export type SourceInfo = {
 	bits: number,
 	channels: number,
 };
+
+/**  Rate-conversion settings (phase 6 policy, edited in the UI from phase 7 on). */
+export type SrcSetting = {
+	target?: SrcTargetSetting,
+	/**  Target rate used when `target` is `fixed`. */
+	fixedRate?: number,
+	filterSource?: FilterSourceSetting,
+	/**  Folder holding Roon's tables, only read when `filter_source` is `roon`. */
+	roonFolder?: string | null,
+	phase?: FilterPhaseSetting,
+	variant?: FilterVariantSetting,
+	forceUpsampleBelow44k?: boolean,
+	/**  Resample when the device refuses the source rate (the "not bit-perfect" fallback). */
+	autoFallback?: boolean,
+	/**  Gain inserted before resampling; `None` applies none. */
+	headroomDb?: number | null,
+};
+
+/**  Where an enabled rate conversion sends the signal. */
+export type SrcTargetSetting = 
+/**  Never resample unless the device refuses the source rate. */
+"off" | 
+/**  The device's highest rate. */
+"maxDevice" | 
+/**  The device's highest rate in the source's family. */
+"keepFamily" | 
+/**  A fixed rate chosen by the user. */
+"fixed";
 
 export type TrackItem = {
 	id: number,

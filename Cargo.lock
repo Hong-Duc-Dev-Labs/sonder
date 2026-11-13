@@ -4106,6 +4106,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sonder-decode",
+ "sonder-dsp",
  "sonder-engine",
  "sonder-library",
  "sonder-lyrics",

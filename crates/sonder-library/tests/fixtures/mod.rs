@@ -361,3 +361,25 @@ fn m4a(path: &Path, kind: &[u8; 4], extra: &[u8], rate: u32, bits: u8, seconds: 
     .concat();
     fs::write(path, file).unwrap();
 }
+
+/// A tagged stereo WAV of a steady sine long enough for loudness analysis (≥ 400 ms).
+pub fn wav_tone(path: &Path, rate: u32, seconds: f64, amplitude: f64, m: &Meta) {
+    mkdirs(path);
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w = hound::WavWriter::create(path, spec).unwrap();
+    let frames = (f64::from(rate) * seconds) as u32;
+    for i in 0..frames {
+        let s = f64::sin(2.0 * std::f64::consts::PI * 1000.0 * f64::from(i) / f64::from(rate))
+            * amplitude
+            * f64::from(i16::MAX);
+        w.write_sample(s as i16).unwrap();
+        w.write_sample(s as i16).unwrap();
+    }
+    w.finalize().unwrap();
+    save(path, TagType::Id3v2, m);
+}

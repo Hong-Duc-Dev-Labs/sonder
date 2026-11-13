@@ -399,6 +399,9 @@ fn play(
                 );
             }
             PlayerEvent::Warning(message) => eprintln!("\nWarning: {message}"),
+            PlayerEvent::Clipping(count) => {
+                eprintln!("\nClipping: {count} samples hit full scale; lower the EQ boost")
+            }
             PlayerEvent::EndOfQueue => break,
             _ => {}
         }

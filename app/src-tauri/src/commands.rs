@@ -454,7 +454,8 @@ pub async fn settings_get(state: State<'_, AppState>) -> AppResult<Settings> {
     Ok(lock(&state.settings).clone())
 }
 
-/// Saves `settings` and applies the device, volume and DSD handling in them.
+/// Saves `settings` and applies the device, volume, DSD, DSP and rate-conversion settings in
+/// them.
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> AppResult<Settings> {
@@ -465,6 +466,8 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> App
         apply_device(&state, DeviceId(device.clone()));
     }
     apply_volume(&state, saved.volume_db);
+    saved.apply_dsp(&state.player);
+    saved.apply_src(&state.player);
     Ok(saved)
 }
 
@@ -509,4 +512,45 @@ pub async fn lyrics_get(state: State<'_, AppState>, track_id: i64) -> AppResult<
     })
     .await?;
     Ok(found.map(Into::into))
+}
+
+// ----- DSP and loudness -----
+
+/// Asks for the folder that holds Roon's filter tables. Returns `None` when the user cancels.
+#[tauri::command]
+#[specta::specta]
+pub async fn settings_pick_roon_folder(app: AppHandle) -> AppResult<Option<String>> {
+    let Some(picked) = app.dialog().file().blocking_pick_folder() else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(AppError::from)?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// Tracks still waiting for a loudness measurement.
+#[tauri::command]
+#[specta::specta]
+pub async fn library_loudness_pending(state: State<'_, AppState>) -> AppResult<u32> {
+    let pending = lock(&state.loudness).loudness_pending()?;
+    Ok(u32::try_from(pending).unwrap_or(u32::MAX))
+}
+
+/// Starts measuring every track that has no ReplayGain tags, or queues a pass behind the one
+/// running. Progress and the result arrive as `LoudnessProgressEvent` and
+/// `LoudnessFinishedEvent`.
+#[tauri::command]
+#[specta::specta]
+pub async fn library_analyze_loudness(app: AppHandle) -> AppResult<()> {
+    crate::loudness::start_analysis(&app);
+    Ok(())
+}
+
+/// Whether a loudness analysis pass is running.
+#[tauri::command]
+#[specta::specta]
+pub async fn library_is_analyzing(state: State<'_, AppState>) -> AppResult<bool> {
+    Ok(state
+        .analysis
+        .running
+        .load(std::sync::atomic::Ordering::SeqCst))
 }

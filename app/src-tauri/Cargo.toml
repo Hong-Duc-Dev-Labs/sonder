@@ -16,6 +16,7 @@ tauri-build = { version = "2.7.4", features = [] }
 [dependencies]
 sonder-decode.workspace = true
 sonder-engine.workspace = true
+sonder-dsp.workspace = true
 sonder-library.workspace = true
 sonder-lyrics.workspace = true
 sonder-output.workspace = true

@@ -99,6 +99,9 @@ fn scan_once(app: &AppHandle) {
             .emit(app);
             if report.changed() {
                 let _ = LibraryChangedEvent.emit(app);
+                // New or changed files may lack ReplayGain tags, and changed albums lost their
+                // album values: queue a loudness pass on its own worker.
+                crate::loudness::start_analysis(app);
             }
         }
         Err(err) => finished_with_error(app, err.to_string()),
@@ -172,6 +175,8 @@ pub fn start_watcher(app: &AppHandle) {
                     WatchEvent::Scanned(report) => {
                         if report.changed() {
                             let _ = LibraryChangedEvent.emit(&app);
+                            // The watcher's rescan cleared the loudness of what it changed.
+                            crate::loudness::start_analysis(&app);
                         }
                     }
                     WatchEvent::Error(err) => notice(&app, NoticeLevel::Warning, err),

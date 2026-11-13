@@ -14,6 +14,141 @@ use specta::Type;
 
 use crate::dto::{CoverStyle, DsdMode, DsdPcmRate, GlassQuality, SortOrder};
 
+/// One parametric EQ band as the settings file and the UI store it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PeqBandSetting {
+    pub kind: BiquadKindSetting,
+    pub freq_hz: f64,
+    pub gain_db: f64,
+    pub q: f64,
+    pub enabled: bool,
+}
+
+impl Default for PeqBandSetting {
+    fn default() -> Self {
+        Self {
+            kind: BiquadKindSetting::Peak,
+            freq_hz: 1_000.0,
+            gain_db: 0.0,
+            q: 0.707,
+            enabled: true,
+        }
+    }
+}
+
+/// The RBJ filter shapes the EQ offers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum BiquadKindSetting {
+    #[default]
+    Peak,
+    LowShelf,
+    HighShelf,
+    LowPass,
+    HighPass,
+    BandPass,
+    Notch,
+}
+
+/// A whole EQ preset: preamp plus bands.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PeqSetting {
+    pub preamp_db: f64,
+    pub bands: Vec<PeqBandSetting>,
+}
+
+/// Where levelling gets its gain.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LevelingSetting {
+    #[default]
+    Off,
+    Track,
+    Album,
+    Auto,
+}
+
+/// Filter phase choice for Sonder-designed tables.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum FilterPhaseSetting {
+    #[default]
+    Linear,
+    Minimum,
+}
+
+/// Filter sharpness choice for Sonder-designed tables.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum FilterVariantSetting {
+    #[default]
+    Precise,
+    Smooth,
+}
+
+/// Which tables serve a rate conversion.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum FilterSourceSetting {
+    /// Sonder designs its own filters at runtime (shipped).
+    #[default]
+    Sonder,
+    /// Roon's tables from a folder the user owns.
+    Roon,
+}
+
+/// Where an enabled rate conversion sends the signal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SrcTargetSetting {
+    /// Never resample unless the device refuses the source rate.
+    #[default]
+    Off,
+    /// The device's highest rate.
+    MaxDevice,
+    /// The device's highest rate in the source's family.
+    KeepFamily,
+    /// A fixed rate chosen by the user.
+    Fixed,
+}
+
+/// Rate-conversion settings (phase 6 policy, edited in the UI from phase 7 on).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SrcSetting {
+    pub target: SrcTargetSetting,
+    /// Target rate used when `target` is `fixed`.
+    pub fixed_rate: u32,
+    pub filter_source: FilterSourceSetting,
+    /// Folder holding Roon's tables, only read when `filter_source` is `roon`.
+    pub roon_folder: Option<String>,
+    pub phase: FilterPhaseSetting,
+    pub variant: FilterVariantSetting,
+    pub force_upsample_below_44k: bool,
+    /// Resample when the device refuses the source rate (the "not bit-perfect" fallback).
+    pub auto_fallback: bool,
+    /// Gain inserted before resampling; `None` applies none.
+    pub headroom_db: Option<f64>,
+}
+
+impl Default for SrcSetting {
+    fn default() -> Self {
+        Self {
+            target: SrcTargetSetting::Off,
+            fixed_rate: 192_000,
+            filter_source: FilterSourceSetting::Sonder,
+            roon_folder: None,
+            phase: FilterPhaseSetting::Linear,
+            variant: FilterVariantSetting::Precise,
+            force_upsample_below_44k: false,
+            auto_fallback: true,
+            headroom_db: Some(-3.0),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
@@ -33,6 +168,20 @@ pub struct Settings {
     pub dsd_modes: BTreeMap<String, DsdMode>,
     /// Output rate when DSD is converted to PCM.
     pub dsd_pcm_rate: DsdPcmRate,
+    /// Parametric EQ preset in use.
+    pub peq: PeqSetting,
+    /// Saved EQ presets, by name.
+    pub peq_presets: BTreeMap<String, PeqSetting>,
+    /// Name of the preset `peq` came from, when it has not been edited since.
+    pub peq_preset: Option<String>,
+    /// Volume levelling source.
+    pub leveling: LevelingSetting,
+    /// Integrated loudness levelling aims for.
+    pub leveling_target_lufs: f64,
+    /// Add TPDF dither when the device container is narrower than the processed signal.
+    pub dither: bool,
+    /// Rate-conversion policy, filter source and headroom.
+    pub src: SrcSetting,
 }
 
 impl Default for Settings {
@@ -46,6 +195,13 @@ impl Default for Settings {
             lyrics_online: true,
             dsd_modes: BTreeMap::new(),
             dsd_pcm_rate: DsdPcmRate::default(),
+            peq: PeqSetting::default(),
+            peq_presets: BTreeMap::new(),
+            peq_preset: None,
+            leveling: LevelingSetting::default(),
+            leveling_target_lufs: -18.0,
+            dither: true,
+            src: SrcSetting::default(),
         }
     }
 }
@@ -59,6 +215,27 @@ impl Settings {
             .map(|db| db.clamp(-90.0, 0.0));
         self.output_device = self.output_device.filter(|d| !d.is_empty());
         self.dsd_modes.retain(|device, _| !device.is_empty());
+        self.leveling_target_lufs = self.leveling_target_lufs.clamp(
+            sonder_engine::MIN_TARGET_LUFS,
+            sonder_engine::MAX_TARGET_LUFS,
+        );
+        self.peq = sanitized_peq(self.peq);
+        self.peq_presets.retain(|name, _| !name.is_empty());
+        let presets = std::mem::take(&mut self.peq_presets);
+        self.peq_presets = presets
+            .into_iter()
+            .map(|(name, preset)| (name, sanitized_peq(preset)))
+            .collect();
+        self.peq_preset = self
+            .peq_preset
+            .filter(|name| self.peq_presets.contains_key(name));
+        self.src.fixed_rate = self.src.fixed_rate.clamp(8_000, 768_000);
+        self.src.headroom_db = self
+            .src
+            .headroom_db
+            .filter(|db| db.is_finite())
+            .map(|db| db.clamp(-60.0, 0.0));
+        self.src.roon_folder = self.src.roon_folder.filter(|dir| !dir.is_empty());
         self
     }
 
@@ -146,6 +323,7 @@ mod tests {
             lyrics_online: false,
             dsd_modes: BTreeMap::from([("hw:1,0".to_string(), DsdMode::Native)]),
             dsd_pcm_rate: DsdPcmRate::Hz352800,
+            ..Settings::default()
         };
         store.save(&settings).unwrap();
         assert_eq!(store.load(), settings);
@@ -180,5 +358,237 @@ mod tests {
         assert_eq!(loaded.output_device, None);
         assert!(loaded.dsd_modes.is_empty());
         let _ = fs::remove_dir_all(dir);
+    }
+}
+
+// ----- engine mappings -----
+
+impl From<BiquadKindSetting> for sonder_dsp::BiquadKind {
+    fn from(kind: BiquadKindSetting) -> Self {
+        match kind {
+            BiquadKindSetting::Peak => Self::Peak,
+            BiquadKindSetting::LowShelf => Self::LowShelf,
+            BiquadKindSetting::HighShelf => Self::HighShelf,
+            BiquadKindSetting::LowPass => Self::LowPass,
+            BiquadKindSetting::HighPass => Self::HighPass,
+            BiquadKindSetting::BandPass => Self::BandPass,
+            BiquadKindSetting::Notch => Self::Notch,
+        }
+    }
+}
+
+impl From<sonder_dsp::BiquadKind> for BiquadKindSetting {
+    fn from(kind: sonder_dsp::BiquadKind) -> Self {
+        match kind {
+            sonder_dsp::BiquadKind::Peak => Self::Peak,
+            sonder_dsp::BiquadKind::LowShelf => Self::LowShelf,
+            sonder_dsp::BiquadKind::HighShelf => Self::HighShelf,
+            sonder_dsp::BiquadKind::LowPass => Self::LowPass,
+            sonder_dsp::BiquadKind::HighPass => Self::HighPass,
+            sonder_dsp::BiquadKind::BandPass => Self::BandPass,
+            sonder_dsp::BiquadKind::Notch => Self::Notch,
+        }
+    }
+}
+
+impl From<PeqBandSetting> for sonder_dsp::PeqBand {
+    fn from(band: PeqBandSetting) -> Self {
+        Self {
+            kind: band.kind.into(),
+            freq_hz: band.freq_hz,
+            gain_db: band.gain_db,
+            q: band.q,
+            enabled: band.enabled,
+        }
+    }
+}
+
+impl From<sonder_dsp::PeqBand> for PeqBandSetting {
+    fn from(band: sonder_dsp::PeqBand) -> Self {
+        Self {
+            kind: band.kind.into(),
+            freq_hz: band.freq_hz,
+            gain_db: band.gain_db,
+            q: band.q,
+            enabled: band.enabled,
+        }
+    }
+}
+
+impl From<PeqSetting> for sonder_dsp::Peq {
+    fn from(peq: PeqSetting) -> Self {
+        Self {
+            preamp_db: peq.preamp_db,
+            bands: peq.bands.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<sonder_dsp::Peq> for PeqSetting {
+    fn from(peq: sonder_dsp::Peq) -> Self {
+        Self {
+            preamp_db: peq.preamp_db,
+            bands: peq.bands.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<LevelingSetting> for sonder_dsp::LevelingMode {
+    fn from(mode: LevelingSetting) -> Self {
+        match mode {
+            LevelingSetting::Off => Self::Off,
+            LevelingSetting::Track => Self::Track,
+            LevelingSetting::Album => Self::Album,
+            LevelingSetting::Auto => Self::Auto,
+        }
+    }
+}
+
+impl From<FilterPhaseSetting> for sonder_dsp::FilterPhase {
+    fn from(phase: FilterPhaseSetting) -> Self {
+        match phase {
+            FilterPhaseSetting::Linear => Self::Linear,
+            FilterPhaseSetting::Minimum => Self::Minimum,
+        }
+    }
+}
+
+impl From<FilterVariantSetting> for sonder_dsp::FilterVariant {
+    fn from(variant: FilterVariantSetting) -> Self {
+        match variant {
+            FilterVariantSetting::Precise => Self::Precise,
+            FilterVariantSetting::Smooth => Self::Smooth,
+        }
+    }
+}
+
+impl From<SrcSetting> for sonder_engine::SrcConfig {
+    fn from(src: SrcSetting) -> Self {
+        Self {
+            target: match src.target {
+                SrcTargetSetting::Off => sonder_engine::SrcTarget::Off,
+                SrcTargetSetting::MaxDevice => sonder_engine::SrcTarget::MaxDevice,
+                SrcTargetSetting::KeepFamily => sonder_engine::SrcTarget::KeepFamily,
+                SrcTargetSetting::Fixed => sonder_engine::SrcTarget::Fixed(src.fixed_rate),
+            },
+            filter_source: match (src.filter_source, src.roon_folder) {
+                (FilterSourceSetting::Roon, Some(dir)) if !dir.is_empty() => {
+                    sonder_engine::FilterSourceConfig::Roon { dir: dir.into() }
+                }
+                _ => sonder_engine::FilterSourceConfig::Sonder,
+            },
+            phase: src.phase.into(),
+            variant: src.variant.into(),
+            force_upsample_below_44k: src.force_upsample_below_44k,
+            headroom_db: src.headroom_db,
+            auto_fallback: src.auto_fallback,
+        }
+    }
+}
+
+impl Settings {
+    /// The engine's view of the EQ, levelling and dither settings.
+    pub fn engine_dsp(&self) -> sonder_engine::DspConfig {
+        sonder_engine::DspConfig {
+            peq: Some(self.peq.clone().into()).filter(|peq: &sonder_dsp::Peq| peq.active()),
+            leveling: self.leveling.into(),
+            leveling_target_lufs: self.leveling_target_lufs,
+            dither: self.dither,
+        }
+        .sanitized()
+    }
+
+    /// Applies EQ, levelling and dither to the running engine.
+    pub fn apply_dsp(&self, player: &sonder_engine::Player) {
+        player.set_dsp(self.engine_dsp());
+    }
+
+    /// Applies the rate-conversion settings to the running engine.
+    pub fn apply_src(&self, player: &sonder_engine::Player) {
+        player.set_src(self.src.clone().into());
+    }
+
+    /// The engine's view of the rate-conversion settings.
+    pub fn engine_src(&self) -> sonder_engine::SrcConfig {
+        self.src.clone().into()
+    }
+}
+
+/// Clamps a preset the settings file or the UI could put out of range.
+fn sanitized_peq(peq: PeqSetting) -> PeqSetting {
+    sonder_dsp::Peq::from(peq).sanitized().into()
+}
+
+#[cfg(test)]
+mod dsp_settings_tests {
+    use super::*;
+
+    #[test]
+    fn engine_dsp_drops_an_inactive_preset_and_clamps_the_target() {
+        let settings = Settings {
+            leveling_target_lufs: -99.0,
+            peq: PeqSetting {
+                preamp_db: 0.0,
+                bands: vec![PeqBandSetting {
+                    enabled: false,
+                    ..PeqBandSetting::default()
+                }],
+            },
+            ..Settings::default()
+        }
+        .sanitized();
+        let dsp = settings.engine_dsp();
+        assert!(dsp.peq.is_none());
+        assert_eq!(dsp.leveling_target_lufs, sonder_engine::MIN_TARGET_LUFS);
+    }
+
+    #[test]
+    fn src_settings_map_every_policy_onto_the_engine() {
+        let src = SrcSetting {
+            target: SrcTargetSetting::Fixed,
+            fixed_rate: 96_000,
+            filter_source: FilterSourceSetting::Roon,
+            roon_folder: Some("D:/filters".into()),
+            phase: FilterPhaseSetting::Minimum,
+            variant: FilterVariantSetting::Smooth,
+            force_upsample_below_44k: true,
+            auto_fallback: false,
+            headroom_db: Some(-4.0),
+        };
+        let engine: sonder_engine::SrcConfig = src.into();
+        assert_eq!(engine.target, sonder_engine::SrcTarget::Fixed(96_000));
+        assert_eq!(engine.phase, sonder_dsp::FilterPhase::Minimum);
+        assert_eq!(engine.variant, sonder_dsp::FilterVariant::Smooth);
+        assert!(engine.force_upsample_below_44k);
+        assert!(!engine.auto_fallback);
+        assert_eq!(engine.headroom_db, Some(-4.0));
+        assert!(matches!(
+            engine.filter_source,
+            sonder_engine::FilterSourceConfig::Roon { .. }
+        ));
+
+        // A Roon choice without a folder falls back to Sonder instead of failing.
+        let no_folder: sonder_engine::SrcConfig = SrcSetting::default().into();
+        assert!(matches!(
+            no_folder.filter_source,
+            sonder_engine::FilterSourceConfig::Sonder
+        ));
+    }
+
+    #[test]
+    fn a_preset_round_trips_through_the_engine_type() {
+        let preset = PeqSetting {
+            preamp_db: -6.0,
+            bands: vec![PeqBandSetting {
+                kind: BiquadKindSetting::HighShelf,
+                freq_hz: 8_000.0,
+                gain_db: 3.5,
+                q: 0.7,
+                enabled: true,
+            }],
+        };
+        let back = PeqSetting::from(sonder_dsp::Peq::from(preset.clone()));
+        assert_eq!(back, preset);
+        assert_eq!(sanitized_peq(preset).preamp_db, -6.0);
     }
 }

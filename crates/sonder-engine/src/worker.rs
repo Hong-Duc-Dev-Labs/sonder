@@ -49,7 +49,7 @@ pub enum DsdMode {
 }
 
 /// Valid bits requested when DSP is active, unless the device cannot carry them.
-const DSP_OUTPUT_BITS: u32 = 24;
+pub(crate) const DSP_OUTPUT_BITS: u32 = 24;
 /// Bits the DSD→PCM converter claims, and the DoP payload depth.
 const DSD_PCM_BITS: u32 = 24;
 
@@ -69,6 +69,8 @@ pub(crate) struct DecodeWorker {
     dsd_path: Option<DsdPath>,
     dsd_bytes: Vec<u8>,
     dsd_float: Vec<f64>,
+    /// Samples the conversion had to clamp since the last [`take_clipped`](Self::take_clipped).
+    clipped: u64,
 }
 
 impl DecodeWorker {
@@ -79,6 +81,7 @@ impl DecodeWorker {
             dsd_path: None,
             dsd_bytes: Vec::new(),
             dsd_float: Vec::new(),
+            clipped: 0,
         }
     }
 
@@ -242,10 +245,11 @@ impl DecodeWorker {
                 };
                 if pcm && !ended {
                     if self.pipeline.is_empty() {
-                        append_converted(&self.dsd_float, out);
+                        self.clipped += append_converted(&self.dsd_float, out);
                     } else {
-                        self.pipeline
-                            .process(&self.dsd_float, |block| append_converted(block, out));
+                        self.pipeline.process(&self.dsd_float, |block| {
+                            self.clipped += append_converted(block, out)
+                        });
                     }
                 }
                 Ok(frames)
@@ -262,15 +266,17 @@ impl DecodeWorker {
             return decoder.next_i32(out);
         }
         let frames = decoder.next_f64(&mut self.float_in)?;
-        self.pipeline
-            .process(&self.float_in, |block| append_converted(block, out));
+        self.pipeline.process(&self.float_in, |block| {
+            self.clipped += append_converted(block, out)
+        });
         Ok(frames)
     }
 
     /// Appends whatever the stages still hold (end of queue or format change).
     pub(crate) fn flush_tail(&mut self, out: &mut Vec<i32>) {
         if self.pipeline.input_format().is_some() {
-            self.pipeline.flush(|block| append_converted(block, out));
+            self.pipeline
+                .flush(|block| self.clipped += append_converted(block, out));
         }
     }
 
@@ -285,17 +291,27 @@ impl DecodeWorker {
         self.dsd_bytes.clear();
         self.dsd_float.clear();
     }
+
+    /// Samples the conversion had to clamp since the last call, for the clip counter.
+    pub(crate) fn take_clipped(&mut self) -> u64 {
+        std::mem::take(&mut self.clipped)
+    }
 }
 
 /// Converts `[-1.0, 1.0)` samples to left-justified `i32`, rounding to nearest and clipping.
-/// Device packing then keeps the top bits; dither arrives with its own stage.
-fn append_converted(block: &[f64], out: &mut Vec<i32>) {
+/// Device packing then keeps the top bits; dither arrives with its own stage. Returns the
+/// number of samples that had to be clamped, which the engine surfaces as clipping.
+fn append_converted(block: &[f64], out: &mut Vec<i32>) -> u64 {
     const SCALE: f64 = 2_147_483_648.0;
-    out.extend(
-        block
-            .iter()
-            .map(|&s| (s * SCALE).round().clamp(-SCALE, SCALE - 1.0) as i32),
-    );
+    let mut clipped = 0;
+    out.extend(block.iter().map(|&s| {
+        let scaled = s * SCALE;
+        if !(-SCALE..SCALE).contains(&scaled) {
+            clipped += 1;
+        }
+        scaled.round().clamp(-SCALE, SCALE - 1.0) as i32
+    }));
+    clipped
 }
 
 #[cfg(test)]
@@ -305,11 +321,13 @@ mod tests {
     #[test]
     fn conversion_is_exact_for_integer_sources_and_clips() {
         let mut out = Vec::new();
-        append_converted(&[0.5, -1.0, 0.0, 1.0, -2.0, 32_767.0 / 32_768.0], &mut out);
+        let clipped = append_converted(&[0.5, -1.0, 0.0, 1.0, -2.0, 32_767.0 / 32_768.0], &mut out);
         assert_eq!(
             out,
             vec![1 << 30, i32::MIN, 0, i32::MAX, i32::MIN, 32_767 << 16]
         );
+        // −1.0 is representable; 1.0 and −2.0 are not.
+        assert_eq!(clipped, 2);
     }
 
     #[test]

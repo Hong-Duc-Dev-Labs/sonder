@@ -337,6 +337,18 @@ impl Sdm {
 
     pub fn new(rate: SdmRate, order: SdmOrder, channels: u16) -> Self {
         let coeffs = coeffs(rate, order);
+        // Padding below would turn a short table into silent zeros instead of a failure.
+        let order_len = usize::from(order.as_u8());
+        debug_assert_eq!(
+            coeffs.a.len(),
+            order_len,
+            "{rate:?} {order:?} feedforward table"
+        );
+        debug_assert_eq!(
+            coeffs.g.len(),
+            order_len - 1,
+            "{rate:?} {order:?} resonator table"
+        );
         let channels = usize::from(channels.max(1));
         let pad = |values: &[f64]| {
             let mut padded = [0.0; MAX_ORDER];

@@ -116,6 +116,15 @@ break the round trip), LF line endings; import(export(x)) == x for any sanitized
   that all fail no longer claims it has none); repeated `Preamp`/`Fc`/`Gain`/`Q`/`BW` keys warn
   and the last value wins; the preamp slider spans the model's −60…+12 dB, so an imported
   −30 dB preamp is not silently moved to −24 on the first touch.
+- Second review pass: `Q` and `BW Oct` now share one slot, so whichever comes last wins (as in
+  Equalizer APO) and a cross-spelling override is reported instead of silent; an unusable
+  bandwidth (`0`, negative, overflowing) warns and keeps any explicit Q; a comment after the
+  values says to put it on its own line; skipped-line warnings cut the echoed line to 60
+  characters (a `GraphicEQ:` line is thousands); a NUL byte means "UTF-16, not UTF-8"; the
+  size cap is checked again after reading; the export clamps through `sanitized()` and names
+  the file when the write fails. New tests: both `Q`/`BW` orders, unusable bandwidth, a glued
+  unit, the inline-comment message, a long skipped line, the size cap, UTF-16 and a lowercase
+  ` parametricEq` stem.
 
 <!-- slug: peq-import-export -->
 

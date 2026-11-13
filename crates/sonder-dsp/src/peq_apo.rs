@@ -88,7 +88,7 @@ impl Peq {
                 continue;
             }
             let Some((head, rest)) = line.split_once(':') else {
-                warnings.push(format!("line {line_no}: skipped '{line}'"));
+                warnings.push(format!("line {line_no}: skipped '{}'", short(line)));
                 continue;
             };
             let head = head.trim();
@@ -106,7 +106,7 @@ impl Peq {
                     }
                     None => warnings.push(format!(
                         "line {line_no}: preamp '{}' is not a number; ignored",
-                        rest.trim()
+                        short(rest.trim())
                     )),
                 }
                 continue;
@@ -118,14 +118,17 @@ impl Peq {
                 }
                 continue;
             }
-            warnings.push(format!("line {line_no}: skipped '{line}'"));
+            warnings.push(format!("line {line_no}: skipped '{}'", short(line)));
         }
 
         if !saw_preamp && bands.is_empty() {
             return Err(if saw_stage {
                 ApoError::NOTHING_USABLE.with_detail(skipped_summary(&warnings))
-            } else {
+            } else if warnings.is_empty() {
                 ApoError::NOT_PARAMETRIC
+            } else {
+                // Lines were there but not in a shape APO would read; say what was skipped.
+                ApoError::NOT_PARAMETRIC.with_detail(skipped_summary(&warnings))
             });
         }
 
@@ -266,59 +269,84 @@ fn filter_band(
     let tokens: Vec<&str> = tokens.collect();
     let mut freq_hz: Option<f64> = None;
     let mut gain_db = 0.0;
+    // `Q` and `BW Oct` are the same value in Equalizer APO; whatever comes last wins, as it
+    // does there. Keeping one slot is what stops a bandwidth from silently overriding a Q.
     let mut q: Option<f64> = None;
-    let mut bandwidth: Option<f64> = None;
     let mut seen_fc = false;
     let mut seen_gain = false;
-    let mut seen_q = false;
-    let mut seen_bw = false;
     let mut index = 0;
     while let Some(key) = tokens.get(index) {
         let key = key.to_ascii_lowercase();
         index += 1;
+        if key.starts_with('#') {
+            return skip(
+                warnings,
+                "a comment after the filter values is not supported; put it on its own line"
+                    .to_owned(),
+            );
+        }
         let Some((value, unit, next)) = number_at(&tokens, index)? else {
-            return skip(warnings, format!("'{key}' has no value"));
+            return skip(warnings, format!("'{}' has no value", short(&key)));
         };
         index = next;
-        // A repeated key would change the band with no trace; say so, and keep the last value.
-        let repeated = match key.as_str() {
-            "fc" => std::mem::replace(&mut seen_fc, true),
-            "gain" => std::mem::replace(&mut seen_gain, true),
-            "q" => std::mem::replace(&mut seen_q, true),
-            "bw" => std::mem::replace(&mut seen_bw, true),
-            _ => return skip(warnings, format!("unknown '{key}'")),
-        };
-        if repeated {
-            warnings.push(format!(
-                "line {line_no}: '{key}' given twice; the last value is used"
-            ));
-        }
-        match key.as_str() {
+        // `None` for the keys that set a field directly; their repeats are counted on the spot.
+        let damping = match key.as_str() {
             "fc" => {
+                if std::mem::replace(&mut seen_fc, true) {
+                    warn_repeat(warnings, line_no, &key);
+                }
                 freq_hz = Some(match unit {
                     Some(Unit::Khz) => value * 1_000.0,
                     _ => value,
                 });
+                None
             }
-            "gain" => gain_db = value,
-            "q" => q = Some(value),
-            // Every key is one of the four above by now.
-            _ => bandwidth = Some(value),
+            "gain" => {
+                if std::mem::replace(&mut seen_gain, true) {
+                    warn_repeat(warnings, line_no, &key);
+                }
+                gain_db = value;
+                None
+            }
+            "q" => Some(value),
+            "bw" => match bandwidth_to_q(value) {
+                Some(converted) => Some(converted),
+                None => {
+                    warnings.push(format!(
+                        "line {line_no}: bandwidth {value} Oct is not usable; ignored"
+                    ));
+                    None
+                }
+            },
+            _ => return skip(warnings, format!("unknown '{}'", short(&key))),
+        };
+        if let Some(damping) = damping {
+            if q.is_some() {
+                warnings.push(format!(
+                    "line {line_no}: '{key}' follows another Q or BW; the last one is used"
+                ));
+            }
+            q = Some(damping);
         }
     }
 
     let Some(freq_hz) = freq_hz else {
         return skip(warnings, "no frequency".to_owned());
     };
-    // A bandwidth in octaves is the only form the shelf and pass lines usually carry.
-    let q = bandwidth.map(bandwidth_to_q).or(q).unwrap_or(DEFAULT_Q);
     Ok(Some(PeqBand {
         kind,
         freq_hz,
         gain_db,
-        q,
+        q: q.unwrap_or(DEFAULT_Q),
         enabled,
     }))
+}
+
+/// A repeated key would change the band with no trace.
+fn warn_repeat(warnings: &mut Vec<String>, line_no: usize, key: &str) {
+    warnings.push(format!(
+        "line {line_no}: '{key}' given twice; the last value is used"
+    ));
 }
 
 /// The first few skip reasons, for an error that would otherwise hide them.
@@ -392,14 +420,22 @@ fn number_at(
     Ok(Some((value, unit, next)))
 }
 
-/// APO's bandwidth in octaves as a Q, the inverse of `Q = √(2ⁿ) / (2ⁿ − 1)`.
-fn bandwidth_to_q(octaves: f64) -> f64 {
+/// APO's bandwidth in octaves as a Q, the inverse of `Q = √(2ⁿ) / (2ⁿ − 1)`, or `None` when
+/// the value cannot be a bandwidth (`0`, negative, or so large `2ⁿ` overflows).
+fn bandwidth_to_q(octaves: f64) -> Option<f64> {
     let factor = 2f64.powf(octaves);
-    if factor.is_finite() && factor > 1.0 {
-        factor.sqrt() / (factor - 1.0)
-    } else {
-        DEFAULT_Q
+    (factor.is_finite() && factor > 1.0).then(|| factor.sqrt() / (factor - 1.0))
+}
+
+/// A quoted fragment in a warning, cut to a readable length.
+fn short(text: &str) -> String {
+    const MAX: usize = 60;
+    if text.chars().count() <= MAX {
+        return text.to_owned();
     }
+    let mut cut: String = text.chars().take(MAX).collect();
+    cut.push('…');
+    cut
 }
 
 /// Keeps the constants and `MAX_BANDS` in view of the module's own tests.
@@ -551,8 +587,9 @@ Filter 1: ON PK Fc 40000 Hz Gain 40 dB Q 0.01
     #[test]
     fn rejects_text_that_is_not_a_parametric_file() {
         let error = Peq::from_apo_text("GraphicEQ: 20 -3.0; 21 -2.9\nChannel: all\n").unwrap_err();
-        assert_eq!(error, ApoError::NOT_PARAMETRIC);
-        assert!(error.to_string().contains("not an Equalizer APO"));
+        assert_eq!(error.message(), ApoError::NOT_PARAMETRIC.message());
+        // The lines were there, in shapes APO would not read; the error names them.
+        assert!(error.to_string().contains("GraphicEQ"), "{error}");
         assert!(Peq::from_apo_text("").is_err());
         // A bare preamp is enough.
         assert_eq!(
@@ -604,6 +641,76 @@ Filter 1: ON PK Fc 100 Hz Fc 200 Hz Gain 1 dB Q 1
         assert_eq!(import.warnings.len(), 2, "{:?}", import.warnings);
         assert!(import.warnings[0].contains("Preamp given twice"));
         assert!(import.warnings[1].contains("'fc' given twice"));
+    }
+
+    #[test]
+    fn q_and_bandwidth_take_the_later_value_and_say_so() {
+        let text = "\
+Filter 1: ON PK Fc 105 Hz Gain 3.4 dB BW Oct 1 Q 0.70
+Filter 2: ON PK Fc 105 Hz Gain 3.4 dB Q 0.70 BW Oct 1
+";
+        let import = Peq::from_apo_text(text).unwrap();
+        assert_eq!(import.peq.bands[0].q, 0.70);
+        assert!((import.peq.bands[1].q - std::f64::consts::SQRT_2).abs() < 1e-12);
+        assert_eq!(import.warnings.len(), 2, "{:?}", import.warnings);
+        assert!(
+            import.warnings[0].contains("follows another Q or BW"),
+            "{:?}",
+            import.warnings
+        );
+    }
+
+    #[test]
+    fn an_unusable_bandwidth_warns_instead_of_becoming_the_default_silently() {
+        let import =
+            Peq::from_apo_text("Filter 1: ON PK Fc 105 Hz Gain 3.4 dB Q 2 BW Oct 0\n").unwrap();
+        assert_eq!(import.peq.bands[0].q, 2.0);
+        assert!(
+            import.warnings.iter().any(|w| w.contains("not usable")),
+            "{:?}",
+            import.warnings
+        );
+
+        let import =
+            Peq::from_apo_text("Filter 1: ON PK Fc 105 Hz Gain 3.4 dB BW Oct -1\n").unwrap();
+        assert_eq!(import.peq.bands[0].q, DEFAULT_Q);
+        assert!(
+            import.warnings.iter().any(|w| w.contains("not usable")),
+            "{:?}",
+            import.warnings
+        );
+    }
+
+    #[test]
+    fn a_unit_glued_to_its_value_reads_the_same() {
+        let import =
+            Peq::from_apo_text("Preamp: -1.5dB\nFilter 1: ON PK Fc 1.2kHz Gain 3.4dB Q 0.7\n")
+                .unwrap();
+        assert_eq!(import.peq.preamp_db, -1.5);
+        let band = import.peq.bands[0];
+        assert_eq!((band.freq_hz, band.gain_db, band.q), (1_200.0, 3.4, 0.7));
+        assert!(import.warnings.is_empty(), "{:?}", import.warnings);
+    }
+
+    #[test]
+    fn a_comment_after_the_values_says_where_it_belongs() {
+        let import =
+            Peq::from_apo_text("Preamp: -2 dB\nFilter 1: ON PK Fc 100 Hz Gain 1 dB Q 1 # bell\n")
+                .unwrap();
+        assert_eq!(import.peq.bands.len(), 0);
+        assert!(
+            import.warnings[0].contains("own line"),
+            "{:?}",
+            import.warnings
+        );
+    }
+
+    #[test]
+    fn a_long_skipped_line_is_not_echoed_whole() {
+        let graphic = format!("GraphicEQ: {}\n", "20 -3.0; ".repeat(80));
+        let error = Peq::from_apo_text(&graphic).unwrap_err().to_string();
+        assert!(error.contains('…'), "{error}");
+        assert!(error.len() < 300, "{} chars: {error}", error.len());
     }
 
     #[test]

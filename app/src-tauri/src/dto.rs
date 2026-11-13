@@ -175,14 +175,22 @@ impl PeqImport {
             .map_err(|e| AppError(format!("cannot read {}: {e}", path.display())))?
             .len();
         if size > MAX_APO_BYTES {
-            return Err(AppError(format!(
-                "{} is larger than {} KB, so it is not an Equalizer APO parametric file",
-                path.display(),
-                MAX_APO_BYTES / 1024
-            )));
+            return Err(too_large(path));
         }
         let bytes = std::fs::read(path)
             .map_err(|e| AppError(format!("cannot read {}: {e}", path.display())))?;
+        // The file may have grown since `metadata`; the cap is a promise, so check again.
+        if bytes.len() > MAX_APO_BYTES as usize {
+            return Err(too_large(path));
+        }
+        // A NUL byte is valid UTF-8 once encoded, so UTF-16 from a Windows editor would
+        // otherwise fail later as "not ON/OFF" instead of naming the real problem.
+        if bytes.contains(&0) {
+            return Err(AppError(format!(
+                "{} is not UTF-8 text (a NUL byte suggests UTF-16)",
+                path.display()
+            )));
+        }
         let text = String::from_utf8(bytes)
             .map_err(|_| AppError(format!("{} is not UTF-8 text", path.display())))?;
         let import = sonder_dsp::Peq::from_apo_text(&text)?;
@@ -192,6 +200,15 @@ impl PeqImport {
             warnings: import.warnings,
         })
     }
+}
+
+/// The message for a file past [`MAX_APO_BYTES`].
+fn too_large(path: &Path) -> AppError {
+    AppError(format!(
+        "{} is larger than {} KB, so it is not an Equalizer APO parametric file",
+        path.display(),
+        MAX_APO_BYTES / 1024
+    ))
 }
 
 /// Longest preset name kept in the suggested file name.
@@ -815,5 +832,21 @@ mod tests {
         let binary = temp_file("Binary.txt", &[0xff, 0xfe, 0x00, 0x41]);
         let error = read_and_clean(&binary).unwrap_err();
         assert!(error.0.contains("not UTF-8"), "{}", error.0);
+
+        // UTF-16 from a Windows editor is full of NULs; say so rather than complain about the
+        // filter lines it decodes to.
+        let utf16 = temp_file("UTF16.txt", &[b'P', 0, b'r', 0, b'e', 0, b'a', 0, b'm', 0]);
+        let error = read_and_clean(&utf16).unwrap_err();
+        assert!(error.0.contains("UTF-16"), "{}", error.0);
+
+        let huge = temp_file("Huge.txt", &vec![b'#'; MAX_APO_BYTES as usize + 1]);
+        let error = read_and_clean(&huge).unwrap_err();
+        assert!(error.0.contains("larger than 256 KB"), "{}", error.0);
+    }
+
+    #[test]
+    fn a_stem_with_a_lowercase_suffix_still_names_the_headphone() {
+        let path = temp_file("HD 600 parametricEq.txt", AUTOEQ.as_bytes());
+        assert_eq!(read_and_clean(&path).unwrap().name, "HD 600");
     }
 }

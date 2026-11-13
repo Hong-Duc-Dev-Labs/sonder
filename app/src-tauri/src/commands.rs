@@ -686,9 +686,15 @@ pub async fn peq_export(
         return Ok(None);
     };
     let path = target.into_path().map_err(AppError::from)?;
-    let text = sonder_dsp::Peq::from(peq).to_apo_text();
+    // The round trip is documented for a sanitized EQ; clamp here too, so a caller cannot
+    // write a file this app would read back differently.
+    let text = sonder_dsp::Peq::from(peq).sanitized().to_apo_text();
     let saved = path.clone();
-    tauri::async_runtime::spawn_blocking(move || std::fs::write(&path, text)).await??;
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::write(&path, text)
+            .map_err(|e| AppError(format!("cannot write {}: {e}", path.display())))
+    })
+    .await??;
     Ok(Some(saved.to_string_lossy().into_owned()))
 }
 

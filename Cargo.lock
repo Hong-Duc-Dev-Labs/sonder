@@ -4213,6 +4213,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonder-verify"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "hound",
+ "sha2 0.11.1",
+ "sonder-decode",
+ "sonder-dsp",
+ "sonder-engine",
+ "sonder-output",
+]
+
+[[package]]
 name = "soup3"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

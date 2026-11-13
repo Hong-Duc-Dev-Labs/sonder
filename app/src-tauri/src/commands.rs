@@ -15,8 +15,8 @@ use tauri_specta::Event;
 
 use crate::dto::{
     Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, Device,
-    ImpulseResponseInfo, Lyrics, PlayerSnapshot, QueueItem, RepeatMode, RootFolder, SortOrder,
-    TrackItem,
+    ImpulseResponseInfo, Lyrics, PlayerSnapshot, Playlist, PlaylistInfo, QueueItem, RepeatMode,
+    RootFolder, SortOrder, TrackItem,
 };
 use crate::events::{LibraryChangedEvent, QueueChangedEvent};
 use crate::settings::Settings;
@@ -150,6 +150,85 @@ pub async fn library_rescan(app: AppHandle) -> AppResult<()> {
 #[specta::specta]
 pub async fn library_is_scanning(state: State<'_, AppState>) -> AppResult<bool> {
     Ok(state.scan.running.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+// ----- playlists -----
+//
+// Playing a playlist goes through the player commands with its entries' track ids.
+
+#[tauri::command]
+#[specta::specta]
+pub async fn library_playlists(state: State<'_, AppState>) -> AppResult<Vec<Playlist>> {
+    Ok(lock(&state.library)
+        .playlists()?
+        .into_iter()
+        .map(Into::into)
+        .collect())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn library_playlist(
+    state: State<'_, AppState>,
+    id: i64,
+) -> AppResult<Option<PlaylistInfo>> {
+    Ok(lock(&state.library).playlist(id)?.map(Into::into))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn playlist_create(state: State<'_, AppState>, name: String) -> AppResult<Playlist> {
+    Ok(lock(&state.library).create_playlist(&name)?.into())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn playlist_rename(state: State<'_, AppState>, id: i64, name: String) -> AppResult<()> {
+    lock(&state.library).rename_playlist(id, &name)?;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn playlist_delete(state: State<'_, AppState>, id: i64) -> AppResult<()> {
+    lock(&state.library).delete_playlist(id)?;
+    Ok(())
+}
+
+/// Appends tracks to a playlist; returns how many were added.
+#[tauri::command]
+#[specta::specta]
+pub async fn playlist_add_tracks(
+    state: State<'_, AppState>,
+    id: i64,
+    track_ids: Vec<i64>,
+) -> AppResult<u32> {
+    let added = lock(&state.library).add_to_playlist(id, &track_ids)?;
+    Ok(u32::try_from(added).unwrap_or(u32::MAX))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn playlist_remove_entry(
+    state: State<'_, AppState>,
+    id: i64,
+    position: u32,
+) -> AppResult<()> {
+    lock(&state.library).remove_from_playlist(id, position)?;
+    Ok(())
+}
+
+/// Moves the entry at position `from` to position `to`.
+#[tauri::command]
+#[specta::specta]
+pub async fn playlist_move_entry(
+    state: State<'_, AppState>,
+    id: i64,
+    from: u32,
+    to: u32,
+) -> AppResult<()> {
+    lock(&state.library).move_in_playlist(id, from, to)?;
+    Ok(())
 }
 
 // ----- queue and transport -----

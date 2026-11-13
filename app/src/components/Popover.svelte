@@ -81,15 +81,23 @@
 
   $effect(() => {
     if (!open) return;
+    // A panel whose content changes size (a menu swapping to a sub-list) is placed again.
+    const resized = new ResizeObserver(() => place());
     tick().then(() => {
       place();
+      if (panel) resized.observe(panel);
       (menu ? items()[0] : panel)?.focus();
     });
-    const onScroll = () => close(false);
+    const onScroll = (e: Event) => {
+      // Scrolling a list inside the panel is not the anchor moving away.
+      if (e.target instanceof Node && panel?.contains(e.target)) return;
+      close(false);
+    };
     window.addEventListener("pointerdown", onOutside, true);
     window.addEventListener("resize", onScroll);
     document.addEventListener("scroll", onScroll, true);
     return () => {
+      resized.disconnect();
       window.removeEventListener("pointerdown", onOutside, true);
       window.removeEventListener("resize", onScroll);
       document.removeEventListener("scroll", onScroll, true);

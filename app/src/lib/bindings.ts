@@ -21,6 +21,16 @@ export const commands = {
 	libraryRemoveRoot: (path: string) => __TAURI_INVOKE<null>("library_remove_root", { path }),
 	libraryRescan: () => __TAURI_INVOKE<null>("library_rescan"),
 	libraryIsScanning: () => __TAURI_INVOKE<boolean>("library_is_scanning"),
+	libraryPlaylists: () => __TAURI_INVOKE<Playlist[]>("library_playlists"),
+	libraryPlaylist: (id: number) => __TAURI_INVOKE<PlaylistInfo | null>("library_playlist", { id }),
+	playlistCreate: (name: string) => __TAURI_INVOKE<Playlist>("playlist_create", { name }),
+	playlistRename: (id: number, name: string) => __TAURI_INVOKE<null>("playlist_rename", { id, name }),
+	playlistDelete: (id: number) => __TAURI_INVOKE<null>("playlist_delete", { id }),
+	/**  Appends tracks to a playlist; returns how many were added. */
+	playlistAddTracks: (id: number, trackIds: number[]) => __TAURI_INVOKE<number>("playlist_add_tracks", { id, trackIds }),
+	playlistRemoveEntry: (id: number, position: number) => __TAURI_INVOKE<null>("playlist_remove_entry", { id, position }),
+	/**  Moves the entry at position `from` to position `to`. */
+	playlistMoveEntry: (id: number, from: number, to: number) => __TAURI_INVOKE<null>("playlist_move_entry", { id, from, to }),
 	/**  Replaces the queue with the album and plays from track `start`. */
 	playerPlayAlbum: (albumId: number, start: number) => __TAURI_INVOKE<null>("player_play_album", { albumId, start }),
 	/**  Replaces the queue with these tracks and plays from `start`. */
@@ -339,6 +349,31 @@ export type PlayerSnapshot = {
 };
 
 export type PlayerStateEvent = PlayerSnapshot;
+
+export type Playlist = {
+	id: number,
+	name: string,
+	/**  Every entry, including those whose file is not in the library. */
+	itemCount: number,
+	/**  Total length of the entries whose file is in the library. */
+	durationMs: number,
+	/**  Cover hash of the first entry in the library. */
+	art: string | null,
+};
+
+/**  A playlist entry whose file is in the library. */
+export type PlaylistEntry = {
+	/**  Index among all entries, missing ones included; what remove and move take. */
+	position: number,
+	track: TrackItem,
+};
+
+export type PlaylistInfo = {
+	playlist: Playlist,
+	entries: PlaylistEntry[],
+	/**  Entries whose file is not in the library (moved, deleted or not yet rescanned). */
+	missing: number,
+};
 
 export type QueueChangedEvent = QueueItem[];
 

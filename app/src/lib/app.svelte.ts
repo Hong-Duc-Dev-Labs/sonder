@@ -7,6 +7,7 @@ import {
   type Album,
   type NoticeLevel,
   type PlayerSnapshot,
+  type Playlist,
   type QueueItem,
   type ScanPhase,
   type Settings,
@@ -19,11 +20,26 @@ export type View =
   | { kind: "album"; id: number }
   | { kind: "artists" }
   | { kind: "artist"; id: number }
+  | { kind: "playlists" }
+  | { kind: "playlist"; id: number }
   | { kind: "search" }
   | { kind: "now" }
   | { kind: "settings" };
 
-export type Notice = { id: number; level: NoticeLevel; message: string };
+/** Notices from Rust are warnings or errors; the UI adds plain confirmations ("info"). */
+export type Notice = { id: number; level: NoticeLevel | "info"; message: string };
+
+/** A question the app asks in its modal dialog; see `AppState.ask`. */
+export type DialogRequest = {
+  title: string;
+  message?: string;
+  /** Shows a text field starting with this value; the answer is its trimmed text. */
+  input?: string;
+  confirm: string;
+  /** The confirm button reads as destructive. */
+  danger?: boolean;
+  resolve: (answer: string | null) => void;
+};
 
 /**
  * The record flying between Now Playing's stage and the player pill when either view opens.
@@ -152,6 +168,12 @@ class AppState {
   searchQuery = $state("");
   /** Bumped whenever the library index changes; views reload when it moves. */
   libraryVersion = $state(0);
+  /** Every playlist, for the Playlists page and the row menus' "Add to playlist". */
+  playlists = $state<Playlist[]>([]);
+  /** Bumped after every playlist change made here; playlist pages reload when it moves. */
+  playlistsVersion = $state(0);
+  /** The question the modal dialog is showing, if any. */
+  dialog = $state<DialogRequest | null>(null);
 
   current = $derived<QueueItem | null>(
     this.player.index != null ? (this.queue[this.player.index] ?? null) : null,
@@ -246,7 +268,7 @@ class AppState {
     this.flightLaunch(flight);
   }
 
-  notify(level: NoticeLevel, message: string) {
+  notify(level: Notice["level"], message: string) {
     const id = this.nextNotice++;
     this.notices.push({ id, level, message });
     this.startNoticeTimer(id, level === "error" ? 10_000 : 6_000);
@@ -277,6 +299,50 @@ class AppState {
     if (timer) window.clearTimeout(timer.handle);
     this.noticeTimers.delete(id);
     this.notices = this.notices.filter((n) => n.id !== id);
+  }
+
+  /**
+   * Asks a question in the modal dialog. Resolves to the field's trimmed text (or "" without
+   * a field) when confirmed, and to `null` when cancelled.
+   */
+  ask(request: Omit<DialogRequest, "resolve">): Promise<string | null> {
+    this.dialog?.resolve(null);
+    return new Promise((resolve) => {
+      this.dialog = { ...request, resolve };
+    });
+  }
+
+  answer(value: string | null) {
+    const open = this.dialog;
+    this.dialog = null;
+    open?.resolve(value);
+  }
+
+  async refreshPlaylists() {
+    const list = await this.run(commands.libraryPlaylists());
+    if (list) this.playlists = list;
+  }
+
+  /** Reloads everything that shows playlists after a change. */
+  playlistsChanged() {
+    this.playlistsVersion++;
+    return this.refreshPlaylists();
+  }
+
+  /** Asks for a name and creates a playlist; returns it, or nothing when cancelled. */
+  async createPlaylist(): Promise<Playlist | undefined> {
+    const name = await this.ask({ title: "New playlist", input: "", confirm: "Create" });
+    if (!name) return undefined;
+    const created = await this.run(commands.playlistCreate(name));
+    if (created) await this.playlistsChanged();
+    return created;
+  }
+
+  async addToPlaylist(playlist: Pick<Playlist, "id" | "name">, trackIds: number[]) {
+    const added = await this.run(commands.playlistAddTracks(playlist.id, trackIds));
+    if (added == null) return;
+    await this.playlistsChanged();
+    this.notify("info", added === 1 ? `Added to ${playlist.name}` : `${added} tracks added to ${playlist.name}`);
   }
 
   /** Runs a command, turning a rejection into a notice. */
@@ -344,6 +410,8 @@ class AppState {
     this.settings = settings;
     if (scanning && this.scan.phase === "idle") this.scan = { ...this.scan, phase: "walking" };
     this.loudness = { ...this.loudness, running: this.loudness.running || analyzing, pending };
+    // Not part of start-up: a failure only leaves the row menus without playlists.
+    void this.refreshPlaylists();
   }
 
   /** Starts (or queues) a loudness analysis pass; its events update `loudness`. */

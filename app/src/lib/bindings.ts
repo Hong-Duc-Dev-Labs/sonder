@@ -251,6 +251,9 @@ export type OutputInfo = {
 	label: string,
 };
 
+/**  DSD output for PCM sources. */
+export type PcmToDsd = "off" | "dsd64" | "dsd128" | "dsd256";
+
 /**  One parametric EQ band as the settings file and the UI store it. */
 export type PeqBandSetting = {
 	kind?: BiquadKindSetting,
@@ -280,6 +283,8 @@ export type PlayerSnapshot = {
 	underruns: number,
 	/**  Software volume in dB; `None` is bit-perfect output. */
 	volumeDb: number | null,
+	/**  What happens to the signal for the announced track; `None` before the first one. */
+	signalPath: SignalPathInfo | null,
 };
 
 export type PlayerStateEvent = PlayerSnapshot;
@@ -325,6 +330,9 @@ export type ScanProgressEvent = {
 	total: number,
 };
 
+/**  Sigma-delta modulator order for PCM→DSD. */
+export type SdmOrderSetting = "order5" | "order7";
+
 export type Settings = {
 	/**  Backend id of the output device; `None` uses the system default device. */
 	outputDevice?: string | null,
@@ -344,6 +352,10 @@ export type Settings = {
 	dsdModes?: { [key in string]: DsdMode },
 	/**  Output rate when DSD is converted to PCM. */
 	dsdPcmRate?: DsdPcmRate,
+	/**  Modulate PCM tracks to DSD for this zone. */
+	pcmToDsd?: PcmToDsd,
+	/**  Sigma-delta modulator order for PCM→DSD. */
+	sdmOrder?: SdmOrderSetting,
 	/**  Parametric EQ preset in use. */
 	peq?: PeqSetting,
 	/**  Saved EQ presets, by name. */
@@ -358,6 +370,27 @@ export type Settings = {
 	dither?: boolean,
 	/**  Rate-conversion policy, filter source and headroom. */
 	src?: SrcSetting,
+};
+
+/**  The stages a track passes through, in processing order. */
+export type SignalPathInfo = {
+	source: SourceInfo,
+	outputRate: number,
+	outputBits: number,
+	outputChannels: number,
+	mode: SignalPathMode,
+	stages: SignalPathStage[],
+	/**  `true` only when nothing touched the samples and the rate is unchanged. */
+	bitPerfect: boolean,
+};
+
+/**  What the device receives. */
+export type SignalPathMode = "pcm" | "dop" | "nativeDsd";
+
+/**  One stage of the signal path, as the engine labels it. */
+export type SignalPathStage = {
+	name: string,
+	detail: string,
 };
 
 export type SortOrder = "artist" | "title" | "added" | "year";

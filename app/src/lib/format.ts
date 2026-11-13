@@ -25,6 +25,7 @@ export function outputLabel(o: OutputInfo): string {
 
 /** Whether the device receives the decoded samples unchanged. */
 export function isBitPerfect(snap: PlayerSnapshot): boolean {
+  if (snap.signalPath) return snap.signalPath.bitPerfect;
   const { source, output } = snap;
   return (
     snap.volumeDb == null &&

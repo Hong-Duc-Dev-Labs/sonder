@@ -14,10 +14,12 @@
   import Icon from "./Icon.svelte";
   import PlayPauseIcon from "./PlayPauseIcon.svelte";
   import SeekBar from "./SeekBar.svelte";
+  import SignalPathPanel from "./SignalPathPanel.svelte";
   import TurntableStage from "./TurntableStage.svelte";
   import { rise, fadeQuick, pageIn } from "../lib/transitions";
 
   let item = $derived(app.current);
+  let path = $derived(app.player.signalPath);
   let output = $derived(app.player.output);
   let vinyl = $derived((app.settings.coverStyle ?? "vinyl") === "vinyl");
   let playing = $derived(app.player.state === "playing");
@@ -147,9 +149,28 @@
       </div>
 
       {#if output && !app.lyricsOpen}
-        <p class="path">
-          Device opened at {outputLabel(output)}{app.player.underruns ? ` · ${plural(app.player.underruns, "underrun")}` : ""}
-        </p>
+        <div class="path-row">
+          <p class="path">
+            Device opened at {outputLabel(output)}{app.player.underruns ? ` · ${plural(app.player.underruns, "underrun")}` : ""}
+          </p>
+          {#if path}
+            <button
+              class="path-toggle"
+              class:on={app.signalPathOpen}
+              aria-expanded={app.signalPathOpen}
+              aria-label="Signal path"
+              title="Signal path"
+              onclick={() => (app.signalPathOpen = !app.signalPathOpen)}
+            >
+              <Icon name="signal" size={16} />
+            </button>
+          {/if}
+        </div>
+        {#if app.signalPathOpen && path}
+          <div class="path-panel" in:fadeQuick>
+            <SignalPathPanel {path} />
+          </div>
+        {/if}
       {/if}
     </div>
   </div>
@@ -333,12 +354,37 @@
   .tools .icon-btn.warn {
     color: var(--warn);
   }
+  .path-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
   .path {
     margin: 0;
     text-align: center;
     font-size: 11.5px;
     font-family: var(--mono);
     color: var(--ink-2);
+  }
+  .path-toggle {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--ink-3);
+  }
+  .path-toggle:hover,
+  .path-toggle.on {
+    background: var(--soft-hover);
+    color: var(--ink);
+  }
+  .path-panel {
+    width: 100%;
+    max-width: 420px;
+    margin: 4px auto 0;
   }
 
   /* Narrow pane: record above, controls below, melted together. */

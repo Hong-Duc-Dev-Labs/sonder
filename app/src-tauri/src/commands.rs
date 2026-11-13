@@ -468,6 +468,7 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> App
     apply_volume(&state, saved.volume_db);
     saved.apply_dsp(&state.player);
     saved.apply_src(&state.player);
+    saved.apply_sdm(&state.player);
     Ok(saved)
 }
 

@@ -54,6 +54,46 @@ pub enum GlassQuality {
     Off,
 }
 
+/// DSD output for PCM sources.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PcmToDsd {
+    #[default]
+    Off,
+    Dsd64,
+    Dsd128,
+    Dsd256,
+}
+
+impl From<PcmToDsd> for sonder_engine::SdmMode {
+    fn from(mode: PcmToDsd) -> Self {
+        match mode {
+            PcmToDsd::Off => sonder_engine::SdmMode::Off,
+            PcmToDsd::Dsd64 => sonder_engine::SdmMode::Dsd64,
+            PcmToDsd::Dsd128 => sonder_engine::SdmMode::Dsd128,
+            PcmToDsd::Dsd256 => sonder_engine::SdmMode::Dsd256,
+        }
+    }
+}
+
+/// Sigma-delta modulator order for PCM→DSD.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SdmOrderSetting {
+    #[default]
+    Order5,
+    Order7,
+}
+
+impl From<SdmOrderSetting> for sonder_engine::SdmOrder {
+    fn from(order: SdmOrderSetting) -> Self {
+        match order {
+            SdmOrderSetting::Order5 => sonder_engine::SdmOrder::Order5,
+            SdmOrderSetting::Order7 => sonder_engine::SdmOrder::Order7,
+        }
+    }
+}
+
 /// How DSD files reach an output device.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -368,6 +408,63 @@ impl QueueItem {
     }
 }
 
+/// One stage of the signal path, as the engine labels it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalPathStage {
+    pub name: String,
+    pub detail: String,
+}
+
+/// What the device receives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SignalPathMode {
+    Pcm,
+    Dop,
+    NativeDsd,
+}
+
+/// The stages a track passes through, in processing order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalPathInfo {
+    pub source: SourceInfo,
+    pub output_rate: u32,
+    pub output_bits: u32,
+    pub output_channels: u16,
+    pub mode: SignalPathMode,
+    pub stages: Vec<SignalPathStage>,
+    /// `true` only when nothing touched the samples and the rate is unchanged.
+    pub bit_perfect: bool,
+}
+
+impl From<sonder_engine::SignalPath> for SignalPathInfo {
+    fn from(path: sonder_engine::SignalPath) -> Self {
+        use sonder_engine::OutputMode;
+        SignalPathInfo {
+            source: path.source.into(),
+            output_rate: path.output_rate,
+            output_bits: path.output_bits,
+            output_channels: path.output_channels,
+            mode: match path.mode {
+                OutputMode::Pcm => SignalPathMode::Pcm,
+                OutputMode::Dop => SignalPathMode::Dop,
+                OutputMode::NativeDsd => SignalPathMode::NativeDsd,
+            },
+            stages: path
+                .stages
+                .into_iter()
+                .map(|stage| SignalPathStage {
+                    name: stage.name,
+                    detail: stage.detail,
+                })
+                .collect(),
+            bit_perfect: path.bit_perfect,
+        }
+    }
+}
+
 /// Everything the transport bar and Now Playing show.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -382,6 +479,8 @@ pub struct PlayerSnapshot {
     pub underruns: u64,
     /// Software volume in dB; `None` is bit-perfect output.
     pub volume_db: Option<f64>,
+    /// What happens to the signal for the announced track; `None` before the first one.
+    pub signal_path: Option<SignalPathInfo>,
 }
 
 /// One line of lyrics; `start_ms` is 0 on every line of unsynced lyrics.

@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use sonder_output::DeviceId;
 use specta::Type;
 
-use crate::dto::{CoverStyle, DsdMode, DsdPcmRate, GlassQuality, SortOrder};
+use crate::dto::{
+    CoverStyle, DsdMode, DsdPcmRate, GlassQuality, PcmToDsd, SdmOrderSetting, SortOrder,
+};
 
 /// One parametric EQ band as the settings file and the UI store it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
@@ -168,6 +170,10 @@ pub struct Settings {
     pub dsd_modes: BTreeMap<String, DsdMode>,
     /// Output rate when DSD is converted to PCM.
     pub dsd_pcm_rate: DsdPcmRate,
+    /// Modulate PCM tracks to DSD for this zone.
+    pub pcm_to_dsd: PcmToDsd,
+    /// Sigma-delta modulator order for PCM→DSD.
+    pub sdm_order: SdmOrderSetting,
     /// Parametric EQ preset in use.
     pub peq: PeqSetting,
     /// Saved EQ presets, by name.
@@ -195,6 +201,8 @@ impl Default for Settings {
             lyrics_online: true,
             dsd_modes: BTreeMap::new(),
             dsd_pcm_rate: DsdPcmRate::default(),
+            pcm_to_dsd: PcmToDsd::default(),
+            sdm_order: SdmOrderSetting::default(),
             peq: PeqSetting::default(),
             peq_presets: BTreeMap::new(),
             peq_preset: None,
@@ -254,6 +262,19 @@ impl Settings {
             self.engine_dsd_modes(),
             self.dsd_pcm_rate.into(),
         );
+    }
+
+    /// The PCM→DSD settings in engine terms.
+    pub fn engine_sdm(&self) -> sonder_engine::SdmConfig {
+        sonder_engine::SdmConfig {
+            mode: self.pcm_to_dsd.into(),
+            order: self.sdm_order.into(),
+        }
+    }
+
+    /// Applies the PCM→DSD output mode to the engine.
+    pub fn apply_sdm(&self, player: &sonder_engine::Player) {
+        player.set_sdm(self.engine_sdm());
     }
 }
 

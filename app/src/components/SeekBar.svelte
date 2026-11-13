@@ -126,7 +126,7 @@
   .bar:focus-within .knob {
     opacity: 1;
   }
-  .bar:focus-within {
+  :global(:root:not([data-modality="pointer"])) .bar:focus-within {
     border-radius: var(--r-pill);
     outline: 2px solid var(--ink);
     outline-offset: 3px;

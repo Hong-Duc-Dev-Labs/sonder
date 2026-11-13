@@ -451,7 +451,7 @@
     pointer-events: none;
     transition: opacity var(--dur-fast) var(--ease-standard);
   }
-  .grab:focus-visible .focus-ring {
+  :global(:root:not([data-modality="pointer"])) .grab:focus-visible .focus-ring {
     opacity: 1;
   }
 

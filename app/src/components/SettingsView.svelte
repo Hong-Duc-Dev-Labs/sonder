@@ -1232,7 +1232,7 @@
   .choice.selected {
     background: var(--soft-hover);
   }
-  .choice:focus-within {
+  :global(:root:not([data-modality="pointer"])) .choice:focus-within {
     outline: 2px solid var(--ink);
     outline-offset: -2px;
   }
@@ -1377,7 +1377,7 @@
     background: var(--soft-hover);
     box-shadow: inset 0 0 0 2px var(--ink);
   }
-  .tile:focus-within {
+  :global(:root:not([data-modality="pointer"])) .tile:focus-within {
     outline: 2px solid var(--ink);
     outline-offset: 2px;
   }

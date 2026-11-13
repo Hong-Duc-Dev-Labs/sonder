@@ -177,6 +177,13 @@ button {
   outline: none;
   box-shadow: none;
 }
+/* Rings are for keyboard use only: after a click or tap (lib/modality.ts) nothing is ringed,
+   and the next Tab or arrow key brings them back. Components draw their own :focus-within
+   rings under the same :root:not([data-modality="pointer"]) guard. */
+:root[data-modality="pointer"] :focus-visible {
+  outline: none;
+  box-shadow: none;
+}
 
 input,
 select {

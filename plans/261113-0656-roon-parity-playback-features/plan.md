@@ -33,7 +33,7 @@ Builds on the finished engine of [the lossless player plan](../261111-1242-sonde
 |---|-------|--------|
 | 1 | [SDM speed](./phase-01-sdm-speed.md) | Done |
 | 2 | [Convolution and crossfeed](./phase-02-convolution-and-crossfeed.md) | Done |
-| 3 | [Repeat and crossfade](./phase-03-repeat-and-crossfade.md) | Pending |
+| 3 | [Repeat and crossfade](./phase-03-repeat-and-crossfade.md) | Done |
 | 4 | [Playlists](./phase-04-playlists.md) | Pending |
 | 5 | [Real-device verification](./phase-05-real-device-verification.md) | Pending |
 

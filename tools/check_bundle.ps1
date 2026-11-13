@@ -3,7 +3,9 @@
 Checks a Sonder release bundle for files that must never ship (Roon filter tables).
 
 .DESCRIPTION
-Builds or inspects the Tauri bundle and fails when any file inside matches a Roon table:
+Builds or inspects the Tauri bundle and fails when any file in it matches a Roon table: the
+bundle folder, the files staged for the installer (resources and UI assets) and, on Windows,
+the contents of each MSI, unpacked with an administrative install. Patterns:
 `polyphase_*`, a filters folder's `*.csv`, `filters_manifest.json` or `*.decrypted`. The same
 patterns are checked in git by scripts/check-forbidden-files.sh.
 
@@ -64,8 +66,10 @@ foreach ($root in $candidates) {
     }
 }
 
-# Resources are staged beside the executable before the installer is packed; the UI assets and
-# any `bundle.resources` files must be clean too.
+# Resources are staged beside the executable before the installer is packed (`bundle.resources`
+# lands in subfolders there); the UI assets must be clean too. Cargo's own build folders hold
+# no shipped files and are skipped.
+$skip = @("deps", "build", ".fingerprint", "incremental", "examples", "bundle", "wix", "nsis")
 $staged = @(
     (Join-Path $repo "target/release"),
     (Join-Path $repo "app/src-tauri/target/release"),
@@ -73,19 +77,46 @@ $staged = @(
 ) | Where-Object { Test-Path $_ }
 
 foreach ($root in $staged) {
-    foreach ($file in Get-ChildItem -Path $root -File -ErrorAction SilentlyContinue) {
+    $files = @(Get-ChildItem -Path $root -File)
+    foreach ($dir in Get-ChildItem -Path $root -Directory) {
+        if ($skip -notcontains $dir.Name) {
+            $files += Get-ChildItem -Path $dir.FullName -Recurse -File
+        }
+    }
+    foreach ($file in $files) {
         if (& $forbidden $file) {
             Write-Host "  FORBIDDEN: $($file.FullName)" -ForegroundColor Red
             $failed = $true
         }
     }
 }
-$dist = Join-Path $repo "app/dist"
-if (Test-Path $dist) {
-    foreach ($file in Get-ChildItem -Path $dist -Recurse -File) {
-        if (& $forbidden $file) {
-            Write-Host "  FORBIDDEN: $($file.FullName)" -ForegroundColor Red
-            $failed = $true
+
+# An installer is a compressed archive, so file names inside it are invisible to the scan
+# above. On Windows an administrative install unpacks each MSI without installing it, and the
+# unpacked tree is checked file by file. The NSIS setup .exe packs the same staged files.
+if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    foreach ($root in $candidates) {
+        foreach ($msi in Get-ChildItem -Path $root -Recurse -File -Filter "*.msi") {
+            $unpacked = Join-Path ([System.IO.Path]::GetTempPath()) ("sonder-bundle-" + [guid]::NewGuid())
+            Write-Host "Unpacking $($msi.Name)"
+            $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
+                "/a", "`"$($msi.FullName)`"", "/qn", "TARGETDIR=`"$unpacked`""
+            )
+            try {
+                if ($process.ExitCode -ne 0) {
+                    Write-Host "  could not unpack $($msi.Name) (msiexec $($process.ExitCode))" -ForegroundColor Red
+                    $failed = $true
+                    continue
+                }
+                foreach ($file in Get-ChildItem -Path $unpacked -Recurse -File) {
+                    if (& $forbidden $file) {
+                        Write-Host "  FORBIDDEN in $($msi.Name): $($file.FullName)" -ForegroundColor Red
+                        $failed = $true
+                    }
+                }
+            } finally {
+                Remove-Item -Recurse -Force $unpacked -ErrorAction SilentlyContinue
+            }
         }
     }
 }

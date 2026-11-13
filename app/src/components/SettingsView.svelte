@@ -9,6 +9,7 @@
     type CoverStyle,
     type CrossfeedPresetSetting,
     type CrossfeedSetting,
+    type CrossfadeSetting,
     type Device,
     type DsdMode,
     type DsdPcmRate,
@@ -262,6 +263,18 @@
     app.saveSettings({ ...app.settings, crossfeed: { ...crossfeed, ...change } });
   }
 
+  // ----- playback: crossfade -----
+
+  let crossfade = $derived<CrossfadeSetting>(app.settings.crossfade ?? { enabled: false, seconds: 4 });
+  let fadeSeconds = $state(4);
+  $effect(() => {
+    if (app.settings.crossfade) fadeSeconds = app.settings.crossfade.seconds ?? 4;
+  });
+
+  function saveCrossfade(change: Partial<CrossfadeSetting>) {
+    app.saveSettings({ ...app.settings, crossfade: { ...crossfade, ...change } });
+  }
+
   function setLeveling(mode: LevelingSetting) {
     app.saveSettings({ ...app.settings, leveling: mode });
   }
@@ -464,6 +477,50 @@
             </div>
           </div>
         {/if}
+      </div>
+    </section>
+
+    <section aria-labelledby="fade-title">
+      <div class="group-head"><h3 id="fade-title">Crossfade</h3></div>
+      <div class="card soft">
+        <div class="row">
+          <span class="icon"><Icon name="next" size={18} /></span>
+          <span class="info">
+            <span class="name">Crossfade between tracks</span>
+            <span class="dim small">
+              Equal-power fade from one entry into the next, skipped between consecutive tracks
+              of the same album. Off keeps every transition gapless.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            class="switch"
+            aria-label="Crossfade"
+            checked={crossfade.enabled ?? false}
+            onchange={(e) => saveCrossfade({ enabled: e.currentTarget.checked })}
+          />
+        </div>
+        <div class="row">
+          <span class="icon"><Icon name="refresh" size={18} /></span>
+          <span class="info">
+            <span class="name">Fade length</span>
+            <span class="dim small">One to ten seconds; never more than half of a track.</span>
+          </span>
+          <input
+            class="range"
+            type="range"
+            min="1"
+            max="10"
+            step="0.5"
+            aria-label="Crossfade length in seconds"
+            aria-valuetext="{fadeSeconds.toFixed(1)} seconds"
+            disabled={!(crossfade.enabled ?? false)}
+            bind:value={fadeSeconds}
+            onchange={() => saveCrossfade({ seconds: fadeSeconds })}
+          />
+          <span class="badge">{fadeSeconds.toFixed(1)} s</span>
+        </div>
       </div>
     </section>
 

@@ -25,6 +25,7 @@ use sonder_output::{
     StreamHandle, StreamOptions, WriteTap, negotiate, negotiate_dop, negotiate_native, sample_ring,
 };
 
+use crate::crossfade::{self, CrossfadeConfig, Fade, Side, Skip, Transition};
 use crate::dsp::{DspConfig, LoudnessSource, NoLoudness, TrackGain};
 use crate::queue::Queue;
 use crate::rate::{self, DeviceFormats, FilterResolver, SignalStage, SrcConfig, SrcPlan};
@@ -91,7 +92,25 @@ pub enum Command {
     /// Replaces the PCM→DSD output mode and modulator order. A playing PCM track restarts
     /// from its position so the change is heard after one ring.
     SetSdm(SdmConfig),
+    /// How the queue advances when a track ends. Turning it off keeps the pre-buffered next
+    /// entry; the mode applies from the next transition.
+    SetRepeat(RepeatMode),
+    /// Replaces the crossfade settings. A fade already in progress finishes; the next
+    /// transition uses the new values.
+    SetCrossfade(CrossfadeConfig),
     Shutdown,
+}
+
+/// What plays after a track ends.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RepeatMode {
+    /// Stop after the last entry.
+    #[default]
+    Off,
+    /// After the last entry, continue at the first.
+    All,
+    /// Play the same entry again.
+    One,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +184,10 @@ pub struct SignalPath {
     /// `true` only when no stage touched the samples and the rate is unchanged. Automatic
     /// SRC fallback and any DSP setting make this `false`.
     pub bit_perfect: bool,
+    /// How this track joined the previous one: the crossfade length, or why it joined
+    /// gaplessly instead ("crossfade skipped: same album"). `None` for the first track of a
+    /// stream and when crossfade is off.
+    pub transition: Option<String>,
 }
 
 /// Builds a tap for each stream the player opens (bit-perfect verification).
@@ -212,6 +235,8 @@ pub struct PlayerConfig {
     pub sdm: SdmConfig,
     /// ReplayGain / loudness lookup for levelling; the default knows nothing.
     pub loudness: Arc<dyn LoudnessSource>,
+    /// Equal-power crossfade between entries. Off keeps every transition gapless.
+    pub crossfade: CrossfadeConfig,
 }
 
 impl PlayerConfig {
@@ -229,6 +254,7 @@ impl PlayerConfig {
             dsp: DspConfig::default(),
             sdm: SdmConfig::default(),
             loudness: Arc::new(NoLoudness),
+            crossfade: CrossfadeConfig::default(),
         }
     }
 
@@ -353,6 +379,16 @@ impl Player {
     /// position when the change reaches it.
     pub fn set_sdm(&self, sdm: SdmConfig) {
         self.send(Command::SetSdm(sdm));
+    }
+
+    /// Sets what plays after the current track ends.
+    pub fn set_repeat(&self, repeat: RepeatMode) {
+        self.send(Command::SetRepeat(repeat));
+    }
+
+    /// Replaces the crossfade settings.
+    pub fn set_crossfade(&self, crossfade: CrossfadeConfig) {
+        self.send(Command::SetCrossfade(crossfade));
     }
 }
 
@@ -485,6 +521,109 @@ struct StageKey {
     bitstream: bool,
 }
 
+/// A track opened and its chain prepared, before it is announced.
+struct Opened {
+    index: usize,
+    decoder: SourceDecoder,
+    source: SourceFormat,
+    spec: OutputSpec,
+    duration: Option<u64>,
+}
+
+/// One track's decode side: its stage chain, the rate-conversion plan and the fields the
+/// chain was built from. The engine owns the current one; a crossfade builds the incoming
+/// track's beside it (see [`Crossfade`]) and installs it when the fade ends.
+struct ChainState {
+    worker: DecodeWorker,
+    /// The rate-conversion plan applied to the worker, and the source/target key it was
+    /// built for. `None` key means the bit-perfect path.
+    plan: Option<SrcPlan>,
+    plan_key: Option<(u32, u16, Option<u32>)>,
+    /// Channel count of the planned track, so stage changes can re-decide dither.
+    channels: u16,
+    /// Rate the planned track enters the chain at (the DSD→PCM rate for a converted DSD
+    /// track), so the signal path can say where convolution runs.
+    chain_rate: u32,
+    /// Target word length for dither when the device container is narrower than the signal.
+    dither_bits: Option<u32>,
+    /// The open track goes out as DoP or native DSD, so the chain must stay empty.
+    bitstream: bool,
+    /// The PCM→DSD rate applied to the current plan, if any.
+    sdm_rate: Option<SdmRate>,
+    /// What the worker's chain currently contains, so it is rebuilt only when it changes.
+    stages_key: Option<StageKey>,
+    /// Levelling gain shared with the stage in the chain; updated per track.
+    leveling: GainHandle,
+    /// What the chain produces, for the crossfade's format rule.
+    spec: Option<OutputSpec>,
+}
+
+impl Default for ChainState {
+    fn default() -> Self {
+        Self {
+            worker: DecodeWorker::new(Vec::new()),
+            plan: None,
+            plan_key: None,
+            channels: 2,
+            chain_rate: 0,
+            dither_bits: None,
+            bitstream: false,
+            sdm_rate: None,
+            stages_key: None,
+            leveling: GainHandle::default(),
+            spec: None,
+        }
+    }
+}
+
+/// Decode failures in a row, with no decoded block in between. A whole queue's worth ends
+/// the run, so a repeat mode cannot cycle forever over files that all fail mid-stream.
+#[derive(Default)]
+struct FailureRun {
+    count: usize,
+}
+
+impl FailureRun {
+    fn clear(&mut self) {
+        self.count = 0;
+    }
+
+    /// Notes a failure; `true` when the run should end instead of moving on.
+    fn note(&mut self, queue_len: usize) -> bool {
+        self.count += 1;
+        self.count >= queue_len.max(1)
+    }
+}
+
+/// How the open track joined the previous one, for its signal path.
+enum TransitionNote {
+    /// The track faded in over this many seconds.
+    Faded(f64),
+    /// The transition stayed gapless instead; this is why.
+    Skipped(&'static str),
+}
+
+/// A crossfade in progress: the incoming track's chain and decoder, and the mixer that joins
+/// it to the outgoing track's last frames.
+struct Crossfade {
+    index: usize,
+    source: SourceFormat,
+    spec: OutputSpec,
+    decoder: SourceDecoder,
+    chain: ChainState,
+    fade: Fade,
+    /// Decoded but unmixed chain output of each side, interleaved at [`Self::spec`]'s rate.
+    pending_out: Vec<f64>,
+    pending_in: Vec<f64>,
+    /// Mixer scratch: mixed floats, then the samples that reach the feed.
+    mixed: Vec<f64>,
+    samples: Vec<i32>,
+    out_ended: bool,
+    in_ended: bool,
+    /// The incoming decoder failed; it must not become the current one.
+    in_failed: bool,
+}
+
 struct Engine {
     backend: Box<dyn OutputBackend>,
     config: PlayerConfig,
@@ -492,7 +631,12 @@ struct Engine {
     events: Sender<PlayerEvent>,
     queue: Queue,
     state: PlaybackState,
-    worker: DecodeWorker,
+    /// How the queue advances after a track ends.
+    repeat: RepeatMode,
+    /// The current track's decode side.
+    chain: ChainState,
+    /// Source format of the open track.
+    source: Option<SourceFormat>,
     decoding: Option<Decoding>,
     feed: VecDeque<FeedItem>,
     feed_samples: usize,
@@ -523,43 +667,36 @@ struct Engine {
     /// again with the device free; a second rejection is a normal output failure.
     dsd_reprobe: Option<usize>,
     resolver: FilterResolver,
-    /// The rate-conversion plan applied to the worker, and the source/target key it was
-    /// built for. `None` key means the bit-perfect path.
-    plan: Option<SrcPlan>,
-    plan_key: Option<(u32, u16, Option<u32>)>,
     /// Source rates the device refused, mapped to the rate it accepted. Cleared on a device
     /// change, so the next track re-probes the new device.
     fallback: HashMap<(u32, u16), u32>,
     volume_db: Option<f64>,
-    /// Levelling gain shared with the stage in the chain; updated per track.
-    leveling: GainHandle,
-    /// Target word length for dither when the device container is narrower than the signal.
-    dither_bits: Option<u32>,
-    /// Channel count of the planned track, so stage changes can re-decide dither.
-    channels: u16,
-    /// Rate the planned track enters the chain at (the DSD→PCM rate for a converted DSD
-    /// track), so the signal path can say where convolution runs.
-    chain_rate: u32,
     /// Response and channel count the "does not fit" warning was last given for.
     convolution_warned: Option<(usize, u16)>,
     /// Channel count the "crossfeed needs stereo" warning was last given for.
     crossfeed_warned: Option<u16>,
     /// Whether clipping was already reported for the current track.
     clipping_reported: bool,
-    /// What the worker's chain currently contains, so it is rebuilt only when it changes.
-    stages_key: Option<StageKey>,
     /// Samples the dither stage clamped; it quantises before the worker's conversion, so the
     /// worker's own clip count never sees them.
     dither_clipped: Arc<AtomicU64>,
-    /// The open track goes out as DoP or native DSD, so the chain must stay empty.
-    bitstream: bool,
     /// Track whose fallback SRC was already tried after a refusal; a second refusal is a
     /// normal output failure.
     src_retry: Option<usize>,
-    /// The PCM→DSD rate applied to the current plan, if any.
-    sdm_rate: Option<SdmRate>,
     /// The modulator-limit warning was announced for the current track.
     sdm_warned: bool,
+    /// Crossfade in preparation or progress, if any.
+    crossfade: Option<Crossfade>,
+    /// The transition into the open track was already decided, so it is not re-planned.
+    fade_checked: bool,
+    /// The incoming entry and fade length this track will fade into, read once near the end.
+    fade_plan: Option<(usize, f64)>,
+    /// Note the transition into the next track adds to its signal path (a crossfade length
+    /// or the reason it was skipped).
+    pending_transition: Option<TransitionNote>,
+    /// Decode failures of the current entry; repeat modes stop after a whole queue's worth
+    /// rather than looping over one broken file.
+    failures: FailureRun,
     /// Device and rate the "cannot carry PCM→DSD" warning was last shown for, so it is said
     /// once, not on every track.
     sdm_carrier_warned: Option<(DeviceId, SdmRate)>,
@@ -570,10 +707,12 @@ struct Engine {
 impl Engine {
     fn new(
         backend: Box<dyn OutputBackend>,
-        config: PlayerConfig,
+        mut config: PlayerConfig,
         commands: Receiver<Command>,
         events: Sender<PlayerEvent>,
     ) -> Self {
+        // The settings contract is enforced here too, not only in `SetCrossfade`.
+        config.crossfade = config.crossfade.sanitized();
         let devices = backend.device_ids().unwrap_or_default();
         let (resolver, warnings) =
             FilterResolver::new(&config.src, sonder_dsp::sonder_design::default_cache_dir());
@@ -584,7 +723,9 @@ impl Engine {
             events,
             queue: Queue::default(),
             state: PlaybackState::Stopped,
-            worker: DecodeWorker::new(Vec::new()),
+            repeat: RepeatMode::default(),
+            chain: ChainState::default(),
+            source: None,
             decoding: None,
             feed: VecDeque::new(),
             feed_samples: 0,
@@ -605,23 +746,19 @@ impl Engine {
             last_retry: Instant::now(),
             dsd_reprobe: None,
             resolver,
-            plan: None,
-            plan_key: None,
             fallback: HashMap::new(),
             volume_db: None,
-            leveling: GainHandle::default(),
-            dither_bits: None,
-            channels: 2,
-            chain_rate: 0,
             convolution_warned: None,
             crossfeed_warned: None,
             clipping_reported: false,
-            stages_key: None,
             dither_clipped: Arc::new(AtomicU64::new(0)),
-            bitstream: false,
             src_retry: None,
-            sdm_rate: None,
             sdm_warned: false,
+            crossfade: None,
+            fade_checked: false,
+            fade_plan: None,
+            pending_transition: None,
+            failures: FailureRun::default(),
             sdm_carrier_warned: None,
             device_formats: HashMap::new(),
         };
@@ -642,7 +779,7 @@ impl Engine {
     /// The response the convolution stage runs, when one is loaded and fits the track.
     fn convolution(&self) -> Option<&Arc<ImpulseResponse>> {
         match &self.config.dsp.convolution {
-            Some(Ok(ir)) if !self.bitstream && ir.fits(self.channels) => Some(ir),
+            Some(Ok(ir)) if !self.chain.bitstream && ir.fits(self.chain.channels) => Some(ir),
             _ => None,
         }
     }
@@ -651,7 +788,8 @@ impl Engine {
     /// modulator (or any target above [`MAX_CONVOLUTION_RATE`]), the response runs at the
     /// source rate instead of being stretched to millions of taps.
     fn convolution_before_src(&self) -> bool {
-        self.plan
+        self.chain
+            .plan
             .as_ref()
             .is_some_and(|plan| plan.target_rate > MAX_CONVOLUTION_RATE)
     }
@@ -661,37 +799,37 @@ impl Engine {
         self.config
             .dsp
             .crossfeed
-            .filter(|_| !self.bitstream && self.channels == 2)
+            .filter(|_| !self.chain.bitstream && self.chain.channels == 2)
     }
 
     /// Warns once per response and channel count when a configured stage cannot run on the
     /// planned track.
     fn report_unfit_stages(&mut self) {
-        if self.bitstream {
+        if self.chain.bitstream {
             return;
         }
         if let Some(Ok(ir)) = &self.config.dsp.convolution
-            && !ir.fits(self.channels)
+            && !ir.fits(self.chain.channels)
         {
-            let key = (Arc::as_ptr(ir) as usize, self.channels);
+            let key = (Arc::as_ptr(ir) as usize, self.chain.channels);
             if self.convolution_warned != Some(key) {
                 self.convolution_warned = Some(key);
                 self.emit(PlayerEvent::Warning(format!(
                     "convolution skipped: {} has {} channels, the track has {}",
                     ir.name(),
                     ir.channel_count(),
-                    self.channels
+                    self.chain.channels
                 )));
             }
         }
         if self.config.dsp.crossfeed.is_some()
-            && self.channels != 2
-            && self.crossfeed_warned != Some(self.channels)
+            && self.chain.channels != 2
+            && self.crossfeed_warned != Some(self.chain.channels)
         {
-            self.crossfeed_warned = Some(self.channels);
+            self.crossfeed_warned = Some(self.chain.channels);
             self.emit(PlayerEvent::Warning(format!(
                 "crossfeed skipped: it needs a stereo track, this one has {} channels",
-                self.channels
+                self.chain.channels
             )));
         }
     }
@@ -753,15 +891,7 @@ impl Engine {
             }
             Command::Stop => self.stop(),
             Command::Seek(to) => self.seek(Pos::from_duration(to)),
-            Command::Next => {
-                if let Some(index) = self.current_index() {
-                    if index + 1 < self.queue.len() {
-                        self.jump(index + 1, Pos::ZERO);
-                    } else {
-                        self.stop();
-                    }
-                }
-            }
+            Command::Next => self.next(),
             Command::Previous => {
                 if let Some((index, pos)) = self.current_pos() {
                     if pos.duration() > RESTART_THRESHOLD || index == 0 {
@@ -796,6 +926,10 @@ impl Engine {
                 pcm_rate,
             } => self.set_dsd(default_mode, modes, pcm_rate),
             Command::SetSdm(sdm) => self.set_sdm(sdm),
+            Command::SetRepeat(mode) => self.repeat = mode,
+            Command::SetCrossfade(crossfade) => {
+                self.config.crossfade = crossfade.sanitized();
+            }
             Command::Shutdown => return false,
         }
         true
@@ -901,6 +1035,10 @@ impl Engine {
         if n == 0 {
             return;
         }
+        self.rebuild_after_edit();
+        // A planned (not yet started) fade belongs to the old order; plan again.
+        self.fade_plan = None;
+        self.fade_checked = false;
         let index = index.min(self.queue.len());
         let at = self.current_pos();
         let reach = self.pipeline_reach();
@@ -925,6 +1063,20 @@ impl Engine {
         self.report_current();
     }
 
+    /// A crossfade already decoded audio of the incoming entry, which a queue edit may move
+    /// or remove. Rebuild the current track from where it is heard instead of remapping it.
+    fn rebuild_after_edit(&mut self) {
+        if self.crossfade.is_none() {
+            return;
+        }
+        match self.current_pos() {
+            Some((index, pos)) if self.state != PlaybackState::Stopped && self.hold.is_none() => {
+                self.restart(index, pos);
+            }
+            _ => self.crossfade = None,
+        }
+    }
+
     /// Re-announces the current entry after the queue changed under it: its index may have
     /// moved, and while paused no position report would follow on its own.
     fn report_current(&self) {
@@ -943,6 +1095,9 @@ impl Engine {
         if index >= self.queue.len() {
             return;
         }
+        self.rebuild_after_edit();
+        self.fade_plan = None;
+        self.fade_checked = false;
         let at = self.current_pos();
         let reach = self.pipeline_reach();
         self.queue.remove(index);
@@ -1004,6 +1159,7 @@ impl Engine {
             .into_iter()
             .chain(feed)
             .chain(segments)
+            .chain(self.crossfade.as_ref().map(|fade| fade.index))
             .max()
     }
 
@@ -1057,7 +1213,7 @@ impl Engine {
             return;
         }
         self.volume_db = db;
-        self.refresh_dither(self.channels, false);
+        self.refresh_dither(self.chain.channels, false);
         self.sync_stages();
         self.restart_if_playing();
     }
@@ -1073,7 +1229,7 @@ impl Engine {
         if new_error {
             self.report_convolution_error();
         }
-        self.refresh_dither(self.channels, false);
+        self.refresh_dither(self.chain.channels, false);
         self.sync_stages();
         self.restart_if_playing();
     }
@@ -1093,11 +1249,11 @@ impl Engine {
         for warning in warnings {
             self.emit(PlayerEvent::Warning(warning));
         }
-        self.plan = None;
-        self.plan_key = None;
+        self.chain.plan = None;
+        self.chain.plan_key = None;
         self.fallback.clear();
         self.src_retry = None;
-        self.refresh_dither(self.channels, false);
+        self.refresh_dither(self.chain.channels, false);
         self.sync_stages();
         self.restart_if_playing();
     }
@@ -1119,7 +1275,7 @@ impl Engine {
     /// those send the source bits untouched.
     fn compose_stages(&self) -> Vec<Box<dyn Stage>> {
         let mut stages: Vec<Box<dyn Stage>> = Vec::new();
-        if self.bitstream {
+        if self.chain.bitstream {
             return stages;
         }
         let mut convolver = self
@@ -1128,7 +1284,7 @@ impl Engine {
         if self.convolution_before_src() {
             stages.extend(convolver.take());
         }
-        if let Some(plan) = &self.plan {
+        if let Some(plan) = &self.chain.plan {
             stages.extend(plan.stages());
         }
         stages.extend(convolver);
@@ -1139,12 +1295,12 @@ impl Engine {
             stages.push(Box::new(Crossfeed::new(preset)));
         }
         if self.config.dsp.leveling.is_on() {
-            stages.push(Box::new(LevelingStage::new(self.leveling.clone())));
+            stages.push(Box::new(LevelingStage::new(self.chain.leveling.clone())));
         }
         if let Some(db) = self.volume_db {
             stages.push(Box::new(Volume::from_db(db)));
         }
-        if let Some(bits) = self.dither_bits {
+        if let Some(bits) = self.chain.dither_bits {
             stages.push(Box::new(
                 Dither::new(bits).with_clip_counter(self.dither_clipped.clone()),
             ));
@@ -1156,6 +1312,7 @@ impl Engine {
     fn stage_key(&self) -> StageKey {
         StageKey {
             plan: self
+                .chain
                 .plan
                 .as_ref()
                 .map(|p| (p.source_rate, p.target_rate, p.channels)),
@@ -1171,8 +1328,8 @@ impl Engine {
                 .is_on()
                 .then_some(self.config.dsp.leveling),
             volume: self.volume_db.map(f64::to_bits),
-            dither: self.dither_bits,
-            bitstream: self.bitstream,
+            dither: self.chain.dither_bits,
+            bitstream: self.chain.bitstream,
         }
     }
 
@@ -1181,11 +1338,11 @@ impl Engine {
     fn sync_stages(&mut self) {
         self.report_unfit_stages();
         let key = self.stage_key();
-        if self.stages_key.as_ref() == Some(&key) {
+        if self.chain.stages_key.as_ref() == Some(&key) {
             return;
         }
-        self.worker.set_stages(self.compose_stages());
-        self.stages_key = Some(key);
+        self.chain.worker.set_stages(self.compose_stages());
+        self.chain.stages_key = Some(key);
     }
 
     /// Rebuilds the stage list when the rate-conversion plan changes. `continuous` keeps the
@@ -1201,14 +1358,14 @@ impl Engine {
     ) {
         // A PCM→DSD track always goes to the modulator's input rate; the explicit SRC
         // policy and the fallback table only choose rates for PCM output.
-        let target = match self.sdm_rate {
+        let target = match self.chain.sdm_rate {
             Some(rate_sdm) => Some(rate_sdm.input_rate()).filter(|&target| target != rate),
             None => self.target_for(rate, bits, channels),
         };
         let key = (rate, channels, target);
-        let plan_changed = self.plan_key != Some(key);
-        self.channels = channels;
-        self.chain_rate = rate;
+        let plan_changed = self.chain.plan_key != Some(key);
+        self.chain.channels = channels;
+        self.chain.chain_rate = rate;
         if plan_changed {
             let plan = target.and_then(|target| {
                 let plan = self.resolver.plan(rate, target, channels, &self.config.src);
@@ -1220,14 +1377,14 @@ impl Engine {
                 plan
             });
             if continuous {
-                self.worker.flush_tail(tail);
+                self.chain.worker.flush_tail(tail);
             }
-            self.plan = plan;
-            self.plan_key = Some(key);
+            self.chain.plan = plan;
+            self.chain.plan_key = Some(key);
         }
         let dither_changed = self.refresh_dither(channels, converted);
         if !plan_changed && dither_changed && continuous {
-            self.worker.flush_tail(tail);
+            self.chain.worker.flush_tail(tail);
         }
         self.sync_stages();
     }
@@ -1236,11 +1393,11 @@ impl Engine {
     /// whose chain is empty. `continuous` first drains what the old chain holds: the
     /// converter's history, and convolution's held frames and tail even without a plan.
     fn drop_plan(&mut self, continuous: bool, tail: &mut Vec<i32>) {
-        self.plan_key = None;
+        self.chain.plan_key = None;
         if continuous {
-            self.worker.flush_tail(tail);
+            self.chain.worker.flush_tail(tail);
         }
-        self.plan = None;
+        self.chain.plan = None;
         self.sync_stages();
     }
 
@@ -1252,23 +1409,23 @@ impl Engine {
     /// worker derives (DSD→PCM), which counts as shaped. A device that cannot be probed keeps
     /// the signal undithered because its width is unknown.
     fn refresh_dither(&mut self, channels: u16, converted: bool) -> bool {
-        if self.sdm_rate.is_some() {
+        if self.chain.sdm_rate.is_some() {
             // The modulator's own noise shaping replaces dither; quantising to a PCM word
             // first would only add noise.
-            let changed = self.dither_bits.is_some();
-            self.dither_bits = None;
+            let changed = self.chain.dither_bits.is_some();
+            self.chain.dither_bits = None;
             return changed;
         }
         let shaping = converted
-            || self.plan.is_some()
+            || self.chain.plan.is_some()
             || self.convolution().is_some()
             || self.crossfeed().is_some()
             || self.config.dsp.peq_active()
             || self.config.dsp.leveling.is_on()
             || self.volume_db.is_some();
         if !self.config.dsp.dither || !shaping {
-            let changed = self.dither_bits.is_some();
-            self.dither_bits = None;
+            let changed = self.chain.dither_bits.is_some();
+            self.chain.dither_bits = None;
             return changed;
         }
         // A probe that fails while an exclusive stream is open leaves the previous decision
@@ -1277,8 +1434,8 @@ impl Engine {
             return false;
         };
         let bits = (width < crate::worker::DSP_OUTPUT_BITS).then_some(width);
-        let changed = self.dither_bits != bits;
-        self.dither_bits = bits;
+        let changed = self.chain.dither_bits != bits;
+        self.chain.dither_bits = bits;
         changed
     }
 
@@ -1341,11 +1498,11 @@ impl Engine {
     /// in order keeps its relative track loudness.
     fn update_leveling(&self, index: usize, path: &Path) {
         if !self.config.dsp.leveling.is_on() {
-            self.leveling.set_db(0.0);
+            self.chain.leveling.set_db(0.0);
             return;
         }
         let Some(values) = self.loudness_gain(path) else {
-            self.leveling.set_db(0.0);
+            self.chain.leveling.set_db(0.0);
             return;
         };
         let gain = match self.config.dsp.leveling {
@@ -1363,7 +1520,7 @@ impl Engine {
                 }
             }
         };
-        self.leveling.set_gain(gain);
+        self.chain.leveling.set_gain(gain);
     }
 
     fn loudness_gain(&self, path: &Path) -> Option<TrackGain> {
@@ -1385,17 +1542,39 @@ impl Engine {
         index.checked_sub(1).is_some_and(same_album) || same_album(index + 1)
     }
 
-    fn signal_path(&self, source: SourceFormat, spec: OutputSpec) -> SignalPath {
+    /// Whether two queue entries are consecutive tracks of one album. Entries without
+    /// library data have no album identity, so they count as different albums.
+    fn same_album(&self, left: usize, right: usize) -> bool {
+        let album = |i: usize| {
+            self.queue
+                .get(i)
+                .and_then(|path| self.loudness_gain(path))
+                .and_then(|gain| gain.album_id)
+        };
+        match (album(left), album(right)) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// What happens to the signal for the announced track, including how it joined the
+    /// previous one (`transition`: the crossfade length, or why it stayed gapless).
+    fn signal_path(
+        &self,
+        source: SourceFormat,
+        spec: OutputSpec,
+        transition: Option<TransitionNote>,
+    ) -> SignalPath {
         let mut stages = Vec::new();
         // A plan only exists for a PCM source, and every PCM stage runs before either a PCM
         // container or the modulator. DoP and native DSD from a DSD source run no stages
         // (see `compose_stages`), so only stages that actually shape the signal are listed.
-        let shaped = !self.bitstream;
+        let shaped = !self.chain.bitstream;
         let before_src = self.convolution_before_src();
         let mut convolution = self.convolution().map(|ir| {
-            let rate = match &self.plan {
+            let rate = match &self.chain.plan {
                 Some(plan) if !before_src => plan.target_rate,
-                _ => self.chain_rate,
+                _ => self.chain.chain_rate,
             };
             let taps = (ir.frames() as u64 * u64::from(rate)).div_ceil(u64::from(ir.rate()));
             let resampled = if rate == ir.rate() {
@@ -1411,7 +1590,7 @@ impl Engine {
         if before_src {
             stages.extend(convolution.take());
         }
-        if let Some(plan) = &self.plan {
+        if let Some(plan) = &self.chain.plan {
             stages.extend(plan.describe());
         }
         stages.extend(convolution);
@@ -1450,7 +1629,7 @@ impl Engine {
                         LevelingMode::Auto => "album/track",
                         LevelingMode::Off => "off",
                     },
-                    self.leveling.db(),
+                    self.chain.leveling.db(),
                     self.config.dsp.leveling_target_lufs
                 ),
             });
@@ -1461,13 +1640,17 @@ impl Engine {
                 detail: format!("{db:+.1} dB"),
             });
         }
-        if let Some(bits) = self.dither_bits.filter(|_| spec.mode == OutputMode::Pcm) {
+        if let Some(bits) = self
+            .chain
+            .dither_bits
+            .filter(|_| spec.mode == OutputMode::Pcm)
+        {
             stages.push(SignalStage {
                 name: "Dither".into(),
                 detail: format!("TPDF to {bits}-bit"),
             });
         }
-        if let Some(rate) = self.sdm_rate.filter(|_| spec.mode != OutputMode::Pcm) {
+        if let Some(rate) = self.chain.sdm_rate.filter(|_| spec.mode != OutputMode::Pcm) {
             stages.push(SignalStage {
                 name: "DSD modulator".into(),
                 detail: format!(
@@ -1491,6 +1674,18 @@ impl Engine {
                 detail: format!("carrier {} Hz", spec.rate),
             });
         }
+        // A transition that faded this track's head touched the samples: the path names the
+        // mixer, so it stops claiming bit-perfection. A skipped crossfade is only a note.
+        if let Some(TransitionNote::Faded(seconds)) = transition {
+            stages.push(SignalStage {
+                name: "Crossfade".into(),
+                detail: format!("{seconds:.1} s, equal power"),
+            });
+        }
+        let transition = transition.map(|note| match note {
+            TransitionNote::Faded(seconds) => format!("crossfade {seconds:.1} s, equal power"),
+            TransitionNote::Skipped(reason) => format!("crossfade skipped: {reason}"),
+        });
         let bit_perfect = stages.is_empty()
             && (spec.mode != OutputMode::Pcm
                 || (source.bits != DSD_SOURCE_BITS && spec.rate == source.rate));
@@ -1502,6 +1697,7 @@ impl Engine {
             mode: spec.mode,
             stages,
             bit_perfect,
+            transition,
         }
     }
 
@@ -1550,7 +1746,7 @@ impl Engine {
         // A stopped player picks the mode up with the next track. A playing PCM track has to
         // re-decode so the new output mode is reached after one ring, not the whole feed.
         if sdm.is_on() != was_on && !sdm.is_on() {
-            self.sdm_rate = None;
+            self.chain.sdm_rate = None;
             self.sync_stages();
         }
         self.restart_if_playing();
@@ -1646,13 +1842,27 @@ impl Engine {
 
     // ----- decoding -----
 
+    fn take_chain(&mut self) -> ChainState {
+        std::mem::take(&mut self.chain)
+    }
+
+    fn install_chain(&mut self, chain: ChainState) {
+        self.chain = chain;
+    }
+
     fn reset_decoding(&mut self) {
+        self.crossfade = None;
+        self.fade_checked = false;
+        self.fade_plan = None;
+        // A skip note names a transition; after a seek or stop there is none pending.
+        self.pending_transition = None;
         self.feed.clear();
         self.feed_samples = 0;
         self.decoding = None;
-        self.worker.reset();
+        self.chain.worker.reset();
         self.ending = false;
         self.end_index = None;
+        self.failures.clear();
     }
 
     /// Drops everything decoded ahead, empties the ring (or reopens), and starts decoding
@@ -1756,7 +1966,7 @@ impl Engine {
         // never measured and rarely tagged, and a 0 dB stage is no reason to lose native DSD.
         if self.volume_db.is_some()
             || self.config.dsp.peq_active()
-            || (self.config.dsp.leveling.is_on() && self.leveling.db() != 0.0)
+            || (self.config.dsp.leveling.is_on() && self.chain.leveling.db() != 0.0)
         {
             return (
                 DsdMode::Pcm,
@@ -1819,32 +2029,40 @@ impl Engine {
         }
     }
 
-    /// Opens track `index` (skipping unplayable files) and queues its start marker.
+    /// Opens `index` (skipping unplayable entries), prepares its chain in the engine's
+    /// chain fields and returns the decoder, without announcing the track. `continuous`
+    /// keeps the previous chain's tail in `tail` (the caller pushes it into the stream).
     ///
-    /// `continuous` is true when the track follows the previous one gaplessly, so stage
-    /// tails belong in the stream; after a seek or stop they are discarded.
-    fn open_track(&mut self, mut index: usize, mut pos: Pos, continuous: bool) {
-        self.clipping_reported = false;
-        self.sdm_warned = false;
+    /// `Err(index)` means the queue ran out at `index`.
+    fn begin_chain(
+        &mut self,
+        mut index: usize,
+        mut pos: Pos,
+        continuous: bool,
+        tail: &mut Vec<i32>,
+        report: bool,
+    ) -> Result<Opened, usize> {
+        // Entries that failed to open on the way. Repeat-all wraps past an unplayable last
+        // entry, but only until every entry has failed once.
+        let mut failed = 0;
         loop {
+            if index >= self.queue.len()
+                && self.repeat == RepeatMode::All
+                && failed > 0
+                && failed < self.queue.len()
+            {
+                index = 0;
+            }
             let Some(path) = self.queue.get(index).map(Path::to_path_buf) else {
-                if continuous {
-                    let mut tail = Vec::new();
-                    self.worker.flush_tail(&mut tail);
-                    self.push_samples(tail);
-                }
-                self.feed.push_back(FeedItem::End);
-                self.end_index = Some(index);
-                return;
+                return Err(index);
             };
             self.update_leveling(index, &path);
             match open_decoder(&path, pos) {
                 Ok(decoder) => {
                     let source = decoder.source_format();
-                    let mut tail = Vec::new();
                     let mut spec = match decoder.format() {
                         TrackFormat::Pcm(_) => {
-                            self.bitstream = false;
+                            self.chain.bitstream = false;
                             let modulation = self.choose_sdm(source);
                             let carrier_key = self
                                 .config
@@ -1862,26 +2080,26 @@ impl Engine {
                                     self.config.sdm.mode.as_str()
                                 )));
                             }
-                            self.sdm_rate = modulation.map(|(rate, _)| rate);
+                            self.chain.sdm_rate = modulation.map(|(rate, _)| rate);
                             self.ensure_plan(
                                 source.rate,
                                 source.bits,
                                 source.channels,
                                 continuous,
-                                &mut tail,
+                                tail,
                                 false,
                             );
                             if let Some((rate, packing)) = modulation {
-                                self.worker.prepare_sdm(
+                                self.chain.worker.prepare_sdm(
                                     source,
                                     rate,
                                     self.config.sdm.order,
                                     packing,
-                                    &mut tail,
+                                    tail,
                                 )
                             } else {
-                                let mut spec = self.worker.prepare(source, &mut tail);
-                                if !self.worker.pipeline_is_empty()
+                                let mut spec = self.chain.worker.prepare(source, tail);
+                                if !self.chain.worker.pipeline_is_empty()
                                     && spec.bits > 16
                                     && self
                                         .probed_rates(24, source.channels)
@@ -1895,66 +2113,108 @@ impl Engine {
                             }
                         }
                         TrackFormat::Dsd(dsd) => {
-                            self.sdm_rate = None;
+                            self.chain.sdm_rate = None;
                             let (mode, reason) = self.choose_dsd_mode(dsd);
                             self.emit(PlayerEvent::DsdMode { mode, reason });
-                            self.bitstream = mode != DsdMode::Pcm;
+                            self.chain.bitstream = mode != DsdMode::Pcm;
                             if mode == DsdMode::Pcm {
                                 let rate = self.config.dsd_pcm_rate.rate();
-                                self.ensure_plan(
-                                    rate,
-                                    24,
-                                    source.channels,
-                                    continuous,
-                                    &mut tail,
-                                    true,
-                                );
+                                self.ensure_plan(rate, 24, source.channels, continuous, tail, true);
                             } else {
                                 // DoP and native DSD never resample: drop the plan a previous
                                 // PCM track left, so the pipeline is empty as they require.
-                                self.dither_bits = None;
-                                self.drop_plan(continuous, &mut tail);
+                                self.chain.dither_bits = None;
+                                self.drop_plan(continuous, tail);
                             }
-                            self.worker.prepare_dsd(
+                            self.chain.worker.prepare_dsd(
                                 dsd,
                                 mode,
                                 self.config.dsd_pcm_rate.rate(),
-                                &mut tail,
+                                tail,
                             )
                         }
                     };
                     // Dither already quantised the signal to the device's word length, so the
                     // container must be exactly that wide (and is lossless for the result).
-                    if let Some(bits) = self.dither_bits.filter(|_| spec.mode == OutputMode::Pcm) {
+                    if let Some(bits) = self
+                        .chain
+                        .dither_bits
+                        .filter(|_| spec.mode == OutputMode::Pcm)
+                    {
                         spec.bits = bits;
                     }
-                    if continuous {
-                        self.push_samples(tail);
-                    } else {
-                        // Unplayable tracks may have been skipped on the way here.
-                        self.target = Some((index, Pos::frames(decoder.position(), source.rate)));
-                    }
-                    let path = Arc::new(self.signal_path(source, spec));
-                    self.feed.push_back(FeedItem::TrackStart {
+                    self.chain.spec = Some(spec);
+                    self.source = Some(source);
+                    let duration = decoder.total();
+                    return Ok(Opened {
                         index,
-                        offset: decoder.position(),
+                        decoder,
                         source,
                         spec,
-                        duration: decoder.total(),
-                        path,
+                        duration,
                     });
-                    self.decoding = Some(Decoding { index, decoder });
-                    return;
                 }
                 Err(error) => {
-                    self.emit(PlayerEvent::TrackFailed {
-                        index,
-                        path,
-                        error: error.to_string(),
-                    });
+                    if report {
+                        self.emit(PlayerEvent::TrackFailed {
+                            index,
+                            path,
+                            error: error.to_string(),
+                        });
+                    }
+                    failed += 1;
                     index += 1;
                     pos = Pos::ZERO;
                 }
+            }
+        }
+    }
+
+    /// Opens track `index` (skipping unplayable files) and queues its start marker.
+    ///
+    /// `continuous` is true when the track follows the previous one gaplessly, so stage
+    /// tails belong in the stream; after a seek or stop they are discarded.
+    fn open_track(&mut self, index: usize, pos: Pos, continuous: bool) {
+        self.clipping_reported = false;
+        self.sdm_warned = false;
+        self.fade_checked = false;
+        self.fade_plan = None;
+        let mut tail = Vec::new();
+        match self.begin_chain(index, pos, continuous, &mut tail, true) {
+            Ok(opened) => {
+                if continuous {
+                    self.push_samples(tail);
+                } else {
+                    // Unplayable tracks may have been skipped on the way here.
+                    self.target = Some((
+                        opened.index,
+                        Pos::frames(opened.decoder.position(), opened.source.rate),
+                    ));
+                }
+                let note = self.pending_transition.take();
+                let path = Arc::new(self.signal_path(opened.source, opened.spec, note));
+                self.feed.push_back(FeedItem::TrackStart {
+                    index: opened.index,
+                    offset: opened.decoder.position(),
+                    source: opened.source,
+                    spec: opened.spec,
+                    duration: opened.duration,
+                    path,
+                });
+                self.decoding = Some(Decoding {
+                    index: opened.index,
+                    decoder: opened.decoder,
+                });
+            }
+            Err(index) => {
+                if continuous {
+                    let mut tail = Vec::new();
+                    self.chain.worker.flush_tail(&mut tail);
+                    self.push_samples(tail);
+                }
+                self.pending_transition = None;
+                self.feed.push_back(FeedItem::End);
+                self.end_index = Some(index);
             }
         }
     }
@@ -1966,6 +2226,461 @@ impl Engine {
         }
     }
 
+    /// The entry after `index` when a track ends on its own.
+    fn auto_next(&self, index: usize) -> Option<usize> {
+        match self.repeat {
+            RepeatMode::One => Some(index),
+            RepeatMode::All if !self.queue.is_empty() => Some((index + 1) % self.queue.len()),
+            RepeatMode::All => None,
+            RepeatMode::Off => (index + 1 < self.queue.len()).then_some(index + 1),
+        }
+    }
+
+    /// Manual Next: the entry after `index`, wrapping under repeat-all.
+    fn manual_next(&self, index: usize) -> Option<usize> {
+        if index + 1 < self.queue.len() {
+            Some(index + 1)
+        } else if self.repeat == RepeatMode::All && !self.queue.is_empty() {
+            Some(0)
+        } else {
+            None
+        }
+    }
+
+    /// Next pressed during playback: moves to the next entry, fading into it when crossfade
+    /// is on and the transition allows it, else jumping as before.
+    fn next(&mut self) {
+        let Some(index) = self.current_index() else {
+            return;
+        };
+        let Some(next) = self.manual_next(index) else {
+            self.stop();
+            return;
+        };
+        if self.state == PlaybackState::Playing
+            && self.hold.is_none()
+            && self.config.crossfade.is_on()
+            && self.start_fade(index, next, self.current_pos().map(|(_, pos)| pos))
+        {
+            return;
+        }
+        self.jump(next, Pos::ZERO);
+    }
+
+    /// Records why the transition into the next entry stays gapless, for its signal path.
+    fn skip_transition(&mut self, skip: Skip) {
+        self.fade_checked = true;
+        self.pending_transition = Some(TransitionNote::Skipped(skip.reason()));
+    }
+
+    /// Starts the fade for the open track once it is close enough to its end. Returns
+    /// whether a fade now runs.
+    fn maybe_start_fade(&mut self, index: usize) -> bool {
+        if !self.config.crossfade.is_on() || self.fade_checked {
+            return false;
+        }
+        let Some(next) = self.auto_next(index) else {
+            self.fade_checked = true;
+            return false;
+        };
+        let (Some(source), Some(out_spec), Some(decoding)) =
+            (self.source, self.chain.spec, self.decoding.as_ref())
+        else {
+            return false;
+        };
+        let Some(total) = decoding.decoder.total() else {
+            self.skip_transition(Skip::UnknownLength);
+            return false;
+        };
+        let remaining = total.saturating_sub(decoding.decoder.position());
+        let remaining_secs = remaining as f64 / f64::from(source.rate);
+        // The settings allow at most this much; the track halves clamp it further below.
+        if remaining_secs > self.config.crossfade.seconds + 0.1 {
+            return false;
+        }
+        let planned = match self.fade_plan {
+            Some((planned_for, seconds)) if planned_for == next => seconds,
+            _ => {
+                let Some(path) = self.queue.get(next).map(Path::to_path_buf) else {
+                    return false;
+                };
+                let Ok(decoder) = open_decoder(&path, Pos::ZERO) else {
+                    // The normal advance reports the failure and moves on.
+                    self.fade_checked = true;
+                    return false;
+                };
+                let incoming = Side {
+                    spec: out_spec,
+                    pcm: matches!(decoder.format(), TrackFormat::Pcm(_)),
+                    seconds: decoder
+                        .total()
+                        .map(|total| total as f64 / f64::from(decoder.source_format().rate)),
+                };
+                let outgoing = Side {
+                    spec: out_spec,
+                    pcm: source.bits != DSD_SOURCE_BITS,
+                    seconds: Some(total as f64 / f64::from(source.rate)),
+                };
+                let transition = Transition {
+                    outgoing,
+                    incoming,
+                    repeat_one: self.repeat == RepeatMode::One,
+                    same_entry: index == next,
+                    same_album: self.same_album(index, next),
+                };
+                match crossfade::decide(self.config.crossfade, transition) {
+                    Ok(seconds) => seconds,
+                    Err(skip) => {
+                        self.skip_transition(skip);
+                        return false;
+                    }
+                }
+            }
+        };
+        self.fade_plan = Some((next, planned));
+        if remaining_secs > planned + 0.1 {
+            return false;
+        }
+        self.start_fade(index, next, None)
+    }
+
+    /// Builds the incoming track's chain and starts mixing it into the outgoing one.
+    ///
+    /// Automatic: the outgoing track's remaining frames are the fade, ending exactly at its
+    /// end. Manual (`manual` holds the heard position): the stream is rebuilt there and the
+    /// fade runs for the planned length, so Next is heard at once.
+    fn start_fade(&mut self, from: usize, next: usize, manual: Option<Pos>) -> bool {
+        let Some(source) = self.source else {
+            return false;
+        };
+        let Some(out_spec) = self.chain.spec else {
+            return false;
+        };
+        let Some(decoding) = self.decoding.as_ref() else {
+            return false;
+        };
+        let Some(total) = decoding.decoder.total() else {
+            self.skip_transition(Skip::UnknownLength);
+            return false;
+        };
+        let position = match manual {
+            Some(pos) => pos.frames_at(source.rate).min(total),
+            None => decoding.decoder.position(),
+        };
+        let remaining = total.saturating_sub(position);
+        let Some(path) = self.queue.get(next).map(Path::to_path_buf) else {
+            return false;
+        };
+        let Ok(decoder) = open_decoder(&path, Pos::ZERO) else {
+            self.fade_checked = true;
+            return false;
+        };
+        let incoming_seconds = decoder
+            .total()
+            .map(|total| total as f64 / f64::from(decoder.source_format().rate));
+        let outgoing = Side {
+            spec: out_spec,
+            pcm: source.bits != DSD_SOURCE_BITS,
+            seconds: Some(total as f64 / f64::from(source.rate)),
+        };
+        let incoming = Side {
+            spec: out_spec,
+            pcm: matches!(decoder.format(), TrackFormat::Pcm(_)),
+            seconds: incoming_seconds,
+        };
+        let transition = Transition {
+            outgoing,
+            incoming,
+            repeat_one: self.repeat == RepeatMode::One,
+            same_entry: from == next,
+            same_album: self.same_album(from, next),
+        };
+        let clamped = match crossfade::decide(self.config.crossfade, transition) {
+            Ok(seconds) => seconds,
+            Err(skip) => {
+                self.skip_transition(skip);
+                return false;
+            }
+        };
+        drop(decoder);
+
+        // Prepare the incoming chain: it says what format that track reaches and what its
+        // signal path is, and it decodes the fade's incoming side.
+        let mut saved = self.take_chain();
+        let saved_source = self.source;
+        let mut tail = Vec::new();
+        // Planning must not report failures: the normal advance will, once.
+        let opened = match self.begin_chain(next, Pos::ZERO, false, &mut tail, false) {
+            Ok(opened) => opened,
+            Err(_) => {
+                let _ = self.take_chain();
+                self.install_chain(saved);
+                self.source = saved_source;
+                self.fade_checked = true;
+                return false;
+            }
+        };
+        let in_spec = self.chain.spec;
+        if in_spec != Some(out_spec) {
+            let _ = self.take_chain();
+            self.install_chain(saved);
+            self.source = saved_source;
+            self.skip_transition(Skip::DifferentFormat);
+            return false;
+        }
+        let rate = fade_rate(out_spec);
+        let seconds = match manual {
+            // Never more than the decision allows: the setting capped by half of the
+            // shorter track, and never past what is left of the outgoing track.
+            Some(_) => clamped.min(remaining as f64 / f64::from(source.rate)),
+            // Automatic: the fade ends exactly at the outgoing track's end (the trigger
+            // already waited for the clamped length).
+            None => remaining as f64 / f64::from(source.rate),
+        };
+        let frames = (seconds * f64::from(rate)).round() as u64;
+        if frames == 0 || rate == 0 {
+            let _ = self.take_chain();
+            self.install_chain(saved);
+            self.source = saved_source;
+            self.fade_checked = true;
+            return false;
+        }
+        let path = self.signal_path(
+            opened.source,
+            out_spec,
+            Some(TransitionNote::Faded(seconds)),
+        );
+        let path = Arc::new(path);
+        let mut incoming_chain = self.take_chain();
+        if manual.is_none() {
+            // The outgoing carrier packer may hold a partial DoP/native frame; the incoming
+            // packer continues it, so the fade does not drop one to three DSD bytes.
+            let pending = saved.worker.take_packer_pending();
+            incoming_chain.worker.adopt_packer_pending(pending);
+        }
+        // The outgoing chain goes back, so it can keep decoding (automatic) or be rebuilt at
+        // the position the listener is at (manual).
+        self.install_chain(saved);
+        self.source = saved_source;
+        if let Some(pos) = manual {
+            self.reset_decoding();
+            self.hold = None;
+            if let Some(out) = &mut self.out {
+                let flushed = out
+                    .producer
+                    .as_mut()
+                    .is_some_and(|p| p.flush(FLUSH_TIMEOUT));
+                if flushed {
+                    out.segments.clear();
+                } else {
+                    self.close_output();
+                }
+            }
+            let mut tail = Vec::new();
+            match self.begin_chain(from, pos, false, &mut tail, true) {
+                Ok(outgoing) => {
+                    self.target = Some((
+                        outgoing.index,
+                        Pos::frames(outgoing.decoder.position(), outgoing.source.rate),
+                    ));
+                    self.decoding = Some(Decoding {
+                        index: outgoing.index,
+                        decoder: outgoing.decoder,
+                    });
+                }
+                Err(_) => {
+                    self.decoding = None;
+                    self.target = None;
+                    return false;
+                }
+            }
+        }
+        self.clipping_reported = false;
+        self.sdm_warned = false;
+        self.fade_checked = true;
+        self.fade_plan = None;
+        self.crossfade = Some(Crossfade {
+            index: opened.index,
+            source: opened.source,
+            spec: out_spec,
+            decoder: opened.decoder,
+            chain: incoming_chain,
+            fade: Fade::new(frames),
+            pending_out: Vec::new(),
+            pending_in: Vec::new(),
+            mixed: Vec::new(),
+            samples: Vec::new(),
+            out_ended: false,
+            in_ended: false,
+            in_failed: false,
+        });
+        // The incoming entry starts in the stream here: every mixed sample belongs to it.
+        self.feed.push_back(FeedItem::TrackStart {
+            index: opened.index,
+            offset: 0,
+            source: opened.source,
+            spec: out_spec,
+            duration: opened.duration,
+            path,
+        });
+        true
+    }
+
+    /// Decodes both sides of the running crossfade and pushes the mixed samples, one block at
+    /// a time, until the fade is done or neither side has anything more to give.
+    fn produce_fade(&mut self) -> bool {
+        let mut progress = false;
+        let mut finished = false;
+        loop {
+            let Some(fade) = self.crossfade.as_mut() else {
+                return progress;
+            };
+            if fade.fade.is_done() {
+                finished = true;
+                break;
+            }
+            let channels = usize::from(fade.spec.channels).max(1);
+            if fade.in_ended && fade.pending_in.len() < channels {
+                // The incoming file ended inside the fade (only possible when its stated
+                // length was wrong): play out what is left of the outgoing side.
+                finished = true;
+                break;
+            }
+            let mut decoded = false;
+            if !fade.out_ended && fade.pending_out.len() < channels {
+                let mut block = Vec::new();
+                let result = match &mut self.decoding {
+                    Some(decoding) => self
+                        .chain
+                        .worker
+                        .decode_float(&mut decoding.decoder, &mut block),
+                    None => Ok(0),
+                };
+                match result {
+                    Ok(0) => {
+                        fade.out_ended = true;
+                        self.chain.worker.flush_float(&mut fade.pending_out);
+                    }
+                    Ok(_) => {
+                        fade.pending_out.extend_from_slice(&block);
+                        decoded = true;
+                    }
+                    Err(error) => {
+                        // The event names the track that was decoding, not the incoming one.
+                        let index = self
+                            .decoding
+                            .as_ref()
+                            .map_or(fade.index, |decoding| decoding.index);
+                        let path = self.queue.get(index).map(Path::to_path_buf);
+                        let _ = self.events.send(PlayerEvent::TrackFailed {
+                            index,
+                            path: path.unwrap_or_default(),
+                            error: error.to_string(),
+                        });
+                        fade.out_ended = true;
+                        self.chain.worker.flush_float(&mut fade.pending_out);
+                    }
+                }
+            }
+            if !fade.in_ended && fade.pending_in.len() < channels {
+                let mut block = Vec::new();
+                match fade
+                    .chain
+                    .worker
+                    .decode_float(&mut fade.decoder, &mut block)
+                {
+                    Ok(0) => {
+                        fade.in_ended = true;
+                        fade.chain.worker.flush_float(&mut fade.pending_in);
+                    }
+                    Ok(_) => {
+                        fade.pending_in.extend_from_slice(&block);
+                        decoded = true;
+                    }
+                    Err(error) => {
+                        let path = self.queue.get(fade.index).map(Path::to_path_buf);
+                        let _ = self.events.send(PlayerEvent::TrackFailed {
+                            index: fade.index,
+                            path: path.unwrap_or_default(),
+                            error: error.to_string(),
+                        });
+                        fade.in_ended = true;
+                        fade.in_failed = true;
+                        fade.chain.worker.flush_float(&mut fade.pending_in);
+                    }
+                }
+            }
+            let out_frames = fade.pending_out.len() / channels;
+            let in_frames = fade.pending_in.len() / channels;
+            let outgoing = (out_frames > 0).then_some(fade.pending_out.as_slice());
+            let incoming = (in_frames > 0).then_some(fade.pending_in.as_slice());
+            let mixed = fade.fade.mix(outgoing, incoming, channels, &mut fade.mixed);
+            if mixed > 0 {
+                fade.samples.clear();
+                fade.chain.worker.emit_float(&fade.mixed, &mut fade.samples);
+                let data = std::mem::take(&mut fade.samples);
+                self.feed_samples += data.len();
+                self.feed.push_back(FeedItem::Samples { data, taken: 0 });
+                let out_take = mixed.min(out_frames) * channels;
+                let in_take = mixed.min(in_frames) * channels;
+                fade.pending_out.drain(..out_take);
+                fade.pending_in.drain(..in_take);
+                progress = true;
+                if fade.fade.is_done() {
+                    finished = true;
+                    break;
+                }
+                if self.feed_samples >= FEED_AHEAD_SAMPLES {
+                    // The rest of the fade waits for pump to drain the feed, so commands and
+                    // the device keep their turns and memory stays at the usual bound.
+                    break;
+                }
+            } else if !decoded {
+                break;
+            }
+        }
+        if finished {
+            self.finish_fade();
+            return true;
+        }
+        progress
+    }
+
+    /// Makes the incoming track the current one once the fade's samples are queued.
+    fn finish_fade(&mut self) {
+        let Some(fade) = self.crossfade.take() else {
+            return;
+        };
+        self.chain = fade.chain;
+        self.source = Some(fade.source);
+        self.fade_checked = false;
+        self.fade_plan = None;
+        if fade.in_failed {
+            // The incoming file broke inside the fade: move past it like a decode failure
+            // instead of installing a decoder that already failed.
+            self.decoding = None;
+            let stop = self.failures.note(self.queue.len());
+            let next = if stop {
+                self.queue.len()
+            } else {
+                self.auto_next(fade.index).unwrap_or(self.queue.len())
+            };
+            self.open_track(next, Pos::ZERO, true);
+            return;
+        }
+        self.decoding = Some(Decoding {
+            index: fade.index,
+            decoder: fade.decoder,
+        });
+        self.failures.clear();
+        // Samples the incoming side decoded past the end of the fade continue the stream.
+        if !fade.pending_in.is_empty() {
+            let mut samples = Vec::new();
+            self.chain.worker.emit_float(&fade.pending_in, &mut samples);
+            self.push_samples(samples);
+        }
+    }
+
     /// Decodes one block ahead if there is room. Returns whether anything happened.
     fn produce(&mut self) -> bool {
         if self.state == PlaybackState::Stopped
@@ -1974,21 +2689,34 @@ impl Engine {
         {
             return false;
         }
+        if self.crossfade.is_some() {
+            return self.produce_fade();
+        }
+        if let Some(index) = self.decoding.as_ref().map(|decoding| decoding.index)
+            && self.maybe_start_fade(index)
+        {
+            return true;
+        }
         let Some(decoding) = &mut self.decoding else {
             return false;
         };
         let index = decoding.index;
         let mut block = Vec::new();
-        match self.worker.decode(&mut decoding.decoder, &mut block) {
+        match self.chain.worker.decode(&mut decoding.decoder, &mut block) {
             Ok(0) => {
                 // A DSD packer may have appended one padded frame on end of stream.
                 self.push_samples(block);
                 self.decoding = None;
-                self.open_track(index + 1, Pos::ZERO, true);
+                let next = self.auto_next(index).unwrap_or(self.queue.len());
+                self.open_track(next, Pos::ZERO, true);
             }
-            Ok(_) => self.push_samples(block),
+            Ok(_) => {
+                self.push_samples(block);
+                self.failures.clear();
+            }
             Err(error) => {
-                // Untrusted input: a broken file ends that track, never playback.
+                // Untrusted input: a broken file ends that track, never playback. A repeat
+                // mode must not loop over it either: a whole queue of failures ends the run.
                 let path = self.queue.get(index).map(Path::to_path_buf);
                 self.emit(PlayerEvent::TrackFailed {
                     index,
@@ -1996,16 +2724,23 @@ impl Engine {
                     error: error.to_string(),
                 });
                 self.decoding = None;
-                self.open_track(index + 1, Pos::ZERO, true);
+                let stop = self.failures.note(self.queue.len());
+                let next = if stop {
+                    self.queue.len()
+                } else {
+                    self.auto_next(index).unwrap_or(self.queue.len())
+                };
+                self.open_track(next, Pos::ZERO, true);
             }
         }
         // Surface a boost that ran out of headroom; once per track is enough to act on it.
-        let clipped = self.worker.take_clipped() + self.dither_clipped.swap(0, Ordering::Relaxed);
+        let clipped =
+            self.chain.worker.take_clipped() + self.dither_clipped.swap(0, Ordering::Relaxed);
         if clipped > 0 && !self.clipping_reported {
             self.clipping_reported = true;
             self.emit(PlayerEvent::Clipping(clipped));
         }
-        if self.worker.take_modulator_limited() && !self.sdm_warned {
+        if self.chain.worker.take_modulator_limited() && !self.sdm_warned {
             self.sdm_warned = true;
             self.emit(PlayerEvent::Warning(
                 "the DSD modulator left its stable range and reset; lower the volume or EQ boost"
@@ -2301,6 +3036,10 @@ impl Engine {
     }
 
     fn finish_queue(&mut self) {
+        self.crossfade = None;
+        self.fade_checked = false;
+        self.fade_plan = None;
+        self.pending_transition = None;
         self.ending = false;
         self.end_index = None;
         self.reported_track = None;
@@ -2417,6 +3156,17 @@ fn probe(result: Result<DeviceFormat, OutputError>) -> Probe {
     }
 }
 
+/// Rate of the samples the crossfade mixes: the chain's output rate. For a modulated stream
+/// that is the modulator's input rate, not the carrier rate on the wire (a DoP frame carries
+/// two input-rate ticks per sample, a native word four).
+fn fade_rate(spec: OutputSpec) -> u32 {
+    match spec.mode {
+        OutputMode::Pcm => spec.rate,
+        OutputMode::Dop => spec.rate.saturating_mul(2),
+        OutputMode::NativeDsd => spec.rate.saturating_mul(4),
+    }
+}
+
 /// Whether an open stream in `current` can carry `spec` unchanged (same rate and channels, and
 /// a container wide enough for the bits). A 16-bit track after a 24-bit one stays bit-perfect
 /// in the 24-bit container, so it plays gapless. Native DSD is not a PCM container, so it is
@@ -2456,6 +3206,21 @@ mod tests {
             Pos::frames(44_100, 44_100).duration(),
             Duration::from_secs(1)
         );
+    }
+
+    #[test]
+    fn a_whole_queue_of_failures_ends_the_run_but_a_decoded_block_resets_it() {
+        let mut run = FailureRun::default();
+        assert!(!run.note(3), "one failure of a three-track queue moves on");
+        assert!(
+            !run.note(3),
+            "another entry failing next still moves on (repeat-all over broken files)"
+        );
+        assert!(run.note(3), "a whole queue's worth ends the run");
+        run.clear();
+        assert!(!run.note(3), "a decoded block starts a new run");
+        assert!(!run.note(3));
+        assert!(run.note(3));
     }
 
     #[test]

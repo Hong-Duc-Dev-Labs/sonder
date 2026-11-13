@@ -9,6 +9,7 @@
 //! reverse direction, PCM→DSD, is [`SdmConfig`]: the PCM chain runs first, then
 //! [`sonder_dsp::Sdm`] and the same packers.
 
+pub mod crossfade;
 pub mod dop;
 mod dsp;
 pub mod pipeline;
@@ -19,10 +20,14 @@ mod sdm;
 pub mod stage;
 mod worker;
 
+pub use crossfade::{
+    CrossfadeConfig, MAX_SECONDS as MAX_CROSSFADE_SECONDS, MIN_SECONDS as MIN_CROSSFADE_SECONDS,
+};
 pub use dsp::{DspConfig, LoudnessSource, MAX_TARGET_LUFS, MIN_TARGET_LUFS, NoLoudness, TrackGain};
 pub use pipeline::Pipeline;
 pub use player::{
-    Command, DsdPcmRate, PlaybackState, Player, PlayerConfig, PlayerEvent, SignalPath, TapFactory,
+    Command, DsdPcmRate, PlaybackState, Player, PlayerConfig, PlayerEvent, RepeatMode, SignalPath,
+    TapFactory,
 };
 pub use queue::Queue;
 pub use rate::{FilterSourceConfig, SignalStage, SrcConfig, SrcTarget};

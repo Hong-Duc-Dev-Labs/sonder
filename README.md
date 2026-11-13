@@ -71,6 +71,14 @@ cargo run -p sonder-cli -- play ~/Music/album --verify-hash
 - **Crossfeed** — bs2b headphone crossfeed for stereo tracks, after the EQ, with libbs2b's
   presets: Default (700 Hz, 4.5 dB), Chu Moy (700 Hz, 6 dB) and Jan Meier (650 Hz, 9.5 dB).
   Centred sounds keep their level in the bass and dip 1–1.75 dB above the cut-off, as in bs2b.
+- **Crossfade** — an equal-power fade (1–10 s, default 4) from one queue entry into the next,
+  and on Next while playing. It is skipped between consecutive tracks of the same album, across
+  different output formats, next to DSD files and under repeat-one; the signal path names the
+  reason ("crossfade skipped: same album"). With crossfade off the transition is the existing
+  gapless join, byte for byte.
+- **Repeat** — the button next to Next cycles off → all → one. Repeat-one replays the entry
+  gaplessly and manual Next still moves on; repeat-all wraps from the last entry to the first
+  without a gap; turning it off keeps the entry already decoded ahead.
 
 The Now Playing view shows the signal path stage by stage (the icon next to the device line).
 

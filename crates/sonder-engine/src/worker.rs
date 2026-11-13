@@ -291,6 +291,79 @@ impl DecodeWorker {
             .expect("configured pipeline has an output format")
     }
 
+    /// Appends the next block at the chain's float output: after every stage, before the
+    /// integer conversion or the PCM→DSD modulator. `0` means the track ended;
+    /// [`flush_float`](Self::flush_float) then drains the stages' tails.
+    ///
+    /// The crossfade mixer works here, which is what lets two tracks modulated to DSD mix
+    /// before the modulator. DSD sources are refused: one-bit samples cannot be mixed.
+    pub(crate) fn decode_float(
+        &mut self,
+        decoder: &mut SourceDecoder,
+        out: &mut Vec<f64>,
+    ) -> Result<usize, DecodeError> {
+        let SourceDecoder::Pcm(decoder) = decoder else {
+            return Err(DecodeError::Decode(
+                "the crossfade mixer needs PCM sources".into(),
+            ));
+        };
+        let frames = decoder.next_f64(&mut self.float_in)?;
+        if frames > 0 {
+            if self.pipeline.is_empty() {
+                out.extend_from_slice(&self.float_in);
+            } else {
+                self.pipeline
+                    .process(&self.float_in, |block| out.extend_from_slice(block));
+            }
+        }
+        Ok(frames)
+    }
+
+    /// Appends whatever the stages still hold as float output (end of a crossfaded track).
+    pub(crate) fn flush_float(&mut self, out: &mut Vec<f64>) {
+        if self.pipeline.input_format().is_some() {
+            self.pipeline.flush(|block| out.extend_from_slice(block));
+        }
+    }
+
+    /// Moves the carrier packer's partial frame out (a crossfade switches chains between
+    /// carrier frames). Empty when the chain emits PCM.
+    pub(crate) fn take_packer_pending(&mut self) -> Vec<u8> {
+        self.packer()
+            .map(|packer| packer.take_pending())
+            .unwrap_or_default()
+    }
+
+    /// Continues a partial carrier frame taken from the outgoing chain's packer.
+    pub(crate) fn adopt_packer_pending(&mut self, pending: Vec<u8>) {
+        if let Some(packer) = self.packer()
+            && !pending.is_empty()
+        {
+            packer.adopt_pending(pending);
+        }
+    }
+
+    fn packer(&mut self) -> Option<&mut Packer> {
+        match &mut self.dsd_path {
+            Some(DsdPath::Dop(packer)) | Some(DsdPath::Native(packer)) => Some(packer),
+            Some(DsdPath::Sdm { packer, .. }) => Some(packer),
+            Some(DsdPath::Pcm { .. }) | None => None,
+        }
+    }
+
+    /// Emits samples that already went through the chain to its float output: converted to
+    /// left-justified integers, or modulated and packed when the chain carries PCM→DSD.
+    pub(crate) fn emit_float(&mut self, block: &[f64], out: &mut Vec<i32>) {
+        if let Some(DsdPath::Sdm { sdm, packer, .. }) = &mut self.dsd_path {
+            let bytes = &mut self.dsd_bytes;
+            bytes.clear();
+            sdm.process(block, bytes);
+            packer.push(bytes, out);
+            return;
+        }
+        self.clipped += append_converted(block, out);
+    }
+
     /// Appends the next decoded block to `out`. Returns the source units decoded; `0` means
     /// the track ended. DSD packers may still append their final padded frame on `0`.
     pub(crate) fn decode(

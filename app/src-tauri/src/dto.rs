@@ -144,6 +144,28 @@ impl ImpulseResponseInfo {
     }
 }
 
+/// What plays after a track ends.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum RepeatMode {
+    #[default]
+    Off,
+    /// After the last entry, continue at the first.
+    All,
+    /// Play the same entry again.
+    One,
+}
+
+impl From<RepeatMode> for sonder_engine::RepeatMode {
+    fn from(mode: RepeatMode) -> Self {
+        match mode {
+            RepeatMode::Off => sonder_engine::RepeatMode::Off,
+            RepeatMode::All => sonder_engine::RepeatMode::All,
+            RepeatMode::One => sonder_engine::RepeatMode::One,
+        }
+    }
+}
+
 /// How DSD files reach an output device.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -487,6 +509,8 @@ pub struct SignalPathInfo {
     pub stages: Vec<SignalPathStage>,
     /// `true` only when nothing touched the samples and the rate is unchanged.
     pub bit_perfect: bool,
+    /// How the track joined the previous one: the crossfade length, or why it stayed gapless.
+    pub transition: Option<String>,
 }
 
 impl From<sonder_engine::SignalPath> for SignalPathInfo {
@@ -511,6 +535,7 @@ impl From<sonder_engine::SignalPath> for SignalPathInfo {
                 })
                 .collect(),
             bit_perfect: path.bit_perfect,
+            transition: path.transition,
         }
     }
 }
@@ -531,6 +556,8 @@ pub struct PlayerSnapshot {
     pub volume_db: Option<f64>,
     /// What happens to the signal for the announced track; `None` before the first one.
     pub signal_path: Option<SignalPathInfo>,
+    /// What plays after the current track ends.
+    pub repeat: RepeatMode,
 }
 
 /// One line of lyrics; `start_ms` is 0 on every line of unsynced lyrics.

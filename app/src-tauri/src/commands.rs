@@ -15,7 +15,8 @@ use tauri_specta::Event;
 
 use crate::dto::{
     Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, Device,
-    ImpulseResponseInfo, Lyrics, PlayerSnapshot, QueueItem, RootFolder, SortOrder, TrackItem,
+    ImpulseResponseInfo, Lyrics, PlayerSnapshot, QueueItem, RepeatMode, RootFolder, SortOrder,
+    TrackItem,
 };
 use crate::events::{LibraryChangedEvent, QueueChangedEvent};
 use crate::settings::Settings;
@@ -415,6 +416,15 @@ fn apply_volume(state: &AppState, db: Option<f64>) {
     }
 }
 
+/// Sets what plays after the current track ends (off, all, one) and remembers it for this run.
+#[tauri::command]
+#[specta::specta]
+pub async fn player_set_repeat(state: State<'_, AppState>, mode: RepeatMode) -> AppResult<()> {
+    state.snapshot().repeat = mode;
+    state.player.set_repeat(mode.into());
+    Ok(())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn player_snapshot(state: State<'_, AppState>) -> AppResult<PlayerSnapshot> {
@@ -454,8 +464,8 @@ pub async fn settings_get(state: State<'_, AppState>) -> AppResult<Settings> {
     Ok(lock(&state.settings).clone())
 }
 
-/// Saves `settings` and applies the device, volume, DSD, DSP and rate-conversion settings in
-/// them.
+/// Saves `settings` and applies the device, volume, DSD, DSP, crossfade and rate-conversion
+/// settings in them.
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> AppResult<Settings> {
@@ -469,6 +479,7 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> App
     saved.apply_dsp(&state.player);
     saved.apply_src(&state.player);
     saved.apply_sdm(&state.player);
+    saved.apply_crossfade(&state.player);
     Ok(saved)
 }
 

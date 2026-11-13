@@ -44,14 +44,16 @@ export const commands = {
 	playerSeek: (positionMs: number) => __TAURI_INVOKE<null>("player_seek", { positionMs }),
 	/**  Sets software volume in dB, or `None` for bit-perfect output, and remembers it. */
 	playerSetVolume: (db: number | null) => __TAURI_INVOKE<null>("player_set_volume", { db }),
+	/**  Sets what plays after the current track ends (off, all, one) and remembers it for this run. */
+	playerSetRepeat: (mode: RepeatMode) => __TAURI_INVOKE<null>("player_set_repeat", { mode }),
 	playerSnapshot: () => __TAURI_INVOKE<PlayerSnapshot>("player_snapshot"),
 	devicesList: () => __TAURI_INVOKE<Device[]>("devices_list"),
 	/**  Switches output to `id` (playback continues there) and remembers the choice. */
 	deviceSelect: (id: string) => __TAURI_INVOKE<null>("device_select", { id }),
 	settingsGet: () => __TAURI_INVOKE<Settings>("settings_get"),
 	/**
-	 *  Saves `settings` and applies the device, volume, DSD, DSP and rate-conversion settings in
-	 *  them.
+	 *  Saves `settings` and applies the device, volume, DSD, DSP, crossfade and rate-conversion
+	 *  settings in them.
 	 */
 	settingsSet: (settings: Settings) => __TAURI_INVOKE<Settings>("settings_set", { settings }),
 	/**  Asks for the folder that holds Roon's filter tables. Returns `None` when the user cancels. */
@@ -154,6 +156,13 @@ export type CoverStyle =
 "vinyl" | 
 /**  The flat square cover. */
 "square";
+
+/**  Equal-power crossfade between queue entries. */
+export type CrossfadeSetting = {
+	enabled?: boolean,
+	/**  Fade length in seconds, within the engine's 1–10 s range. */
+	seconds?: number | null,
+};
 
 /**  Headphone crossfeed presets (libbs2b's). */
 export type CrossfeedPresetSetting = 
@@ -325,6 +334,8 @@ export type PlayerSnapshot = {
 	volumeDb: number | null,
 	/**  What happens to the signal for the announced track; `None` before the first one. */
 	signalPath: SignalPathInfo | null,
+	/**  What plays after the current track ends. */
+	repeat: RepeatMode,
 };
 
 export type PlayerStateEvent = PlayerSnapshot;
@@ -344,6 +355,13 @@ export type QueueItem = {
 	artColors: string[],
 	durationMs: number,
 };
+
+/**  What plays after a track ends. */
+export type RepeatMode = "off" | 
+/**  After the last entry, continue at the first. */
+"all" | 
+/**  Play the same entry again. */
+"one";
 
 export type RootFolder = {
 	path: string,
@@ -402,6 +420,8 @@ export type Settings = {
 	peq?: PeqSetting,
 	/**  Headphone crossfeed (runs after the EQ). */
 	crossfeed?: CrossfeedSetting,
+	/**  Equal-power crossfade between entries; off keeps transitions gapless. */
+	crossfade?: CrossfadeSetting,
 	/**  Saved EQ presets, by name. */
 	peqPresets?: { [key in string]: PeqSetting },
 	/**  Name of the preset `peq` came from, when it has not been edited since. */
@@ -426,6 +446,8 @@ export type SignalPathInfo = {
 	stages: SignalPathStage[],
 	/**  `true` only when nothing touched the samples and the rate is unchanged. */
 	bitPerfect: boolean,
+	/**  How the track joined the previous one: the crossfade length, or why it stayed gapless. */
+	transition: string | null,
 };
 
 /**  What the device receives. */

@@ -119,6 +119,19 @@ impl Packer {
         self.pending.clear();
     }
 
+    /// Moves the partial carrier frame out, so another packer can continue the byte stream
+    /// (a crossfade hands the stream from one track's packer to the next).
+    pub fn take_pending(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// Continues a partial carrier frame taken from another packer. The bytes belong before
+    /// the next byte this packer receives.
+    pub fn adopt_pending(&mut self, pending: Vec<u8>) {
+        debug_assert!(self.pending.is_empty(), "a fresh packer starts empty");
+        self.pending = pending;
+    }
+
     fn pack_frame(&self, frame: &[u8], out: &mut Vec<i32>) {
         // Interleaved byte frames: byte k of channel c is at k * channels + c.
         match self.packing {
@@ -169,6 +182,26 @@ mod tests {
         (0..frames * channels)
             .map(|i| (i.wrapping_mul(37) + 11) as u8)
             .collect()
+    }
+
+    #[test]
+    fn a_partial_frame_continues_in_another_packer() {
+        let mut outgoing = Packer::dop(2);
+        let mut words = Vec::new();
+        // One byte per channel: half a carrier frame, held back by the packer.
+        outgoing.push(&[0x11, 0x21], &mut words);
+        assert!(words.is_empty());
+        let pending = outgoing.take_pending();
+        assert_eq!(pending, vec![0x11, 0x21]);
+        assert!(outgoing.take_pending().is_empty());
+
+        let mut incoming = Packer::dop(2);
+        incoming.adopt_pending(pending);
+        incoming.push(&[0x12, 0x22], &mut words);
+        assert_eq!(
+            words,
+            vec![(0x11 << 16) | (0x12 << 8), (0x21 << 16) | (0x22 << 8)]
+        );
     }
 
     #[test]

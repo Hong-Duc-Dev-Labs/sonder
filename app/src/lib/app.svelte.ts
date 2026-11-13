@@ -130,6 +130,7 @@ const emptySnapshot: PlayerSnapshot = {
   underruns: 0,
   volumeDb: null,
   signalPath: null,
+  repeat: "off",
 };
 
 class AppState {

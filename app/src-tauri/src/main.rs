@@ -55,6 +55,7 @@ fn bindings() -> Builder<tauri::Wry> {
             commands::player_previous,
             commands::player_seek,
             commands::player_set_volume,
+            commands::player_set_repeat,
             commands::player_snapshot,
             commands::devices_list,
             commands::device_select,

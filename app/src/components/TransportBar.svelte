@@ -4,7 +4,7 @@
   // bar becomes a thin line along the pill's bottom edge. It slides away on Now Playing, which
   // has its own controls.
   import { app } from "../lib/app.svelte";
-  import { commands } from "../lib/bindings";
+  import { commands, type RepeatMode } from "../lib/bindings";
   import { playbackMs } from "../lib/clock.svelte";
   import { duration, isBitPerfect, outputLabel, sourceLabel } from "../lib/format";
   import { onFrame } from "../lib/motion";
@@ -68,6 +68,18 @@
   });
 
   const seeker = keySeeker(() => total);
+
+  // Repeat cycles off → all → one; the engine owns the mode, the snapshot reports it.
+  let repeat = $derived<RepeatMode>(snap.repeat ?? "off");
+  const repeatOrder: Record<RepeatMode, RepeatMode> = { off: "all", all: "one", one: "off" };
+  const repeatLabels: Record<RepeatMode, string> = {
+    off: "Repeat off",
+    all: "Repeat all",
+    one: "Repeat one",
+  };
+  function cycleRepeat() {
+    app.run(commands.playerSetRepeat(repeatOrder[repeat]));
+  }
 
   function commitSeek() {
     if (dragging != null) app.run(commands.playerSeek(Math.round(dragging)));
@@ -141,6 +153,16 @@
       </button>
       <button class="ctl" aria-label="Next" onclick={() => app.run(commands.playerNext())}>
         <Icon name="next" size={20} />
+      </button>
+      <button
+        class="ctl"
+        class:on={repeat !== "off"}
+        aria-label={repeatLabels[repeat]}
+        title={repeatLabels[repeat]}
+        aria-pressed={repeat !== "off"}
+        onclick={cycleRepeat}
+      >
+        <Icon name={repeat === "one" ? "repeat-one" : "repeat"} size={20} />
       </button>
     </div>
 
@@ -346,6 +368,9 @@
   }
   .ctl:hover {
     background: var(--soft-hover);
+  }
+  .ctl.on {
+    color: var(--ok);
   }
   .ctl:active {
     transform: scale(0.88);

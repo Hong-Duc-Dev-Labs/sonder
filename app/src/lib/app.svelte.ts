@@ -139,6 +139,17 @@ function focusHeading() {
 
 /** Narrowest window that docks the inspector; below it the inspector floats over the page. */
 const INSPECTOR_DOCK_MIN_PX = 1280;
+/** Widest window that always shows the sidebar as an icon rail. */
+const SIDEBAR_RAIL_MAX_PX = 1099;
+const SIDEBAR_KEY = "sonder.sidebarCollapsed";
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 const emptySnapshot: PlayerSnapshot = {
   state: "stopped",
@@ -166,6 +177,12 @@ class AppState {
   lyricsOpen = $state(false);
   /** The window has room to dock the inspector beside the page instead of over it. */
   wide = $state(false);
+  /** The window is too narrow for the full sidebar; it shows as an icon rail regardless. */
+  narrow = $state(false);
+  /** The user folded the sidebar into its icon rail; remembered on this machine. */
+  sidebarCollapsed = $state(readSidebarCollapsed());
+  /** The sidebar shows as an icon rail. */
+  rail = $derived(this.sidebarCollapsed || this.narrow);
   /** What the right-hand inspector shows: one panel at a time, none on Now Playing's lyrics. */
   inspector = $derived<"queue" | "lyrics" | null>(
     this.queueOpen ? "queue" : this.lyricsOpen && this.view.kind !== "now" ? "lyrics" : null,
@@ -286,6 +303,16 @@ class AppState {
     this.flightLaunch(flight);
   }
 
+  /** Folds the sidebar into its icon rail or opens it out, and remembers the choice. */
+  toggleSidebar() {
+    this.sidebarCollapsed = !this.sidebarCollapsed;
+    try {
+      localStorage.setItem(SIDEBAR_KEY, this.sidebarCollapsed ? "1" : "0");
+    } catch {
+      // storage blocked: the choice lasts for this session only
+    }
+  }
+
   /** Opens or closes the queue; outside Now Playing it takes the inspector from the lyrics. */
   toggleQueue() {
     const open = !this.queueOpen;
@@ -391,6 +418,9 @@ class AppState {
     const roomy = window.matchMedia(`(min-width: ${INSPECTOR_DOCK_MIN_PX}px)`);
     this.wide = roomy.matches;
     roomy.addEventListener("change", (e) => (this.wide = e.matches));
+    const cramped = window.matchMedia(`(max-width: ${SIDEBAR_RAIL_MAX_PX}px)`);
+    this.narrow = cramped.matches;
+    cramped.addEventListener("change", (e) => (this.narrow = e.matches));
     await Promise.all([
       events.playerStateEvent.listen((e) => this.setPlayer(e.payload)),
       events.queueChangedEvent.listen((e) => (this.queue = e.payload)),

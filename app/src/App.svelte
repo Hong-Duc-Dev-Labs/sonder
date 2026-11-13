@@ -70,6 +70,9 @@
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
       e.preventDefault();
       app.go({ kind: "search" });
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b" && !app.narrow) {
+      e.preventDefault();
+      app.toggleSidebar();
     } else if (e.altKey && e.key === "ArrowLeft") {
       app.back();
     }
@@ -108,11 +111,16 @@
 
 <div
   class="shell"
+  class:rail={app.rail}
   data-glass={app.settings.glass ?? "full"}
   style:--wash={app.wash ?? "transparent"}
   style:--inset-right={app.docked ? "calc(var(--inspector-w) + var(--gutter) * 2)" : "0px"}
 >
-  <AmbientBackdrop colors={app.current?.artColors ?? []} strength={onNow ? 1 : 0.45} />
+  <AmbientBackdrop
+    colors={app.current?.artColors ?? []}
+    strength={onNow ? 1 : 0.6}
+    still={(app.settings.glass ?? "full") === "off"}
+  />
 
   <main class:full={onNow}>
     {#if detail && app.history.length}
@@ -162,6 +170,17 @@
         <circle cx="12" cy="12" r="1" fill="#0b0b0d" />
       </svg>
       <span class="label">Sonder</span>
+      {#if !app.narrow}
+        <button
+          class="icon-btn fold"
+          aria-label={app.sidebarCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"}
+          title={app.sidebarCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"}
+          aria-expanded={!app.sidebarCollapsed}
+          onclick={() => app.toggleSidebar()}
+        >
+          <Icon name="sidebar" size={18} />
+        </button>
+      {/if}
     </div>
 
     <!-- The middle scrolls on short windows; the brand, Now Playing and Settings stay put. -->
@@ -386,6 +405,14 @@
     flex: none;
     color: var(--ink);
   }
+  .fold {
+    width: 36px;
+    height: 36px;
+    margin-right: -4px;
+  }
+  .rail .fold {
+    margin-right: 0;
+  }
   .group {
     padding: 0 14px 6px;
     /* on glass: the fainter kicker ink is for the canvas and soft surfaces only */
@@ -594,34 +621,34 @@
     color: var(--ink);
   }
 
-  /* Narrow windows: the sidebar becomes an icon rail. */
-  @media (max-width: 1099px) {
-    .shell {
-      --sidebar: 72px;
-    }
-    .sidebar {
-      padding: 16px 10px 10px;
-      align-items: center;
-    }
-    .brand {
-      padding: 4px 0 18px;
-    }
-    .label,
-    kbd,
-    .group,
-    .group-row,
-    .hint,
-    .nav.playlist {
-      display: none;
-    }
-    .nav-scroll {
-      align-items: center;
-    }
-    .nav,
-    .scan {
-      width: 52px;
-      padding: 0;
-      justify-content: center;
-    }
+  /* The icon rail: folded by the user, or forced on narrow windows (app.rail). */
+  .shell.rail {
+    --sidebar: 72px;
+  }
+  .rail .sidebar {
+    padding: 16px 10px 10px;
+    align-items: center;
+  }
+  .rail .brand {
+    flex-direction: column;
+    gap: 10px;
+    padding: 4px 0 18px;
+  }
+  .rail .label,
+  .rail kbd,
+  .rail .group,
+  .rail .group-row,
+  .rail .hint,
+  .rail .nav.playlist {
+    display: none;
+  }
+  .rail .nav-scroll {
+    align-items: center;
+  }
+  .rail .nav,
+  .rail .scan {
+    width: 52px;
+    padding: 0;
+    justify-content: center;
   }
 </style>

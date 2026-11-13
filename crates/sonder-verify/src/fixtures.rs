@@ -55,6 +55,11 @@ pub fn write_flac(path: &Path, rate: u32, bits: u32, samples: &[i32]) -> io::Res
         "stereo samples come in pairs"
     );
     let frames = samples.len() / 2;
+    // `utf8_number` codes frame numbers in at most four bytes (below 2^21).
+    assert!(
+        frames.div_ceil(FLAC_BLOCK) <= 1 << 21,
+        "too long for this writer's frame numbering"
+    );
     let mut out = Vec::new();
     out.extend_from_slice(b"fLaC");
 

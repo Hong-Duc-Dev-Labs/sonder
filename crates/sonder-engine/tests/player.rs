@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use sonder_decode::Decoder;
-use sonder_engine::{DsdMode, DsdPcmRate, PlaybackState, Player, PlayerConfig, PlayerEvent};
+use sonder_engine::{
+    DsdMode, DsdPcmRate, DspConfig, PlaybackState, Player, PlayerConfig, PlayerEvent,
+};
 use sonder_output::format::{pack, unpack};
 use sonder_output::null::{NullBackend, NullControl};
 use sonder_output::{DeviceFormat, SampleContainer};
@@ -1475,5 +1477,256 @@ fn a_mid_track_volume_change_reports_the_new_signal_path() {
     assert!(
         !last.bit_perfect && last.stages.iter().any(|s| s.name == "Volume"),
         "{paths:#?}"
+    );
+}
+
+/// Levelling values for every path: one quiet album, fixed gains.
+struct FixedGains;
+
+impl sonder_engine::LoudnessSource for FixedGains {
+    fn gain(&self, _path: &Path, _target_lufs: f64) -> Option<sonder_engine::TrackGain> {
+        Some(sonder_engine::TrackGain {
+            track: sonder_dsp::Gain {
+                gain_db: -6.0,
+                peak: 1.0,
+            },
+            album: sonder_dsp::Gain {
+                gain_db: -9.0,
+                peak: 1.0,
+            },
+            album_id: Some(7),
+        })
+    }
+}
+
+fn shaped_dsp() -> DspConfig {
+    DspConfig {
+        peq: Some(sonder_dsp::Peq {
+            preamp_db: -3.0,
+            bands: vec![sonder_dsp::PeqBand {
+                kind: sonder_dsp::BiquadKind::Peak,
+                freq_hz: 1_000.0,
+                gain_db: 6.0,
+                q: 1.0,
+                enabled: true,
+            }],
+        }),
+        leveling: sonder_dsp::LevelingMode::Track,
+        leveling_target_lufs: -18.0,
+        dither: true,
+    }
+}
+
+#[test]
+fn dsp_stages_run_in_roon_order() {
+    let a = wav("order.wav", 44_100, 16, 4_000, 21);
+    let backend = NullBackend::new().with_formats(vec![
+        DeviceFormat {
+            rate: 44_100,
+            container: SampleContainer::S16,
+            channels: 2,
+        },
+        DeviceFormat {
+            rate: 48_000,
+            container: SampleContainer::S16,
+            channels: 2,
+        },
+    ]);
+    let control = backend.control();
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.device_poll = Duration::from_millis(20);
+    config.src.target = sonder_engine::SrcTarget::Fixed(48_000);
+    config.dsp = shaped_dsp();
+    config.loudness = std::sync::Arc::new(FixedGains);
+    let (player, events) = Player::spawn(Box::new(backend), config).unwrap();
+    player.set_volume(Some(-2.0));
+    player.enqueue(vec![a.clone()]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let path = seen
+        .iter()
+        .find_map(|event| match event {
+            PlayerEvent::SignalPath(path) => Some(path.clone()),
+            _ => None,
+        })
+        .expect("signal path");
+    let names: Vec<&str> = path.stages.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Headroom",
+            "Resampler",
+            "PEQ",
+            "Levelling",
+            "Volume",
+            "Dither"
+        ],
+        "{path:#?}"
+    );
+    assert!(!path.bit_perfect);
+    assert_eq!(path.output_bits, 16);
+    let dither = path.stages.last().unwrap();
+    assert!(dither.detail.contains("16-bit"), "{}", dither.detail);
+    assert!(path.stages[3].detail.contains("-6.0 dB"), "{path:#?}");
+    // Every stage changed the samples: what reached the device is not the source.
+    assert_ne!(
+        control.played_bytes(),
+        packed(SampleContainer::S16, &decoded(&a))
+    );
+}
+
+#[test]
+fn removing_every_dsp_stage_restores_the_bit_perfect_path() {
+    let a = wav("shaped.wav", 44_100, 16, 8_000, 22);
+    let backend = NullBackend::new();
+    let control = backend.control();
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.device_poll = Duration::from_millis(20);
+    config.dsp = shaped_dsp();
+    config.loudness = std::sync::Arc::new(FixedGains);
+    let (player, events) = Player::spawn(Box::new(backend), config).unwrap();
+
+    player.enqueue(vec![a.clone()]);
+    player.play();
+    wait_end(&events);
+    assert_ne!(
+        control.played_bytes(),
+        packed(SampleContainer::S16, &decoded(&a))
+    );
+
+    player.set_dsp(DspConfig::default());
+    player.set_volume(None);
+    player.play();
+    wait_end(&events);
+    assert_eq!(
+        control.sessions().last().unwrap().bytes,
+        packed(SampleContainer::S16, &decoded(&a))
+    );
+    let sessions = control.sessions();
+    assert_eq!(
+        sessions.last().unwrap().format.container,
+        SampleContainer::S16
+    );
+}
+
+#[test]
+fn dither_engages_only_when_the_device_narrows_the_word_length() {
+    let a = wav("dither.wav", 44_100, 24, 8_000, 23);
+    let backend = NullBackend::new().with_formats(vec![DeviceFormat {
+        rate: 44_100,
+        container: SampleContainer::S16,
+        channels: 2,
+    }]);
+    let control = backend.control();
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.device_poll = Duration::from_millis(20);
+    config.dsp = DspConfig::default();
+    let (player, events) = Player::spawn(Box::new(backend), config).unwrap();
+    player.set_volume(Some(-6.0));
+    player.enqueue(vec![a.clone()]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let path = seen
+        .iter()
+        .find_map(|event| match event {
+            PlayerEvent::SignalPath(path) => Some(path.clone()),
+            _ => None,
+        })
+        .expect("signal path");
+    let names: Vec<&str> = path.stages.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Volume", "Dither"], "{path:#?}");
+    assert_eq!(path.output_bits, 16);
+
+    let sessions = control.sessions();
+    let session = sessions.last().unwrap();
+    assert_eq!(session.format.container, SampleContainer::S16);
+    let mut out = vec![0i32; session.bytes.len() / 2];
+    unpack(SampleContainer::S16, &session.bytes, &mut out);
+    assert_eq!(out.len(), decoded(&a).len());
+    // Dither noise keeps every sample within two 16-bit LSBs of the scaled source.
+    for (o, s) in out.iter().zip(decoded(&a)) {
+        let expected = f64::from(s) * 0.501_187_2;
+        assert!(
+            (f64::from(*o) - expected).abs() <= 2.0 * f64::from(1 << 16),
+            "{o} vs {expected}"
+        );
+    }
+}
+
+/// Dither quantises before the final conversion, so it has to report what it clamps: a boost
+/// on a 16-bit device must still raise the clipping notice.
+#[test]
+fn clipping_is_reported_on_a_dithered_path() {
+    let a = wav("dither-clip.wav", 44_100, 24, 8_000, 24);
+    let backend = NullBackend::new().with_formats(vec![DeviceFormat {
+        rate: 44_100,
+        container: SampleContainer::S16,
+        channels: 2,
+    }]);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.device_poll = Duration::from_millis(20);
+    config.dsp = DspConfig {
+        peq: Some(sonder_dsp::Peq {
+            preamp_db: 12.0,
+            bands: Vec::new(),
+        }),
+        ..DspConfig::default()
+    };
+    let (player, events) = Player::spawn(Box::new(backend), config).unwrap();
+    player.enqueue(vec![a]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let path = seen
+        .iter()
+        .find_map(|event| match event {
+            PlayerEvent::SignalPath(path) => Some(path.clone()),
+            _ => None,
+        })
+        .expect("signal path");
+    assert!(path.stages.iter().any(|s| s.name == "Dither"), "{path:#?}");
+    assert!(
+        seen.iter()
+            .any(|e| matches!(e, PlayerEvent::Clipping(count) if *count > 0)),
+        "events: {seen:#?}"
+    );
+}
+
+/// Levelling only costs native DSD when the track has a gain: DSD is never measured and rarely
+/// tagged, so a 0 dB levelling stage leaves DoP alone, while a real gain converts to PCM.
+#[test]
+fn levelling_keeps_dop_unless_the_dsd_track_has_a_gain() {
+    let expected = dsd_bytes(8_000, 25);
+    let track = dsf("levelled-dop.dsf", &expected);
+
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.dsp.leveling = sonder_dsp::LevelingMode::Track;
+    let (player, events, control) = start_with(config, dsd_device());
+    player.enqueue(vec![track.clone()]);
+    player.play();
+    let seen = wait_end(&events);
+    assert_eq!(
+        dsd_modes(&seen),
+        vec![(DsdMode::Dop, None)],
+        "events: {seen:#?}"
+    );
+    let (payload, _) = decode_dop(&control.sessions().last().unwrap().bytes, 2);
+    assert_eq!(payload, expected);
+
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.dsp.leveling = sonder_dsp::LevelingMode::Track;
+    config.loudness = std::sync::Arc::new(FixedGains);
+    let (player, events, control) = start_with(config, dsd_device());
+    player.enqueue(vec![track]);
+    player.play();
+    let seen = wait_end(&events);
+    let modes = dsd_modes(&seen);
+    assert_eq!(modes.len(), 1, "events: {seen:#?}");
+    assert_eq!(modes[0].0, DsdMode::Pcm, "events: {seen:#?}");
+    assert_eq!(
+        control.sessions()[0].format.container,
+        SampleContainer::S24Packed
     );
 }

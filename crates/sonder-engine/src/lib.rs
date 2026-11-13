@@ -8,6 +8,7 @@
 //! [`sonder_dsp::DsdToPcm`] decimator feeding the normal pipeline. See [`DsdMode`].
 
 pub mod dop;
+mod dsp;
 pub mod pipeline;
 mod player;
 pub mod queue;
@@ -15,6 +16,7 @@ pub mod rate;
 pub mod stage;
 mod worker;
 
+pub use dsp::{DspConfig, LoudnessSource, MAX_TARGET_LUFS, MIN_TARGET_LUFS, NoLoudness, TrackGain};
 pub use pipeline::Pipeline;
 pub use player::{
     Command, DsdPcmRate, PlaybackState, Player, PlayerConfig, PlayerEvent, SignalPath, TapFactory,

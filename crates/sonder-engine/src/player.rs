@@ -12,6 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -24,10 +25,12 @@ use sonder_output::{
     StreamOptions, WriteTap, negotiate, negotiate_dop, negotiate_native, sample_ring,
 };
 
+use crate::dsp::{DspConfig, LoudnessSource, NoLoudness, TrackGain};
 use crate::queue::Queue;
 use crate::rate::{self, DeviceFormats, FilterResolver, SignalStage, SrcConfig, SrcPlan};
-use crate::stage::{Stage, Volume};
+use crate::stage::{Dither, GainHandle, LevelingStage, Peq, PeqStage, Stage, Volume};
 use crate::worker::{DecodeWorker, DsdMode, OutputMode, OutputSpec};
+use sonder_dsp::{Gain, LevelingMode};
 
 /// How long a seek waits for the render thread to drop queued audio before reopening instead.
 const FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
@@ -62,6 +65,12 @@ pub enum Command {
     Clear,
     /// Software volume in dB; `None` removes the stage and restores bit-perfect output.
     SetVolume(Option<f64>),
+    /// Replaces the PCM shaping settings (EQ, levelling, dither). A playing track restarts
+    /// from its position so the change is heard after one ring, not after the whole feed.
+    SetDsp(DspConfig),
+    /// Replaces the rate-conversion policy, filter source and headroom. The next track (or
+    /// the current one, restarted) is planned with the new settings.
+    SetSrc(SrcConfig),
     /// Plays on another device from now on. Playback continues on it from the current
     /// position; a stopped player just opens it on the next play.
     SetDevice(DeviceId),
@@ -102,6 +111,9 @@ pub enum PlayerEvent {
     },
     /// Total underruns and recovered xruns since the player started.
     Underruns(u64),
+    /// The current track clipped: samples clamped at full scale in the decode step where it
+    /// was first seen. Reported at most once per track, so the count is a sign, not a total.
+    Clipping(u64),
     /// A track could not be opened, decoded, or played on this device; playback moves on.
     TrackFailed {
         index: usize,
@@ -140,6 +152,7 @@ pub struct SignalPath {
     pub output_bits: u32,
     pub output_channels: u16,
     pub mode: OutputMode,
+    /// In processing order: headroom, SRC, PEQ, levelling, volume, dither.
     pub stages: Vec<SignalStage>,
     /// `true` only when no stage touched the samples and the rate is unchanged. Automatic
     /// SRC fallback and any DSP setting make this `false`.
@@ -185,6 +198,10 @@ pub struct PlayerConfig {
     /// Rate-conversion policy, filter source and automatic fallback. The default keeps the
     /// bit-perfect path unless the device refuses the source rate.
     pub src: SrcConfig,
+    /// PCM shaping: EQ, levelling and dither.
+    pub dsp: DspConfig,
+    /// ReplayGain / loudness lookup for levelling; the default knows nothing.
+    pub loudness: Arc<dyn LoudnessSource>,
 }
 
 impl PlayerConfig {
@@ -199,6 +216,8 @@ impl PlayerConfig {
             dsd_modes: HashMap::new(),
             dsd_pcm_rate: DsdPcmRate::R176_4,
             src: SrcConfig::default(),
+            dsp: DspConfig::default(),
+            loudness: Arc::new(NoLoudness),
         }
     }
 
@@ -292,6 +311,16 @@ impl Player {
 
     pub fn set_volume(&self, db: Option<f64>) {
         self.send(Command::SetVolume(db));
+    }
+
+    /// Replaces the PCM shaping settings: parametric EQ, levelling and dither.
+    pub fn set_dsp(&self, dsp: DspConfig) {
+        self.send(Command::SetDsp(dsp));
+    }
+
+    /// Replaces the rate-conversion policy, filter source and headroom.
+    pub fn set_src(&self, src: SrcConfig) {
+        self.send(Command::SetSrc(src));
     }
 
     /// Changes DSD handling: the mode for devices without an entry in `modes`, per-device
@@ -423,6 +452,19 @@ struct Now {
     frame: u64,
 }
 
+/// What the worker's chain is built from, compared to decide whether it needs rebuilding.
+#[derive(Debug, Clone, PartialEq)]
+struct StageKey {
+    /// Source, target and channels of the rate-conversion plan.
+    plan: Option<(u32, u32, u16)>,
+    peq: Option<Peq>,
+    leveling: Option<LevelingMode>,
+    volume: Option<u64>,
+    dither: Option<u32>,
+    /// DoP or native DSD: every shaping stage is left out.
+    bitstream: bool,
+}
+
 struct Engine {
     backend: Box<dyn OutputBackend>,
     config: PlayerConfig,
@@ -469,6 +511,21 @@ struct Engine {
     /// change, so the next track re-probes the new device.
     fallback: HashMap<(u32, u16), u32>,
     volume_db: Option<f64>,
+    /// Levelling gain shared with the stage in the chain; updated per track.
+    leveling: GainHandle,
+    /// Target word length for dither when the device container is narrower than the signal.
+    dither_bits: Option<u32>,
+    /// Channel count of the planned track, so stage changes can re-decide dither.
+    channels: u16,
+    /// Whether clipping was already reported for the current track.
+    clipping_reported: bool,
+    /// What the worker's chain currently contains, so it is rebuilt only when it changes.
+    stages_key: Option<StageKey>,
+    /// Samples the dither stage clamped; it quantises before the worker's conversion, so the
+    /// worker's own clip count never sees them.
+    dither_clipped: Arc<AtomicU64>,
+    /// The open track goes out as DoP or native DSD, so the chain must stay empty.
+    bitstream: bool,
     /// Track whose fallback SRC was already tried after a refusal; a second refusal is a
     /// normal output failure.
     src_retry: Option<usize>,
@@ -518,6 +575,13 @@ impl Engine {
             plan_key: None,
             fallback: HashMap::new(),
             volume_db: None,
+            leveling: GainHandle::default(),
+            dither_bits: None,
+            channels: 2,
+            clipping_reported: false,
+            stages_key: None,
+            dither_clipped: Arc::new(AtomicU64::new(0)),
+            bitstream: false,
             src_retry: None,
             device_formats: HashMap::new(),
         };
@@ -618,6 +682,8 @@ impl Engine {
                 self.after_end = None;
             }
             Command::SetVolume(db) => self.set_volume(db),
+            Command::SetDsp(dsp) => self.set_dsp(dsp),
+            Command::SetSrc(src) => self.set_src(src),
             Command::SetDevice(device) => self.set_device(device),
             Command::SetDsd {
                 default_mode,
@@ -885,11 +951,49 @@ impl Engine {
             return;
         }
         self.volume_db = db;
-        // Volume sits in front of the resampler, so the stage list keeps the current plan.
-        let stages = self.compose_stages();
-        self.worker.set_stages(stages);
-        // Re-decode from what is playing now so the change is heard after one ring, not
-        // after everything already decoded.
+        self.refresh_dither(self.channels, false);
+        self.sync_stages();
+        self.restart_if_playing();
+    }
+
+    fn set_dsp(&mut self, dsp: DspConfig) {
+        let dsp = dsp.sanitized();
+        if self.config.dsp == dsp {
+            return;
+        }
+        self.config.dsp = dsp;
+        self.refresh_dither(self.channels, false);
+        self.sync_stages();
+        self.restart_if_playing();
+    }
+
+    /// Replaces the rate-conversion policy and rebuilds the resolver. The next plan is built
+    /// from scratch: a different filter source, phase or target can change every stage.
+    fn set_src(&mut self, src: SrcConfig) {
+        if self.config.src == src {
+            return;
+        }
+        self.config.src = src;
+        let (resolver, warnings) = FilterResolver::new(
+            &self.config.src,
+            sonder_dsp::sonder_design::default_cache_dir(),
+        );
+        self.resolver = resolver;
+        for warning in warnings {
+            self.emit(PlayerEvent::Warning(warning));
+        }
+        self.plan = None;
+        self.plan_key = None;
+        self.fallback.clear();
+        self.src_retry = None;
+        self.refresh_dither(self.channels, false);
+        self.sync_stages();
+        self.restart_if_playing();
+    }
+
+    /// Restarts the current track from its position so a stage change is heard after one
+    /// ring, not after everything already decoded.
+    fn restart_if_playing(&mut self) {
         if self.state != PlaybackState::Stopped
             && self.hold.is_none()
             && let Some((index, pos)) = self.current_pos()
@@ -898,20 +1002,66 @@ impl Engine {
         }
     }
 
-    /// The full stage list: volume, then the rate-conversion plan (headroom and resamplers).
+    /// The full stage list in Roon's order: headroom, SRC, PEQ, levelling, volume, dither.
+    /// Empty while DoP or native DSD plays: those send the source bits untouched.
     fn compose_stages(&self) -> Vec<Box<dyn Stage>> {
         let mut stages: Vec<Box<dyn Stage>> = Vec::new();
-        if let Some(db) = self.volume_db {
-            stages.push(Box::new(Volume::from_db(db)));
+        if self.bitstream {
+            return stages;
         }
         if let Some(plan) = &self.plan {
             stages.extend(plan.stages());
         }
+        if let Some(peq) = self.config.dsp.peq.clone().filter(Peq::active) {
+            stages.push(Box::new(PeqStage::new(peq)));
+        }
+        if self.config.dsp.leveling.is_on() {
+            stages.push(Box::new(LevelingStage::new(self.leveling.clone())));
+        }
+        if let Some(db) = self.volume_db {
+            stages.push(Box::new(Volume::from_db(db)));
+        }
+        if let Some(bits) = self.dither_bits {
+            stages.push(Box::new(
+                Dither::new(bits).with_clip_counter(self.dither_clipped.clone()),
+            ));
+        }
         stages
     }
 
-    /// Rebuilds the worker's chain when the rate-conversion plan changes. `continuous`
-    /// keeps the old chain's tail in the stream before the switch.
+    /// What the worker's chain is built from; a change means it has to be rebuilt.
+    fn stage_key(&self) -> StageKey {
+        StageKey {
+            plan: self
+                .plan
+                .as_ref()
+                .map(|p| (p.source_rate, p.target_rate, p.channels)),
+            peq: self.config.dsp.peq.clone().filter(Peq::active),
+            leveling: self
+                .config
+                .dsp
+                .leveling
+                .is_on()
+                .then_some(self.config.dsp.leveling),
+            volume: self.volume_db.map(f64::to_bits),
+            dither: self.dither_bits,
+            bitstream: self.bitstream,
+        }
+    }
+
+    /// Rebuilds the worker's chain when its contents changed. The old chain's history is
+    /// dropped; callers that need continuity flush its tail first.
+    fn sync_stages(&mut self) {
+        let key = self.stage_key();
+        if self.stages_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.worker.set_stages(self.compose_stages());
+        self.stages_key = Some(key);
+    }
+
+    /// Rebuilds the stage list when the rate-conversion plan changes. `continuous` keeps the
+    /// old chain's tail in the stream before the switch.
     fn ensure_plan(
         &mut self,
         rate: u32,
@@ -919,42 +1069,84 @@ impl Engine {
         channels: u16,
         continuous: bool,
         tail: &mut Vec<i32>,
+        converted: bool,
     ) {
         let target = self.target_for(rate, bits, channels);
         let key = (rate, channels, target);
-        if self.plan_key == Some(key) {
-            return;
-        }
-        let plan = target.and_then(|target| {
-            let plan = self.resolver.plan(rate, target, channels, &self.config.src);
-            if plan.is_none() {
-                self.emit(PlayerEvent::Warning(format!(
-                    "no filter can convert {rate} Hz to {target} Hz; keeping the source rate"
-                )));
+        let plan_changed = self.plan_key != Some(key);
+        self.channels = channels;
+        if plan_changed {
+            let plan = target.and_then(|target| {
+                let plan = self.resolver.plan(rate, target, channels, &self.config.src);
+                if plan.is_none() {
+                    self.emit(PlayerEvent::Warning(format!(
+                        "no filter can convert {rate} Hz to {target} Hz; keeping the source rate"
+                    )));
+                }
+                plan
+            });
+            if continuous {
+                self.worker.flush_tail(tail);
             }
-            plan
-        });
-        if continuous {
+            self.plan = plan;
+            self.plan_key = Some(key);
+        }
+        let dither_changed = self.refresh_dither(channels, converted);
+        if !plan_changed && dither_changed && continuous {
             self.worker.flush_tail(tail);
         }
-        self.plan = plan;
-        self.plan_key = Some(key);
-        let stages = self.compose_stages();
-        self.worker.set_stages(stages);
+        self.sync_stages();
     }
 
-    /// Removes the rate-conversion plan from the worker, keeping only volume.
+    /// Removes the rate-conversion plan from the worker, keeping the shaping stages.
     fn drop_plan(&mut self, continuous: bool, tail: &mut Vec<i32>) {
         self.plan_key = None;
         if self.plan.is_none() {
+            self.sync_stages();
             return;
         }
         if continuous {
             self.worker.flush_tail(tail);
         }
         self.plan = None;
-        let stages = self.compose_stages();
-        self.worker.set_stages(stages);
+        self.sync_stages();
+    }
+
+    /// Recomputes the dither target for this channel count; `true` when it changed.
+    ///
+    /// Dither only applies when the device's widest container is narrower than the processed
+    /// signal (24 bits) and the chain actually shapes the signal: a bit-perfect path must not
+    /// gain a dither stage just because the device is 16-bit. `converted` marks a signal the
+    /// worker derives (DSD→PCM), which counts as shaped. A device that cannot be probed keeps
+    /// the signal undithered because its width is unknown.
+    fn refresh_dither(&mut self, channels: u16, converted: bool) -> bool {
+        let shaping = converted
+            || self.plan.is_some()
+            || self.config.dsp.peq_active()
+            || self.config.dsp.leveling.is_on()
+            || self.volume_db.is_some();
+        if !self.config.dsp.dither || !shaping {
+            let changed = self.dither_bits.is_some();
+            self.dither_bits = None;
+            return changed;
+        }
+        // A probe that fails while an exclusive stream is open leaves the previous decision
+        // (and the signal) alone; rewriting it would drop dither mid-stream.
+        let Some(width) = self.max_container_bits(channels) else {
+            return false;
+        };
+        let bits = (width < crate::worker::DSP_OUTPUT_BITS).then_some(width);
+        let changed = self.dither_bits != bits;
+        self.dither_bits = bits;
+        changed
+    }
+
+    /// Valid bits of the widest container the device accepts for `channels`.
+    fn max_container_bits(&mut self, channels: u16) -> Option<u32> {
+        self.formats_for(channels)?
+            .iter()
+            .map(|format| format.container.valid_bits())
+            .max()
     }
 
     /// A rate the device accepts for this source, explicitly chosen or learned from a
@@ -976,19 +1168,8 @@ impl Engine {
     /// Like [`supported_rates`](Self::supported_rates), but `None` when the device could not
     /// be asked (an exclusive stream holds it), so "unknown" is not mistaken for "none".
     fn probed_rates(&mut self, bits: u32, channels: u16) -> Option<Vec<u32>> {
-        let key = (self.config.device.0.clone(), channels);
-        let formats = match self.device_formats.get(&key) {
-            Some(formats) => formats.clone(),
-            None => {
-                let formats = self
-                    .backend
-                    .supported_formats(&self.config.device, channels)
-                    .ok()?;
-                self.device_formats.insert(key, formats.clone());
-                formats
-            }
-        };
-        let mut rates: Vec<u32> = formats
+        let mut rates: Vec<u32> = self
+            .formats_for(channels)?
             .iter()
             .filter(|format| format.container.holds(bits))
             .map(|format| format.rate)
@@ -998,18 +1179,114 @@ impl Engine {
         Some(rates)
     }
 
+    /// Device formats for `channels`, queried once while the device is free. `None` when the
+    /// device could not be asked (an exclusive stream holds it).
+    fn formats_for(&mut self, channels: u16) -> Option<Vec<DeviceFormat>> {
+        let key = (self.config.device.0.clone(), channels);
+        if let Some(formats) = self.device_formats.get(&key) {
+            return Some(formats.clone());
+        }
+        let formats = self
+            .backend
+            .supported_formats(&self.config.device, channels)
+            .ok()?;
+        self.device_formats.insert(key, formats.clone());
+        Some(formats)
+    }
+
+    /// Publishes the levelling gain for `index` before its first block is decoded.
+    ///
+    /// `Auto` uses album values while the queue stays inside one album, so an album played
+    /// in order keeps its relative track loudness.
+    fn update_leveling(&self, index: usize, path: &Path) {
+        if !self.config.dsp.leveling.is_on() {
+            self.leveling.set_db(0.0);
+            return;
+        }
+        let Some(values) = self.loudness_gain(path) else {
+            self.leveling.set_db(0.0);
+            return;
+        };
+        let gain = match self.config.dsp.leveling {
+            LevelingMode::Off => Gain::default(),
+            LevelingMode::Track => values.track,
+            LevelingMode::Album => values.album,
+            LevelingMode::Auto => {
+                if values
+                    .album_id
+                    .is_some_and(|album| self.in_album_run(index, album))
+                {
+                    values.album
+                } else {
+                    values.track
+                }
+            }
+        };
+        self.leveling.set_gain(gain);
+    }
+
+    fn loudness_gain(&self, path: &Path) -> Option<TrackGain> {
+        self.config
+            .loudness
+            .gain(path, self.config.dsp.leveling_target_lufs)
+    }
+
+    /// Whether a neighbour of queue entry `index` belongs to `album`, i.e. this entry is part
+    /// of a contiguous run of the album's tracks.
+    fn in_album_run(&self, index: usize, album: i64) -> bool {
+        let same_album = |i: usize| {
+            self.queue
+                .get(i)
+                .and_then(|path| self.loudness_gain(path))
+                .and_then(|gain| gain.album_id)
+                == Some(album)
+        };
+        index.checked_sub(1).is_some_and(same_album) || same_album(index + 1)
+    }
+
     fn signal_path(&self, source: SourceFormat, spec: OutputSpec) -> SignalPath {
         let mut stages = Vec::new();
+        if spec.mode == OutputMode::Pcm
+            && let Some(plan) = &self.plan
+        {
+            stages.extend(plan.describe());
+        }
+        if spec.mode == OutputMode::Pcm
+            && let Some(peq) = self.config.dsp.peq.as_ref().filter(|p| p.active())
+        {
+            let bands = peq.bands.iter().filter(|b| b.enabled).count();
+            stages.push(SignalStage {
+                name: "PEQ".into(),
+                detail: format!("{bands} bands, preamp {:+.1} dB", peq.preamp_db),
+            });
+        }
+        if spec.mode == OutputMode::Pcm && self.config.dsp.leveling.is_on() {
+            stages.push(SignalStage {
+                name: "Levelling".into(),
+                detail: format!(
+                    "{} {:+.1} dB to {:.0} LUFS",
+                    match self.config.dsp.leveling {
+                        LevelingMode::Track => "track",
+                        LevelingMode::Album => "album",
+                        LevelingMode::Auto => "album/track",
+                        LevelingMode::Off => "off",
+                    },
+                    self.leveling.db(),
+                    self.config.dsp.leveling_target_lufs
+                ),
+            });
+        }
         if let Some(db) = self.volume_db {
             stages.push(SignalStage {
                 name: "Volume".into(),
                 detail: format!("{db:+.1} dB"),
             });
         }
-        if spec.mode == OutputMode::Pcm
-            && let Some(plan) = &self.plan
-        {
-            stages.extend(plan.describe());
+        if let Some(bits) = self.dither_bits.filter(|_| spec.mode == OutputMode::Pcm) {
+            stages.push(SignalStage {
+                name: "Dither".into(),
+                detail: format!("TPDF to {bits}-bit"),
+            });
         }
         let bit_perfect = stages.is_empty()
             && (spec.mode != OutputMode::Pcm
@@ -1201,8 +1478,14 @@ impl Engine {
             return (DsdMode::Pcm, None);
         }
         // Only stages that apply to every track count here. A rate-conversion plan belongs to
-        // the PCM source it was built for and is dropped for DoP and native DSD.
-        if self.volume_db.is_some() {
+        // the PCM source it was built for and is dropped for DoP and native DSD; EQ and volume
+        // shape every signal, so DSD has to become PCM first. Levelling only does so when this
+        // track has a gain (`update_leveling` published it before the decoder opened): DSD is
+        // never measured and rarely tagged, and a 0 dB stage is no reason to lose native DSD.
+        if self.volume_db.is_some()
+            || self.config.dsp.peq_active()
+            || (self.config.dsp.leveling.is_on() && self.leveling.db() != 0.0)
+        {
             return (
                 DsdMode::Pcm,
                 Some("PCM DSP stages are active; DSD is converted to PCM".into()),
@@ -1269,6 +1552,7 @@ impl Engine {
     /// `continuous` is true when the track follows the previous one gaplessly, so stage
     /// tails belong in the stream; after a seek or stop they are discarded.
     fn open_track(&mut self, mut index: usize, mut pos: Pos, continuous: bool) {
+        self.clipping_reported = false;
         loop {
             let Some(path) = self.queue.get(index).map(Path::to_path_buf) else {
                 if continuous {
@@ -1280,18 +1564,21 @@ impl Engine {
                 self.end_index = Some(index);
                 return;
             };
+            self.update_leveling(index, &path);
             match open_decoder(&path, pos) {
                 Ok(decoder) => {
                     let source = decoder.source_format();
                     let mut tail = Vec::new();
-                    let spec = match decoder.format() {
+                    let mut spec = match decoder.format() {
                         TrackFormat::Pcm(_) => {
+                            self.bitstream = false;
                             self.ensure_plan(
                                 source.rate,
                                 source.bits,
                                 source.channels,
                                 continuous,
                                 &mut tail,
+                                false,
                             );
                             let mut spec = self.worker.prepare(source, &mut tail);
                             if !self.worker.pipeline_is_empty()
@@ -1309,12 +1596,21 @@ impl Engine {
                         TrackFormat::Dsd(dsd) => {
                             let (mode, reason) = self.choose_dsd_mode(dsd);
                             self.emit(PlayerEvent::DsdMode { mode, reason });
+                            self.bitstream = mode != DsdMode::Pcm;
                             if mode == DsdMode::Pcm {
                                 let rate = self.config.dsd_pcm_rate.rate();
-                                self.ensure_plan(rate, 24, source.channels, continuous, &mut tail);
+                                self.ensure_plan(
+                                    rate,
+                                    24,
+                                    source.channels,
+                                    continuous,
+                                    &mut tail,
+                                    true,
+                                );
                             } else {
                                 // DoP and native DSD never resample: drop the plan a previous
                                 // PCM track left, so the pipeline is empty as they require.
+                                self.dither_bits = None;
                                 self.drop_plan(continuous, &mut tail);
                             }
                             self.worker.prepare_dsd(
@@ -1325,6 +1621,11 @@ impl Engine {
                             )
                         }
                     };
+                    // Dither already quantised the signal to the device's word length, so the
+                    // container must be exactly that wide (and is lossless for the result).
+                    if let Some(bits) = self.dither_bits.filter(|_| spec.mode == OutputMode::Pcm) {
+                        spec.bits = bits;
+                    }
                     if continuous {
                         self.push_samples(tail);
                     } else {
@@ -1395,6 +1696,12 @@ impl Engine {
                 self.decoding = None;
                 self.open_track(index + 1, Pos::ZERO, true);
             }
+        }
+        // Surface a boost that ran out of headroom; once per track is enough to act on it.
+        let clipped = self.worker.take_clipped() + self.dither_clipped.swap(0, Ordering::Relaxed);
+        if clipped > 0 && !self.clipping_reported {
+            self.clipping_reported = true;
+            self.emit(PlayerEvent::Clipping(clipped));
         }
         true
     }

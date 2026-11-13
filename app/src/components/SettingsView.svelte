@@ -367,7 +367,7 @@
               Modulates PCM tracks before output. DSD is carried over DoP or native DSD when the
               device takes it; 0 dBFS PCM becomes 50 % modulation, the SACD convention.
               {#if app.settings.pcmToDsd === "dsd256"}
-                DSD256 needs a fast CPU and can drop out on slower machines; DSD128 is recommended.
+                DSD256 uses up to most of a CPU core; if playback drops out, choose DSD128.
               {/if}
             </span>
           </span>

@@ -32,20 +32,39 @@ The suite uses the null backend, so it needs no audio hardware and runs on every
 
 ## Measured results
 
-Environment: Windows 10 26300, AMD64, release build, `cargo bench -p sonder-dsp --bench sdm`
+Environment: Windows 11 26300, Intel Core i5-12450HX laptop on AC power (4 P-cores with
+hyper-threading + 4 E-cores), release build, `cargo bench -p sonder-dsp --bench sdm`
 (criterion, one iteration = one second of stereo audio). 2026-11-13.
 
-| Mode | Time per 1 s of audio | Realtime factor |
-|------|----------------------|-----------------|
-| DSD64, 5th order | 252 ms | 4.0× |
-| DSD128, 5th order | 477 ms | 2.1× |
-| DSD256, 5th order | 1.02 s | 0.98× |
-| DSD256, 7th order | 1.19 s | 0.84× |
+This machine runs the same code at two speeds: unpinned runs land either near the P-core
+figure or up to ~3× slower (core placement and clock state), so each row gives runs pinned to
+one P-core and one E-core plus the range seen unpinned. The E-core column is the planning
+number: Windows can move a background app's threads to E-cores.
 
-The modulator alone (before the resampler that feeds it) is already at the limit for DSD256 on
-this machine, so DSD128 is the recommended setting and DSD256/order 7 can underrun on slower
-CPUs. This is recorded as a known limit, not hidden: the decode worker starves and the
-underrun counter in the transport reports it.
+Modulator alone (`sdm/*`):
+
+| Mode | P-core | E-core | Unpinned range | Worst realtime factor |
+|------|--------|--------|----------------|-----------------------|
+| DSD64, 5th order | — | — | 33–66 ms | 15× |
+| DSD128, 5th order | — | — | 74–136 ms | 7.4× |
+| DSD256, 5th order | 194 ms | 271 ms | 135–280 ms | 3.6× |
+| DSD256, 7th order | 225 ms | 318 ms | 174–379 ms | 2.6× |
+
+Whole PCM→DSD path for a 44.1 kHz source (`pcm_to_dsd/*`: resampling to `DSD rate / 8` in
+1024-frame blocks, then the modulator):
+
+| Mode | P-core | E-core | Unpinned | Worst realtime factor |
+|------|--------|--------|----------|-----------------------|
+| DSD128, 5th order | 215 ms | 381 ms | 403 ms | 2.5× |
+| DSD256, 7th order | 371 ms | 632 ms | 705 ms | 1.4× |
+
+For DSD256/order 7 the modulator used to take 340 ms to 1.19 s unpinned and 869 ms pinned to
+an E-core, which together with the resampler could underrun. The current loop keeps the channel
+state in registers, specialises it per order, builds each byte in a register and runs two
+channels interleaved; a test checks it emits the same bytes as the straightforward form,
+including stability resets. The resampler now costs more than the modulator on the whole
+path. If a slower CPU does underrun, the decode worker starves and the transport's underrun
+counter reports it.
 
 Modulator quality (`tools/design_sdm.py`): every shipped table is stable (all poles inside the
 unit circle), and the SDM tests measure ≥ 90 dB in-band SNR at DSD64 with the 5th-order table

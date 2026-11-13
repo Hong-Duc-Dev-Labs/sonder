@@ -52,8 +52,9 @@ cargo run -p sonder-cli -- play ~/Music/album --verify-hash
   352.8 kHz.
 - **PCM to DSD** — Off, DSD64, DSD128 or DSD256, with a 5th- or 7th-order modulator. 0 dBFS
   PCM maps to 50 % modulation (the SACD convention), so the DSD stream is 6 dB below full
-  scale. DSD256 costs about one CPU core per stereo stream on a desktop; DSD128 is the safe
-  choice on laptops.
+  scale. On a 2022 laptop CPU the whole PCM→DSD256 path (resampling plus a 7th-order
+  modulator) takes 0.4–0.7 of a core per stereo stream, DSD128 about half that; pick DSD128 if
+  DSD256 drops out on a slower machine (see `docs/verification.md`).
 - **Upsampling** — off, the device maximum, the source's rate family, or a fixed rate, with
   Sonder-designed filters (linear or minimum phase) or a folder of Roon tables you own.
 - **Roon filter folder** — `Settings → Upsampling → Filter source: Roon` and pick the folder

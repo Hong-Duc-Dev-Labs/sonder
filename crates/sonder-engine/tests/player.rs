@@ -1450,6 +1450,38 @@ fn dsd_after_a_resampled_pcm_track_keeps_dop() {
     assert_eq!(payload, expected);
 }
 
+/// Convolution holds up to one partition and has a tail. A PCM track that plays without SRC
+/// and is followed by a DSD track must still deliver every frame and the tail before the
+/// stream switches to DoP.
+#[test]
+fn a_convolved_pcm_track_keeps_its_last_frames_before_a_dsd_track() {
+    let pcm = wav("conv-before-dsd.wav", 44_100, 24, 5_000, 24);
+    let expected = dsd_bytes(8_000, 25);
+    let dsd = dsf("dop-after-conv.dsf", &expected);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    let mut h = vec![0.0; 2_000];
+    h[0] = 1.0;
+    let ir = sonder_engine::ImpulseResponse::new("dirac.wav".into(), 44_100, vec![h]).unwrap();
+    config.dsp.convolution = Some(Ok(std::sync::Arc::new(ir)));
+    let (player, events, control) = start_with(config, dsd_device());
+    player.enqueue(vec![pcm.clone(), dsd]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let sessions = control.sessions();
+    let session = &sessions[0];
+    assert_eq!(session.format.container, SampleContainer::S24Packed);
+    let mut out = vec![0i32; session.bytes.len() / 3];
+    unpack(SampleContainer::S24Packed, &session.bytes, &mut out);
+    let src = decoded(&pcm);
+    // The music, then the response's tail (silence for a Dirac): 1999 frames.
+    assert_eq!(out.len(), src.len() + 1_999 * 2, "{seen:#?}");
+    assert_eq!(&out[..src.len()], &src[..]);
+    assert!(out[src.len()..].iter().all(|&s| s == 0));
+    let (payload, _) = decode_dop(&sessions.last().unwrap().bytes, 2);
+    assert_eq!(payload, expected);
+}
+
 /// A volume change in the middle of a track changes the signal path, so it is reported again.
 #[test]
 fn a_mid_track_volume_change_reports_the_new_signal_path() {

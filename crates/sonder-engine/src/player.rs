@@ -1232,13 +1232,11 @@ impl Engine {
         self.sync_stages();
     }
 
-    /// Removes the rate-conversion plan from the worker, keeping the shaping stages.
+    /// Removes the rate-conversion plan from the worker before a DoP or native DSD track,
+    /// whose chain is empty. `continuous` first drains what the old chain holds: the
+    /// converter's history, and convolution's held frames and tail even without a plan.
     fn drop_plan(&mut self, continuous: bool, tail: &mut Vec<i32>) {
         self.plan_key = None;
-        if self.plan.is_none() {
-            self.sync_stages();
-            return;
-        }
         if continuous {
             self.worker.flush_tail(tail);
         }

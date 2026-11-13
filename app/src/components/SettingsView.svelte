@@ -29,6 +29,7 @@
   } from "../lib/bindings";
   import { rate } from "../lib/format";
   import Icon from "./Icon.svelte";
+  import { rangeFill } from "../lib/rangeFill";
 
   let roots = $state<RootFolder[]>([]);
   let devices = $state<Device[] | null>(null);
@@ -355,9 +356,10 @@
               aria-label="Software volume"
               aria-valuetext="{volumeDraft.toFixed(1)} dB"
               bind:value={volumeDraft}
+              use:rangeFill={volumeDraft}
               onchange={() => setVolume(volumeDraft)}
             />
-            <span class="badge warn">{volumeDraft.toFixed(1)} dB</span>
+            <span class="badge value warn">{volumeDraft.toFixed(1)} dB</span>
           </div>
         {/if}
       </div>
@@ -517,9 +519,10 @@
             aria-valuetext="{fadeSeconds.toFixed(1)} seconds"
             disabled={!(crossfade.enabled ?? false)}
             bind:value={fadeSeconds}
+            use:rangeFill={fadeSeconds}
             onchange={() => saveCrossfade({ seconds: fadeSeconds })}
           />
-          <span class="badge">{fadeSeconds.toFixed(1)} s</span>
+          <span class="badge value">{fadeSeconds.toFixed(1)} s</span>
         </div>
       </div>
     </section>
@@ -599,9 +602,10 @@
             aria-label="EQ preamp"
             aria-valuetext="{(peq.preampDb ?? 0).toFixed(1)} dB"
             value={peq.preampDb ?? 0}
+            use:rangeFill={peq.preampDb ?? 0}
             onchange={(e) => savePeq({ ...peq, preampDb: Number(e.currentTarget.value) })}
           />
-          <span class="badge warn">{(peq.preampDb ?? 0).toFixed(1)} dB</span>
+          <span class="badge value" class:warn={(peq.preampDb ?? 0) > 0}>{(peq.preampDb ?? 0).toFixed(1)} dB</span>
         </div>
         {#each peq.bands ?? [] as band, i (i)}
           <div class="band">
@@ -1107,8 +1111,11 @@
     padding: 0 6px 6px 8px;
   }
   h3 {
-    font-size: 15px;
+    font-size: var(--fs-label);
     font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-2);
   }
 
   .hero {
@@ -1164,9 +1171,13 @@
     position: relative;
   }
 
+  /* Icon, text, then every control on the same line: extra children add columns instead of
+     wrapping under the icon. */
   .row {
     display: grid;
-    grid-template-columns: 40px 1fr auto;
+    grid-template-columns: 40px minmax(0, 1fr);
+    grid-auto-flow: column;
+    grid-auto-columns: auto;
     align-items: center;
     gap: 14px;
     min-height: 60px;
@@ -1222,7 +1233,6 @@
   }
 
   .choice {
-    grid-template-columns: 40px 1fr auto;
     cursor: pointer;
     transition: background var(--dur-fast) var(--ease-standard);
   }
@@ -1294,10 +1304,28 @@
 
   .range {
     width: 100%;
-    accent-color: var(--ink);
-    padding: 0;
-    background: none;
-    box-shadow: none;
+  }
+  /* beside a description the slider takes a fixed length, its value label after it */
+  .info ~ .range {
+    width: 180px;
+  }
+  .value {
+    min-width: 64px;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+  }
+  /* rows in one card read as one list, split by hairlines that start after the icon */
+  .card > .row:not(.choice) + .row:not(.choice) {
+    position: relative;
+  }
+  .card > .row:not(.choice) + .row:not(.choice)::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 66px;
+    right: 12px;
+    height: 1px;
+    background: var(--hairline);
   }
 
   .scan {

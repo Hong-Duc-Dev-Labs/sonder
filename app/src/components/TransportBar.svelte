@@ -15,6 +15,7 @@
   import PlayPauseIcon from "./PlayPauseIcon.svelte";
   import Popover from "./Popover.svelte";
   import { keySeeker } from "../lib/seek";
+  import { rangeFill } from "../lib/rangeFill";
 
   let { hidden = false }: { hidden?: boolean } = $props();
 
@@ -232,7 +233,7 @@
       </button>
       {#if volumeDb != null}
         <input
-          class="vol-inline"
+          class="range vol-inline"
           type="range"
           min={VOL_MIN}
           max="0"
@@ -241,6 +242,7 @@
           aria-valuetext="{volumeDraft.toFixed(1)} dB"
           title="{volumeDraft.toFixed(1)} dB"
           bind:value={volumeDraft}
+          use:rangeFill={volumeDraft}
           onchange={commitVolume}
         />
         <button
@@ -262,6 +264,7 @@
   <div class="vol-pop">
     <span class="kicker">Software volume</span>
     <input
+      class="range"
       type="range"
       min={VOL_MIN}
       max="0"
@@ -269,6 +272,7 @@
       aria-label="Software volume"
       aria-valuetext="{volumeDraft.toFixed(1)} dB"
       bind:value={volumeDraft}
+      use:rangeFill={volumeDraft}
       onchange={commitVolume}
     />
     <span class="device">{volumeDraft.toFixed(1)} dB</span>
@@ -553,7 +557,6 @@
   .vol-inline {
     width: 96px;
     margin-left: 6px;
-    accent-color: var(--ink);
   }
   .vol-btn {
     display: none;
@@ -564,9 +567,6 @@
     gap: 10px;
     padding: 10px;
     min-width: 200px;
-  }
-  .vol-pop input {
-    accent-color: var(--ink);
   }
 
   .path {

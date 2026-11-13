@@ -43,7 +43,14 @@
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(row);
-    return () => ro.disconnect();
+    // A card can appear without the row resizing (a playlist created while Home is open), so
+    // the arrows and fades would otherwise stay stale until the next scroll or resize.
+    const mo = new MutationObserver(measure);
+    mo.observe(row, { childList: true });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
   });
 </script>
 

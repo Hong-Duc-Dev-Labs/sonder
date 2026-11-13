@@ -458,7 +458,7 @@ h3 {
 
 .page {
   height: 100%;
-  padding: 28px calc(var(--inset-right, 0px) + var(--page-x)) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
+  padding: 28px var(--page-x) var(--dock-reserve) var(--page-x);
 }
 
 .page-head {

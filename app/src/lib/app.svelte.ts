@@ -164,7 +164,7 @@ const emptySnapshot: PlayerSnapshot = {
   repeat: "off",
 };
 
-class AppState {
+export class AppState {
   view = $state<View>({ kind: "home" });
   history = $state<View[]>([]);
   player = $state<PlayerSnapshot>(emptySnapshot);
@@ -292,7 +292,11 @@ class AppState {
 
   back() {
     const prev = this.history.at(-1);
-    if (!prev) return;
+    if (!prev) {
+      // With nothing behind it, back is Home (and a no-op there).
+      if (this.view.kind !== "home") this.go({ kind: "home" });
+      return;
+    }
     // Leaving the album page the cover morphed into: it morphs back into its card.
     const morph = this.view.kind === "album" && this.view.id === this.morphAlbumId;
     const flight = this.flightStart(prev);
@@ -313,18 +317,34 @@ class AppState {
     }
   }
 
-  /** Opens or closes the queue; outside Now Playing it takes the inspector from the lyrics. */
+  /** Opens or closes the queue. One panel at a time, on Now Playing too, so no toggle can
+   * claim a panel that is not showing. */
   toggleQueue() {
     const open = !this.queueOpen;
-    if (open && this.view.kind !== "now") this.lyricsOpen = false;
+    if (open) this.lyricsOpen = false;
     this.queueOpen = open;
   }
 
-  /** Opens or closes the lyrics; outside Now Playing they take the inspector from the queue. */
+  /** Opens or closes the lyrics. One panel at a time, as with the queue. */
   toggleLyrics() {
     const open = !this.lyricsOpen;
-    if (open && this.view.kind !== "now") this.queueOpen = false;
+    if (open) this.queueOpen = false;
     this.lyricsOpen = open;
+  }
+
+  /** Closes the open inspector and puts focus back on the toggle that opened it. */
+  closeInspector() {
+    const was = this.inspector;
+    if (!was) return;
+    if (was === "queue") this.queueOpen = false;
+    else this.lyricsOpen = false;
+    // After the panel is gone, so the button that takes focus is the one the user can see.
+    void tick().then(() => {
+      const selector = was === "queue" ? "[data-queue-toggle]" : "[data-lyrics-toggle]";
+      [...document.querySelectorAll<HTMLElement>(selector)]
+        .find((el) => !el.closest("[inert]"))
+        ?.focus();
+    });
   }
 
   notify(level: Notice["level"], message: string) {

@@ -117,3 +117,29 @@ schema or storage changes, so nothing persists past a revert.
 - Follow-up from the first visual check (user, 2026-11-14): the page is now its own rounded
   sheet between the sidebar and the inspector (three blocks, as in the source), clipping its
   page, with the player pill inside its bottom edge. Now Playing still spans the window.
+
+## Review fixes (2026-11-14)
+
+- **One inspector panel at a time, on Now Playing too.** Two open flags used to be legal there,
+  and leaving the page then let the queue win while the pill's Lyrics toggle still reported
+  pressed — one click did nothing and the second showed the lyrics. `toggleQueue`/`toggleLyrics`
+  now always close the other, so every toggle tells the truth.
+- **Escape closes the inspector from anywhere.** The panels' own keydown only fired with focus
+  inside them; opening from the pill left focus on the toggle. `App.svelte` handles Escape on
+  the window, `app.closeInspector()` closes the panel and returns focus to its visible toggle,
+  and the duplicated per-panel handler is gone.
+- **The page-level `--inset-left`/`--inset-right` terms are gone.** Every library page renders
+  inside `.content`, which already zeroes both because the sheet is inset as a whole, so the
+  terms were always `0px`; padding is `--page-x` plus `--dock-reserve` now. `NowPlayingView`
+  keeps `--inset-left` because it lives under `main.full`, where the sheet's inset is not
+  applied.
+- HomeView defines the `.small` class it was using (the other pages each define their own).
+- `Shelf` also observes its row's children, so a card added while Home is open (a new
+  playlist) makes the arrows and edge fades appear.
+- "See all" on Recently added awaits the sort save before navigating, so Albums does not load
+  twice in two different orders.
+- Back with an empty history goes Home, as phase 2 asked.
+- `app/src/lib/shell.test.ts` covers the inspector's panel exclusivity and the docked/overlay
+  switch; `motion.ts` only registers its visibility listener when a DOM exists, so the state
+  module can be imported by tests.
+

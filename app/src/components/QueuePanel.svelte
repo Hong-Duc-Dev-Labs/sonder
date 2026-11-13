@@ -20,16 +20,7 @@
   let remainingMs = $derived(upNext.reduce((sum, e) => sum + e.item.durationMs, 0));
 
   function close() {
-    app.queueOpen = false;
-    // The visible queue button: the player pill's is inert while Now Playing shows its own.
-    [...document.querySelectorAll<HTMLElement>("[data-queue-toggle]")].find((el) => !el.closest("[inert]"))?.focus();
-  }
-
-  function onKey(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      close();
-    }
+    app.closeInspector();
   }
 
   onMount(() => {
@@ -63,8 +54,8 @@
   </div>
 {/snippet}
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<aside class="panel glass" bind:this={panel} aria-label="Queue" onkeydown={onKey}>
+<!-- svelte:window in App.svelte closes it on Escape, so focus outside the panel is covered. -->
+<aside class="panel glass" bind:this={panel} aria-label="Queue">
   <div class="head">
     <div>
       <h2>Queue</h2>

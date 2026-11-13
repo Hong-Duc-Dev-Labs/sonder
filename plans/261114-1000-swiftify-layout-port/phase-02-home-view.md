@@ -38,8 +38,9 @@ play history, pinning or favourites — do not add backend for them.
       `AlbumsView` already has; if sort is local to that component, lift it into `app`).
 - [x] Empty library (first run): Home shows one call to action to add a music folder in
       Settings instead of empty shelves.
-- [x] Padding uses `--inset-left` / `--inset-right` from phase 1 and `--dock-reserve` at the
-      bottom. Page heading has `data-view-heading` like other views.
+- [x] Padding uses `--page-x` and `--dock-reserve` at the bottom (the sheet already sits beside
+      the sidebar and inspector, so pages do not re-add either inset). Page heading has
+      `data-view-heading` like other views.
 
 ## Files
 

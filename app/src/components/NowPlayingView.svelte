@@ -189,7 +189,7 @@
     container-type: size;
     display: flex;
     flex-direction: column;
-    padding: 18px calc(var(--inset-right, 0px) + var(--page-x)) 28px calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 18px var(--page-x) 28px calc(var(--inset-left, 0px) + var(--page-x));
   }
   .np-head {
     display: flex;

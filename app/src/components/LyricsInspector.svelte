@@ -8,20 +8,12 @@
   let item = $derived(app.current);
 
   function close() {
-    app.lyricsOpen = false;
-    [...document.querySelectorAll<HTMLElement>("[data-lyrics-toggle]")].find((el) => !el.closest("[inert]"))?.focus();
-  }
-
-  function onKey(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      close();
-    }
+    app.closeInspector();
   }
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<aside class="panel glass" aria-label="Lyrics" onkeydown={onKey}>
+<!-- svelte:window in App.svelte closes it on Escape, so focus outside the panel is covered. -->
+<aside class="panel glass" aria-label="Lyrics">
   <div class="head">
     <div class="titles">
       <h2>Lyrics</h2>

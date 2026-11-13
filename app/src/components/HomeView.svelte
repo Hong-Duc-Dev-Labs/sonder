@@ -55,8 +55,12 @@
     app.run(waiting ? commands.playerPlayIndex(0) : commands.playerToggle());
   }
 
-  function seeRecent() {
-    if (app.settings.albumSort !== "added") app.saveSettings({ ...app.settings, albumSort: "added" });
+  async function seeRecent() {
+    // The page reads its sort from settings, so save first; otherwise it loads in the old
+    // order and reloads when the save lands.
+    if (app.settings.albumSort !== "added") {
+      await app.saveSettings({ ...app.settings, albumSort: "added" });
+    }
     app.go({ kind: "albums" });
   }
 </script>
@@ -204,6 +208,9 @@
     flex-direction: column;
     gap: 4px;
     margin-bottom: 24px;
+  }
+  .small {
+    font-size: var(--fs-small);
   }
   h1 {
     font-size: var(--fs-display);

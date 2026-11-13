@@ -42,10 +42,13 @@ function schedule() {
   handle = requestAnimationFrame(tick);
 }
 
-document.addEventListener("visibilitychange", () => {
-  last = 0;
-  schedule();
-});
+// Tests import this module without a DOM (the shell state only needs the loop's shape).
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    last = 0;
+    schedule();
+  });
+}
 
 /**
  * Runs `fn` every frame until the returned function is called. The shared loop stops when no

@@ -24,7 +24,7 @@
   const loading = new Set<number>();
 
   // The spacer is measured inside the viewport's padding, so this is the cards' row width
-  // whatever the page margins are (they include the sidebar's inset).
+  // whatever the page margins are.
   let inner = $derived(Math.max(0, width));
   let columns = $derived(Math.max(1, Math.floor((inner + GAP) / (MIN_CARD + GAP))));
   let cardWidth = $derived(inner > 0 ? (inner - GAP * (columns - 1)) / columns : MIN_CARD);
@@ -110,7 +110,7 @@
 <style>
   .viewport {
     height: 100%;
-    padding: 4px calc(var(--inset-right, 0px) + var(--page-x)) var(--dock-reserve) calc(var(--inset-left, 0px) + var(--page-x));
+    padding: 4px var(--page-x) var(--dock-reserve) var(--page-x);
     contain: strict;
   }
   .spacer {

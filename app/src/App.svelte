@@ -73,6 +73,11 @@
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b" && !app.narrow) {
       e.preventDefault();
       app.toggleSidebar();
+    } else if (e.key === "Escape" && !app.dialog && app.inspector) {
+      // The inspector's own keydown only fires with focus inside it; opening it from the pill
+      // leaves focus on the toggle, so Escape has to be handled here.
+      e.preventDefault();
+      app.closeInspector();
     } else if (e.altKey && e.key === "ArrowLeft") {
       app.back();
     }
@@ -350,7 +355,8 @@
     view-transition-name: content;
     height: 100%;
   }
-  /* Inside the sheet nothing covers the page: the sidebar and inspector sit beside it. */
+  /* The sheet is already placed beside the sidebar and the inspector, so nothing inside re-adds
+     either inset. */
   main:not(.full) .content {
     --inset-left: 0px;
     --inset-right: 0px;

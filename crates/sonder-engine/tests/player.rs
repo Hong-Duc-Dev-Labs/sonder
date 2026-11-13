@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use sonder_decode::Decoder;
 use sonder_engine::{
-    DsdMode, DsdPcmRate, DspConfig, PlaybackState, Player, PlayerConfig, PlayerEvent,
+    CrossfadeConfig, DsdMode, DsdPcmRate, DspConfig, PlaybackState, Player, PlayerConfig,
+    PlayerEvent, RepeatMode,
 };
 use sonder_output::format::{pack, unpack};
 use sonder_output::null::{NullBackend, NullControl};
@@ -374,7 +375,7 @@ fn unsupported_format_is_refused_and_skipped() {
     let mut config = PlayerConfig::new(NullBackend::device_id());
     config.src.auto_fallback = false;
     let (player, events, control) = start_with(config, NullBackend::new().with_formats(vec![only]));
-    player.enqueue(vec![a, b.clone()]);
+    player.enqueue(vec![a.clone(), b.clone()]);
     player.play();
     let (failed, _) = wait_for(&events, |e| matches!(e, PlayerEvent::TrackFailed { .. }));
     let PlayerEvent::TrackFailed { index, error, .. } = failed else {
@@ -2083,4 +2084,529 @@ fn dop_with_idle_levelling_reports_bit_perfect() {
     assert_eq!(path.mode, sonder_engine::OutputMode::Dop);
     assert!(path.stages.is_empty(), "signal path: {path:#?}");
     assert!(path.bit_perfect, "signal path: {path:#?}");
+}
+
+// ----- repeat and crossfade -----
+
+/// Polls until `ready` says so; the engine thread runs in parallel with the test.
+fn wait_until(mut ready: impl FnMut() -> bool) {
+    let deadline = Instant::now() + TIMEOUT;
+    while !ready() {
+        assert!(Instant::now() < deadline, "timed out waiting");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// A stereo sine of `frames` frames at `rate`, written as 16-bit WAV.
+fn sine_wav(name: &str, rate: u32, frames: usize, hz: f64, amplitude: f64) -> PathBuf {
+    let path = temp_dir().join(name);
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let max = f64::from(i16::MAX);
+    let mut w = hound::WavWriter::create(&path, spec).unwrap();
+    for frame in 0..frames {
+        let sample = (amplitude
+            * (2.0 * std::f64::consts::PI * hz * frame as f64 / f64::from(rate)).sin()
+            * max) as i32;
+        w.write_sample(sample).unwrap();
+        w.write_sample(sample).unwrap();
+    }
+    w.finalize().unwrap();
+    path
+}
+
+/// Level of an interleaved stereo slice in dB, referred to a full-scale sine of `amplitude`.
+fn level_db(samples: &[i32], amplitude: f64) -> f64 {
+    const SCALE: f64 = 2_147_483_648.0;
+    let rms = (samples
+        .iter()
+        .map(|&s| (f64::from(s) / SCALE).powi(2))
+        .sum::<f64>()
+        / samples.len() as f64)
+        .sqrt();
+    20.0 * (rms / (amplitude / std::f64::consts::SQRT_2)).log10()
+}
+
+/// Magnitude of `hz` in an interleaved stereo slice, from its left channel.
+fn magnitude_at(samples: &[i32], rate: u32, hz: f64) -> f64 {
+    const SCALE: f64 = 2_147_483_648.0;
+    let frames = samples.len() / 2;
+    let (mut re, mut im) = (0.0, 0.0);
+    for frame in 0..frames {
+        let x = f64::from(samples[frame * 2]) / SCALE;
+        let angle = 2.0 * std::f64::consts::PI * hz * frame as f64 / f64::from(rate);
+        re += x * angle.cos();
+        im -= x * angle.sin();
+    }
+    (re * re + im * im).sqrt() / frames as f64
+}
+
+fn paths(seen: &[PlayerEvent]) -> Vec<sonder_engine::SignalPath> {
+    seen.iter()
+        .filter_map(|event| match event {
+            PlayerEvent::SignalPath(path) => Some(path.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn repeat_one_replays_the_track_with_no_gap() {
+    let a = wav("repeat-one.wav", 44_100, 16, 20_000, 51);
+    let (player, events, control) = start(NullBackend::new());
+    player.set_repeat(RepeatMode::One);
+    player.enqueue(vec![a.clone()]);
+    player.play();
+    let track = packed(SampleContainer::S16, &decoded(&a));
+    wait_until(|| control.played_bytes().len() >= 2 * track.len());
+    player.stop();
+    wait_for(&events, |e| {
+        *e == PlayerEvent::State(PlaybackState::Stopped)
+    });
+
+    let played = control.played_bytes();
+    let mut twice = track.clone();
+    twice.extend_from_slice(&track);
+    assert!(
+        played.len() >= twice.len() && played[..twice.len()] == twice[..],
+        "the second pass must continue the first with no gap"
+    );
+    assert_eq!(control.sessions().len(), 1, "one stream");
+}
+
+#[test]
+fn repeat_all_wraps_from_the_last_entry_with_no_gap() {
+    let a = wav("repeat-all-a.wav", 44_100, 16, 15_000, 52);
+    let b = wav("repeat-all-b.wav", 44_100, 16, 10_000, 53);
+    let (player, events, control) = start(NullBackend::new());
+    player.set_repeat(RepeatMode::All);
+    player.enqueue(vec![a.clone(), b.clone()]);
+    player.play();
+    let cycle = concat(&[&a, &b]);
+    wait_until(|| control.played_bytes().len() >= 2 * cycle.len());
+    player.stop();
+    wait_for(&events, |e| {
+        *e == PlayerEvent::State(PlaybackState::Stopped)
+    });
+
+    let played = control.played_bytes();
+    let mut twice = cycle.clone();
+    twice.extend_from_slice(&cycle);
+    assert!(
+        played.len() >= twice.len() && played[..twice.len()] == twice[..],
+        "the last entry must wrap into the first with no gap"
+    );
+    assert_eq!(control.sessions().len(), 1);
+}
+
+#[test]
+fn removing_the_playing_entry_while_repeat_all_continues_with_the_right_track() {
+    let a = wav("repeat-remove-a.wav", 44_100, 16, 80_000, 54);
+    let b = wav("repeat-remove-b.wav", 44_100, 16, 80_000, 55);
+    let c = wav("repeat-remove-c.wav", 44_100, 16, 80_000, 56);
+    let (player, events, _) = start(slow());
+    player.set_repeat(RepeatMode::All);
+    player.enqueue(vec![a, b.clone(), c.clone()]);
+    player.play();
+    wait_playing(&events, 1);
+
+    player.remove(1);
+    let (event, seen) = wait_for(&events, |e| {
+        matches!(e, PlayerEvent::TrackChanged { index: 1, .. })
+    });
+    match event {
+        PlayerEvent::TrackChanged { path, .. } => assert_eq!(path, c),
+        _ => unreachable!(),
+    }
+    assert!(
+        !seen.contains(&PlayerEvent::EndOfQueue),
+        "repeat-all must not end: {seen:#?}"
+    );
+    player.stop();
+}
+
+/// The album identity the crossfade's "same album" rule reads.
+struct OneAlbum;
+
+impl sonder_engine::LoudnessSource for OneAlbum {
+    fn gain(&self, _path: &Path, _target_lufs: f64) -> Option<sonder_engine::TrackGain> {
+        Some(sonder_engine::TrackGain {
+            track: sonder_dsp::Gain::default(),
+            album: sonder_dsp::Gain::default(),
+            album_id: Some(4),
+        })
+    }
+}
+
+#[test]
+fn crossfade_between_two_tones_holds_the_level_through_the_overlap() {
+    let a = sine_wav("fade-a.wav", 44_100, 88_200, 500.0, 0.5);
+    let b = sine_wav("fade-b.wav", 44_100, 88_200, 2_000.0, 0.5);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.crossfade = CrossfadeConfig {
+        enabled: true,
+        seconds: 1.0,
+    };
+    let (player, events, control) = start_with(config, NullBackend::new());
+    player.enqueue(vec![a.clone(), b.clone()]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 1, "both tracks reach the same stream");
+    let frames = sessions[0].bytes.len() / 4;
+    let mut mixed = vec![0i32; frames * 2];
+    unpack(SampleContainer::S16, &sessions[0].bytes, &mut mixed);
+
+    let a_samples = decoded(&a);
+    let fade_start = (0..frames)
+        .find(|&frame| mixed[frame * 2] != a_samples[frame * 2])
+        .expect("the fade never changed a sample");
+    // The engine may plan up to one block (0.1 s) before the planned point.
+    assert!(
+        fade_start > 33_000,
+        "the fade began at frame {fade_start}, too early"
+    );
+    let overlap = 44_100; // 1 s
+    let window = 4_410;
+    for start in (fade_start..fade_start + overlap).step_by(window) {
+        let end = (start + window).min(fade_start + overlap);
+        let db = level_db(&mixed[start * 2..end * 2], 0.5);
+        assert!(
+            db.abs() < 0.5,
+            "level {db:+.2} dB at {} frames into the fade",
+            start - fade_start
+        );
+    }
+    // Mid-fade both tones are present, at equal power.
+    let mid = fade_start + overlap / 2 - window / 2;
+    let slice = &mixed[mid * 2..(mid + window) * 2];
+    let low = magnitude_at(slice, 44_100, 500.0);
+    let high = magnitude_at(slice, 44_100, 2_000.0);
+    assert!(low > 0.02, "outgoing tone gone mid-fade: {low}");
+    assert!(high > 0.02, "incoming tone gone mid-fade: {high}");
+    assert!(
+        (20.0 * (low / high).log10()).abs() < 3.0,
+        "the equal-power curve favours one side: {low} vs {high}"
+    );
+
+    // After the overlap the incoming track plays untouched to its end.
+    let b_samples = decoded(&b);
+    assert_eq!(
+        &mixed[mixed.len() - 200..],
+        &b_samples[b_samples.len() - 200..],
+        "the incoming track must finish untouched"
+    );
+    // Its signal path names the fade.
+    let paths = paths(&seen);
+    assert_eq!(paths.len(), 2, "paths: {paths:#?}");
+    assert!(
+        paths[1]
+            .transition
+            .as_deref()
+            .is_some_and(|note| note.starts_with("crossfade")),
+        "incoming path: {:#?}",
+        paths[1]
+    );
+    assert!(paths[0].transition.is_none(), "the first track has none");
+    assert!(
+        paths[1]
+            .stages
+            .iter()
+            .any(|stage| stage.name == "Crossfade"),
+        "the signal path must name the mixer: {:#?}",
+        paths[1]
+    );
+    assert!(!paths[1].bit_perfect, "a faded head is not bit-perfect");
+}
+
+#[test]
+fn crossfade_inside_an_album_run_stays_byte_exact() {
+    let a = sine_wav("fade-album-a.wav", 44_100, 60_000, 500.0, 0.5);
+    let b = sine_wav("fade-album-b.wav", 44_100, 60_000, 2_000.0, 0.5);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.crossfade = CrossfadeConfig {
+        enabled: true,
+        seconds: 2.0,
+    };
+    config.loudness = std::sync::Arc::new(OneAlbum);
+    let (player, events, control) = start_with(config, NullBackend::new());
+    player.enqueue(vec![a.clone(), b.clone()]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 1);
+    let mut expected = decoded(&a);
+    expected.extend(decoded(&b));
+    assert_eq!(
+        sessions[0].bytes,
+        packed(SampleContainer::S16, &expected),
+        "consecutive tracks of one album must join gaplessly"
+    );
+    let paths = paths(&seen);
+    assert_eq!(
+        paths[1].transition.as_deref(),
+        Some("crossfade skipped: same album"),
+        "paths: {paths:#?}"
+    );
+    assert!(
+        paths[1].bit_perfect,
+        "a skipped transition must keep the path bit-perfect: {:#?}",
+        paths[1]
+    );
+    assert!(
+        !paths[1]
+            .stages
+            .iter()
+            .any(|stage| stage.name == "Crossfade"),
+        "a skipped transition is not a mixer stage: {:#?}",
+        paths[1]
+    );
+}
+
+#[test]
+fn crossfade_is_skipped_next_to_a_dsd_track() {
+    let a = sine_wav("fade-dsd-a.wav", 44_100, 44_100, 500.0, 0.5);
+    let b = dsf("fade-dsd-b.dsf", &dsd_bytes(20_000, 61));
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.crossfade = CrossfadeConfig {
+        enabled: true,
+        seconds: 1.0,
+    };
+    let (player, events, control) = start_with(config, dsd_device());
+    player.enqueue(vec![a.clone(), b]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 2, "PCM and DoP are different streams");
+    assert_eq!(
+        sessions[0].bytes,
+        packed(SampleContainer::S16, &decoded(&a)),
+        "the PCM track must not be faded"
+    );
+    let dsd_path = paths(&seen)
+        .into_iter()
+        .find(|path| path.source.bits == 1)
+        .expect("path for the DSD track");
+    assert_eq!(
+        dsd_path.transition.as_deref(),
+        Some("crossfade skipped: DSD")
+    );
+    assert!(
+        dsd_path.bit_perfect,
+        "a skipped transition must not touch the DSD path: {dsd_path:#?}"
+    );
+}
+
+#[test]
+fn next_with_crossfade_fades_into_the_next_track() {
+    let a = sine_wav("next-fade-a.wav", 44_100, 176_400, 500.0, 0.5);
+    let b = sine_wav("next-fade-b.wav", 44_100, 88_200, 2_000.0, 0.5);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.crossfade = CrossfadeConfig {
+        enabled: true,
+        seconds: 1.0,
+    };
+    let (player, events, control) = start_with(config, slow());
+    player.enqueue(vec![a.clone(), b.clone()]);
+    player.play();
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if *elapsed >= Duration::from_millis(500)),
+    );
+    player.next();
+    let seen = wait_end(&events);
+    let changed = seen
+        .iter()
+        .find_map(|event| match event {
+            PlayerEvent::TrackChanged { index: 1, path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no track change to 1: {seen:#?}"));
+    assert_eq!(changed, b);
+    // The fade consumed the incoming track's first second; the rest plays untouched.
+    let b_samples = decoded(&b);
+    let tail = packed(SampleContainer::S16, &b_samples[44_100 * 2..]);
+    let played = control.played_bytes();
+    assert!(
+        played.ends_with(&tail),
+        "output must end with the incoming track from 1 s"
+    );
+    // A jump would show the incoming track's bytes from its own start; a fade mixes.
+    let a_bytes = packed(SampleContainer::S16, &decoded(&a));
+    let divergence = played
+        .iter()
+        .zip(&a_bytes)
+        .position(|(x, y)| x != y)
+        .expect("the outgoing track never stopped playing");
+    let b_head = packed(SampleContainer::S16, &b_samples[..2_048]);
+    assert_ne!(
+        &played[divergence..divergence + 2_048],
+        b_head.as_slice(),
+        "next jumped instead of fading"
+    );
+    let paths = paths(&seen);
+    assert!(
+        paths
+            .last()
+            .and_then(|path| path.transition.as_deref())
+            .is_some_and(|note| note.starts_with("crossfade 1.0 s")),
+        "paths: {paths:#?}"
+    );
+}
+
+/// Two PCM tracks modulated to DSD fade before the modulator: the mix runs at the modulator's
+/// input rate and the result stays one DoP carrier.
+#[test]
+fn crossfade_mixes_before_the_dsd_modulator() {
+    // Short tracks: DSD64 resampling and modulation are the heaviest path in the suite.
+    let a = sine_wav("fade-sdm-a.wav", 44_100, 44_100, 500.0, 0.5);
+    let b = sine_wav("fade-sdm-b.wav", 44_100, 44_100, 2_000.0, 0.5);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.crossfade = CrossfadeConfig {
+        enabled: true,
+        seconds: 0.5,
+    };
+    config.sdm.mode = sonder_engine::SdmMode::Dsd64;
+    let (player, events, control) = start_with(config, dsd_device());
+    player.enqueue(vec![a, b]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let sessions = control.sessions();
+    assert_eq!(sessions.len(), 1, "the fade stays on one DoP carrier");
+    assert_eq!(
+        sessions[0].format,
+        DeviceFormat {
+            rate: 176_400,
+            container: SampleContainer::S24In32,
+            channels: 2,
+        }
+    );
+    let (payload, _idle) = decode_dop(&sessions[0].bytes, 2);
+    // ~1.5 s at DSD64 (1 + 1 tracks less the 0.5 s overlap).
+    assert!(
+        payload.len() > 350_000,
+        "payload {} bytes is short",
+        payload.len()
+    );
+    assert!(
+        !seen
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::TrackFailed { .. })),
+        "events: {seen:#?}"
+    );
+    let path = paths(&seen).pop().expect("path");
+    assert!(
+        path.transition
+            .as_deref()
+            .is_some_and(|note| note.starts_with("crossfade")),
+        "path: {path:#?}"
+    );
+}
+
+/// Manual Next clamps the fade to half of the shorter track, as automatic transitions do.
+#[test]
+fn manual_next_clamps_the_fade_to_half_the_incoming_track() {
+    let a = sine_wav("next-clamp-a.wav", 44_100, 132_300, 500.0, 0.5); // 3 s
+    let b = sine_wav("next-clamp-b.wav", 44_100, 44_100, 2_000.0, 0.5); // 1 s
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.crossfade = CrossfadeConfig {
+        enabled: true,
+        seconds: 4.0,
+    };
+    let (player, events, control) = start_with(config, slow());
+    player.enqueue(vec![a.clone(), b.clone()]);
+    player.play();
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if *elapsed >= Duration::from_millis(300)),
+    );
+    player.next();
+    let seen = wait_end(&events);
+
+    let path = paths(&seen).pop().expect("signal path");
+    let note = path
+        .transition
+        .as_deref()
+        .unwrap_or_else(|| panic!("no transition note: {path:#?}"));
+    let seconds: f64 = note
+        .strip_prefix("crossfade ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("unexpected transition note: {note}"));
+    assert!(
+        seconds <= 0.6,
+        "fade of {seconds} s exceeds half of the 1 s incoming track: {note}"
+    );
+    let b_samples = decoded(&b);
+    let tail = packed(SampleContainer::S16, &b_samples[22_050 * 2..]);
+    assert!(
+        control.played_bytes().ends_with(&tail),
+        "the incoming track must play on untouched after a 0.5 s fade"
+    );
+}
+
+/// A seek after a skipped transition must not attach its note to the restarted track.
+#[test]
+fn a_seek_after_a_skipped_transition_clears_the_note() {
+    let a = sine_wav("seek-note-a.wav", 44_100, 132_300, 500.0, 0.5); // 3 s
+    let b = sine_wav("seek-note-b.wav", 48_000, 48_000, 2_000.0, 0.5); // 1 s, other format
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.crossfade = CrossfadeConfig {
+        enabled: true,
+        seconds: 1.0,
+    };
+    let (player, events, _) = start_with(config, slow());
+    player.enqueue(vec![a.clone(), b]);
+    player.play();
+    // The decision is made while decoding the last second; the heard position lags it.
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if *elapsed >= Duration::from_millis(2_000)),
+    );
+    player.seek(Duration::ZERO);
+    let seen = wait_end(&events);
+
+    let a_rate = 44_100;
+    for path in paths(&seen) {
+        if path.source.rate == a_rate && path.transition.is_some() {
+            panic!("the restarted outgoing track carries a transition note: {path:#?}");
+        }
+    }
+}
+
+/// The crossfade length is a setting, enforced even when a caller hands the engine a raw
+/// `PlayerConfig`.
+#[test]
+fn spawn_clamps_the_crossfade_length() {
+    let a = sine_wav("fade-limit-a.wav", 44_100, 970_200, 500.0, 0.5); // 22 s
+    let b = sine_wav("fade-limit-b.wav", 44_100, 970_200, 2_000.0, 0.5);
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.crossfade = CrossfadeConfig {
+        enabled: true,
+        seconds: 100.0,
+    };
+    let (player, events, _) = start_with(config, NullBackend::new());
+    player.enqueue(vec![a, b]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let path = paths(&seen).pop().expect("signal path");
+    let note = path.transition.as_deref().unwrap_or("no note");
+    let seconds: f64 = note
+        .strip_prefix("crossfade ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("unexpected transition note: {note}"));
+    assert!(
+        seconds <= sonder_engine::MAX_CROSSFADE_SECONDS + 0.2,
+        "fade of {seconds} s ignores the 1–10 s setting: {note}"
+    );
 }

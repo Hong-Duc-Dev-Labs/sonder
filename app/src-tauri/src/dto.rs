@@ -1,6 +1,7 @@
 //! Types shared with the web UI. They mirror the engine and library types in the shape the
 //! UI needs and derive `specta::Type`, so `src/lib/bindings.ts` is generated from them.
 
+use std::io::Read;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -171,16 +172,15 @@ const APO_FILE_SUFFIX: &str = " ParametricEQ";
 impl PeqImport {
     /// Reads and parses `path`; every failure is a message the UI can show.
     pub fn read(path: &Path) -> AppResult<Self> {
-        let size = std::fs::metadata(path)
-            .map_err(|e| AppError(format!("cannot read {}: {e}", path.display())))?
-            .len();
-        if size > MAX_APO_BYTES {
-            return Err(too_large(path));
-        }
-        let bytes = std::fs::read(path)
+        // Read one byte past the cap, so the cap bounds the allocation rather than describing it
+        // after the fact (a file can grow between a metadata check and the read).
+        let file = std::fs::File::open(path)
             .map_err(|e| AppError(format!("cannot read {}: {e}", path.display())))?;
-        // The file may have grown since `metadata`; the cap is a promise, so check again.
-        if bytes.len() > MAX_APO_BYTES as usize {
+        let mut bytes = Vec::new();
+        file.take(MAX_APO_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| AppError(format!("cannot read {}: {e}", path.display())))?;
+        if bytes.len() as u64 > MAX_APO_BYTES {
             return Err(too_large(path));
         }
         // A NUL byte is valid UTF-8 once encoded, so UTF-16 from a Windows editor would

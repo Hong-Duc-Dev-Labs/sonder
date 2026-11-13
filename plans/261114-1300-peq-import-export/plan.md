@@ -116,8 +116,8 @@ break the round trip), LF line endings; import(export(x)) == x for any sanitized
   that all fail no longer claims it has none); repeated `Preamp`/`Fc`/`Gain`/`Q`/`BW` keys warn
   and the last value wins; the preamp slider spans the model's −60…+12 dB, so an imported
   −30 dB preamp is not silently moved to −24 on the first touch.
-- Second review pass: `Q` and `BW Oct` now share one slot, so whichever comes last wins (as in
-  Equalizer APO) and a cross-spelling override is reported instead of silent; an unusable
+- Second review pass: `Q` and `BW Oct` now share one slot, so whichever comes last wins
+  (Equalizer APO itself always lets a bandwidth win; see the third pass) and a cross-spelling override is reported instead of silent; an unusable
   bandwidth (`0`, negative, overflowing) warns and keeps any explicit Q; a comment after the
   values says to put it on its own line; skipped-line warnings cut the echoed line to 60
   characters (a `GraphicEQ:` line is thousands); a NUL byte means "UTF-16, not UTF-8"; the
@@ -126,9 +126,15 @@ break the round trip), LF line endings; import(export(x)) == x for any sanitized
   unit, the inline-comment message, a long skipped line, the size cap, UTF-16 and a lowercase
   ` parametricEq` stem.
 
-<!-- slug: peq-import-export -->
+
+- Third review pass: the precedence note now records Equalizer APO's own rule
+  (`BiQuadFilterFactory` reads `Q` and then `BW Oct`, so a bandwidth wins whatever the text
+  order); this parser keeps the later of the two for a hand-written line and warns when both
+  appear, which is a deliberate, reported difference rather than an implied match.
 
 ## Rollback
 
 Revert the phase commits; no settings schema change (presets already exist as
 `peqPresets`), so nothing persists past a revert.
+
+<!-- slug: peq-import-export -->

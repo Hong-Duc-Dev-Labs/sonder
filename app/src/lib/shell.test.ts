@@ -42,4 +42,15 @@ describe("the inspector", () => {
     expect(app.inspector).toBe("queue");
     expect(app.docked).toBe(true);
   });
+
+  it("keeps the queue an overlay on Now Playing", () => {
+    const app = shell();
+    app.toggleQueue();
+    expect(app.inspector).toBe("queue");
+    expect(app.docked).toBe(false);
+    // The lyrics toggle closes it, so the pressed state and the panel agree.
+    app.toggleLyrics();
+    expect(app.inspector).toBe(null);
+    expect(app.docked).toBe(false);
+  });
 });

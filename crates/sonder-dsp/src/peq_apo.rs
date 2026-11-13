@@ -269,8 +269,9 @@ fn filter_band(
     let tokens: Vec<&str> = tokens.collect();
     let mut freq_hz: Option<f64> = None;
     let mut gain_db = 0.0;
-    // `Q` and `BW Oct` are the same value in Equalizer APO; whatever comes last wins, as it
-    // does there. Keeping one slot is what stops a bandwidth from silently overriding a Q.
+    // `Q` and `BW Oct` name the same value in Equalizer APO. Its parser reads both and lets the
+    // bandwidth win whatever the text order (`BiQuadFilterFactory::createFilter`); Sonder keeps
+    // the later one, which is what the line reads like, and always says when both are given.
     let mut q: Option<f64> = None;
     let mut seen_fc = false;
     let mut seen_gain = false;

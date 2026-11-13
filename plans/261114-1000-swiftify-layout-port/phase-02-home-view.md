@@ -18,8 +18,8 @@ play history, pinning or favourites — do not add backend for them.
 
 ## Requirements
 
-- [x] `View` gains `{ kind: "home" }`; it becomes the initial view and the target of
-      "back" when history is empty. `App.svelte` renders `HomeView`.
+- [x] `View` gains `{ kind: "home" }`; it becomes the initial view, so "back" with an empty
+      history has nothing else to reach (it is a no-op there). `App.svelte` renders `HomeView`.
 - [x] **Greeting**: "Good morning / afternoon / evening" or "Late night" from the local hour,
       as the page title (no glyph: the Icon set has no fitting time-of-day shapes).
       Re-evaluated when the view mounts (no timer).

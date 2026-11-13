@@ -292,11 +292,8 @@ export class AppState {
 
   back() {
     const prev = this.history.at(-1);
-    if (!prev) {
-      // With nothing behind it, back is Home (and a no-op there).
-      if (this.view.kind !== "home") this.go({ kind: "home" });
-      return;
-    }
+    // History is empty only while the initial Home view is showing, so there is nothing to do.
+    if (!prev) return;
     // Leaving the album page the cover morphed into: it morphs back into its card.
     const morph = this.view.kind === "album" && this.view.id === this.morphAlbumId;
     const flight = this.flightStart(prev);

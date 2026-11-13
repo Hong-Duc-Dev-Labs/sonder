@@ -356,12 +356,6 @@
     view-transition-name: content;
     height: 100%;
   }
-  /* The sheet is already placed beside the sidebar and the inspector, so nothing inside re-adds
-     either inset. */
-  main:not(.full) .content {
-    --inset-left: 0px;
-    --inset-right: 0px;
-  }
   .view {
     height: 100%;
   }

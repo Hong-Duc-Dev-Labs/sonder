@@ -194,6 +194,7 @@
   .d {
     font-size: var(--fs-small);
     color: var(--ink-2);
+    font-family: var(--font-figures);
     font-variant-numeric: tabular-nums;
   }
   .remove {

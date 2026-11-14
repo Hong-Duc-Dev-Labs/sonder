@@ -1,6 +1,7 @@
 import { mount } from "svelte";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import "@fontsource-variable/inter";
+import "@fontsource-variable/momo-trust-sans";
+import "@fontsource/momo-signature";
 import "./app.css";
 import App from "./App.svelte";
 import MiniPlayer from "./components/MiniPlayer.svelte";

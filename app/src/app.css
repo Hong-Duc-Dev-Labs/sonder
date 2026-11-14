@@ -50,8 +50,13 @@
   --r-pill: 999px;
 
   /* type */
-  --font: "Inter Variable", "Inter", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system,
+  --font: "Momo Trust Sans Variable", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system,
     sans-serif;
+  /* Momo Trust Sans has proportional figures and no tnum, so counters and times that must not
+     jitter use system faces, which do have tabular figures. */
+  --font-figures: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  /* a single-weight script face, only for the wordmark and the Home greeting */
+  --font-signature: "Momo Signature", var(--font);
   --mono: "Cascadia Mono", "SF Mono", ui-monospace, monospace;
   --fs-display: clamp(34px, 3.4vw + 8px, 52px);
   --fs-headline: 30px;

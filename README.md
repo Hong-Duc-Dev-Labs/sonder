@@ -110,7 +110,7 @@ The Now Playing view shows the signal path stage by stage (the icon next to the 
 
 ## Playlists
 
-Playlists live in the library database (schema version 4; an older database is backed up as
+Playlists live in the library database (schema version 4 or later; an older database is backed up as
 `library.db.bak-3` before it is upgraded). Create one on the Playlists page or from any track's
 ⋯ menu → **Add to playlist** → **New playlist…**; a playlist page plays, shuffles, plays next or
 queues the whole list, and each row can be dragged by its grip (or moved with Up/Down on the
@@ -148,6 +148,41 @@ its cover (from the catalogues' own image servers and Cover Art Archive only). *
 online** asks the same services as the lyrics panel (LRCLIB, BetterLyrics, LyricsPlus, Kugou)
 with the typed fields, even when online lyrics are off in Settings, and puts the answer in the
 lyrics box. Either way nothing is written until **Save**.
+
+## Quality check
+
+A track's ⋯ menu → **Check quality** decodes the whole file and says whether it is the
+lossless file it claims to be: **Genuine lossless**, **Suspect**, **Transcoded from lossy**,
+**Fake hi-res (upsampled)**, **Fake bit depth** or **Inconclusive** (too short, too quiet or too
+little treble; not a pass), each with a confidence. The report lists the evidence behind it,
+row by row:
+
+- **Spectral cutoff, slope and stability** — MP3/AAC encoders low-pass at a fixed 16–20.5 kHz,
+  so a transcode has a steep, flat "lid" across the whole track; real recordings reach above
+  21.5 kHz or fade out gradually with a top edge that moves with the music.
+- **Spectral holes** and **high-frequency stereo** — treble bands that drop out from moment to
+  moment, and treble that collapses towards mono (joint stereo), are lossy fingerprints.
+- **Real bit depth** — read exactly from the samples: a 24-bit file whose low byte is always
+  zero is padded 16-bit.
+- **Hi-res content** — a 88.2 kHz-or-higher file with a wall at 20–24 kHz was upsampled.
+- **DSD source** — a DSD file with a CD-rate wall under its modulator noise is reported as
+  suspect, never fake (analog transfers can look the same).
+- **FLAC MD5** — proves the file decodes to what was encoded; it says nothing about the source.
+
+It also shows the average spectrum with the detected cutoff and a spectrum-over-time map. A whole
+album (the spectrum button on its page), a playlist (its ⋯ menu) or every song (the Songs page)
+can be checked as a batch, one track at a time, with progress and Cancel in the sidebar; a
+track whose cached result is still valid is not decoded again. Results are stored in the library
+database (schema version 5; a version-4 database is backed up as `library.db.bak-4` first), keyed
+by path and dropped when the file changes, and show as a small badge in track lists. Nothing is
+uploaded and no file is changed. It is a spectral estimate: thresholds were tuned on synthetic
+signals and a sample of real albums, and an encoder with an unusual low-pass can still read as
+genuine.
+
+```sh
+cargo run --release -p sonder-cli -- check ~/Music/album          # text report per file
+cargo run --release -p sonder-cli -- check track.flac --json      # the full report as JSON
+```
 
 ## Verification
 
@@ -206,7 +241,8 @@ crates/sonder-engine   player thread, gapless queue, DSP chain order, signal pat
 crates/sonder-library  SQLite library, scanner, art cache, loudness analysis, playlists
 crates/sonder-lyrics   LRC/TTML and online lyrics with a disk cache
 crates/sonder-metadata track info and covers from iTunes, Deezer and MusicBrainz
-crates/sonder-cli      device listing, bit-perfect playback harness, library scanner
+crates/sonder-quality  lossless quality check: spectral cutoff, lossy fingerprints, real bit depth
+crates/sonder-cli      device listing, bit-perfect playback harness, library scanner, quality check
 crates/sonder-verify   acceptance/verification suite
 app                    Svelte UI + Tauri shell
 tools                  SDM table tool, bundle check

@@ -376,7 +376,6 @@
     border-radius: var(--r-pill);
     font-size: 11px;
     font-weight: 650;
-    font-family: var(--font-figures);
     font-variant-numeric: tabular-nums;
     color: var(--warn);
     background: color-mix(in srgb, var(--warn) 14%, transparent);

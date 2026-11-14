@@ -417,6 +417,49 @@ impl From<Track> for TrackItem {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackEdit {
+    pub title: String,
+    pub artists: Vec<String>,
+    pub album: String,
+    pub album_artists: Vec<String>,
+    pub track_no: Option<u32>,
+    pub disc_no: Option<u32>,
+    pub year: Option<i32>,
+    pub genre: String,
+}
+
+impl From<sonder_library::TrackTags> for TrackEdit {
+    fn from(tags: sonder_library::TrackTags) -> Self {
+        TrackEdit {
+            title: tags.title.unwrap_or_default(),
+            artists: tags.artists,
+            album: tags.album.unwrap_or_default(),
+            album_artists: tags.album_artists,
+            track_no: tags.track_no,
+            disc_no: tags.disc_no,
+            year: tags.year,
+            genre: tags.genre.unwrap_or_default(),
+        }
+    }
+}
+
+impl From<TrackEdit> for sonder_library::TagEdit {
+    fn from(edit: TrackEdit) -> Self {
+        sonder_library::TagEdit {
+            title: edit.title,
+            artists: edit.artists,
+            album: edit.album,
+            album_artists: edit.album_artists,
+            track_no: edit.track_no,
+            disc_no: edit.disc_no,
+            year: edit.year,
+            genre: edit.genre,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AlbumInfo {

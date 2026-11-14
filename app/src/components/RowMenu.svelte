@@ -85,6 +85,9 @@
         <Icon name="playlist" size={18} /> <span class="name">{t("common.addToPlaylist")}</span>
         <Icon name="chevron" size={16} />
       </button>
+      <button role="menuitem" onclick={() => act(() => app.editTags(track))}>
+        <Icon name="edit" size={18} /> {t("menu.editTags")}
+      </button>
       {#if onremove}
         <button role="menuitem" onclick={() => act(onremove)}>
           <Icon name="trash" size={18} /> {t("menu.removeFromPlaylist")}

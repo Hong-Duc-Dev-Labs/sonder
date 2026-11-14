@@ -151,6 +151,21 @@ export const vi: Record<MessageKey, Message> = {
   "menu.trackActions": "Thao tác bài hát",
   "menu.newPlaylist": "Danh sách phát mới…",
   "menu.removeFromPlaylist": "Xoá khỏi danh sách phát",
+  "menu.editTags": "Sửa thông tin",
+  "tags.editTitle": "Sửa thông tin bài hát",
+  "tags.title": "Tên bài hát",
+  "tags.artists": "Nghệ sĩ",
+  "tags.album": "Album",
+  "tags.albumArtists": "Nghệ sĩ album",
+  "tags.trackNo": "Số bài",
+  "tags.discNo": "Số đĩa",
+  "tags.year": "Năm",
+  "tags.genre": "Thể loại",
+  "tags.namesHint": "Nhiều tên thì cách nhau bằng “;”",
+  "tags.inFile": "Được lưu thẳng vào tệp nhạc.",
+  "tags.reading": "Đang đọc thông tin trong tệp…",
+  "tags.save": "Lưu",
+  "tags.saving": "Đang lưu…",
   "tracks.disc": "Đĩa {n}",
   "tracks.move": "Di chuyển {title}, vị trí {position} trên {total}",
   "tracks.reorderHint": "Kéo, hoặc nhấn Lên/Xuống, để sắp xếp lại",
@@ -177,6 +192,8 @@ export const vi: Record<MessageKey, Message> = {
   "np.showVinyl": "Hiện đĩa than",
   "np.deviceOpened": "Thiết bị mở ở {format}",
   "np.underrunsTitle": "Số lần thiết bị hết dữ liệu âm thanh kể từ khi mở; có thể đã nghe thấy tiếng ngắt",
+  "mini.open": "Mở Sonder",
+  "mini.quit": "Thoát Sonder",
   "transport.player": "Trình phát",
   "transport.repeatOff": "Tắt lặp lại",
   "transport.repeatAll": "Lặp lại tất cả",
@@ -384,6 +401,12 @@ export const vi: Record<MessageKey, Message> = {
   "settings.lang.name": "Ngôn ngữ",
   "settings.lang.hint": "Ngôn ngữ giao diện của Sonder. Hệ thống sẽ theo ngôn ngữ của máy tính.",
   "settings.lang.system": "Hệ thống",
+
+  // settings: mini player
+  "settings.mini.title": "Trình phát mini",
+  "settings.mini.name": "Hiện trình phát mini khi đóng",
+  "settings.mini.hint":
+    "Khi đóng cửa sổ Sonder lúc đang có bài hát, nhạc vẫn tiếp tục trong một cửa sổ nhỏ luôn nằm trên cùng. Đóng trình phát mini để thoát.",
 
   // settings: lyrics
   "settings.lyrics.online": "Tìm lời bài hát trực tuyến",

@@ -6,15 +6,18 @@
 //! file without a title falls back to its file name.
 
 use std::fs::File;
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use lofty::config::ParseOptions;
+use lofty::config::{ParseOptions, WriteOptions};
 use lofty::file::{AudioFile, FileType, TaggedFile, TaggedFileExt};
+use lofty::id3::v2::Id3v2Tag;
 use lofty::mp4::{Mp4Codec, Mp4File};
+use lofty::mpeg::MpegFile;
 use lofty::picture::PictureType;
 use lofty::probe::Probe;
-use lofty::tag::{Accessor, ItemKey, Tag};
+use lofty::tag::items::Timestamp;
+use lofty::tag::{Accessor, ItemKey, ItemValue, MergeTag, SplitTag, Tag, TagExt, TagItem, TagType};
 
 /// Largest ID3v2 blob read from a DSD file (covers can be large, tags are not).
 const MAX_ID3_BYTES: u64 = 64 * 1024 * 1024;
@@ -116,6 +119,22 @@ pub struct FileMeta {
     pub audio: AudioInfo,
 }
 
+/// The metadata fields the editor can change. Values are the complete new state: an empty
+/// string or list clears the field. Everything else in the file — cover art, lyrics,
+/// ReplayGain, comments and format-specific frames — is left as it was.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TagEdit {
+    /// Never empty: a file with no title has nothing to show in the library.
+    pub title: String,
+    pub artists: Vec<String>,
+    pub album: String,
+    pub album_artists: Vec<String>,
+    pub track_no: Option<u32>,
+    pub disc_no: Option<u32>,
+    pub year: Option<i32>,
+    pub genre: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum TagError {
     #[error(transparent)]
@@ -134,19 +153,202 @@ impl From<lofty::error::FileParseError> for TagError {
 
 /// Reads tags and technical format from one audio file.
 pub fn read_file(path: &Path) -> Result<FileMeta, TagError> {
+    let mut meta = read_stored(path)?;
+    fill_from_file_name(&mut meta.tags, path);
+    Ok(meta)
+}
+
+/// What the file itself holds, without values guessed from its name.
+fn read_stored(path: &Path) -> Result<FileMeta, TagError> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
-    let mut meta = match ext.as_str() {
-        "dsf" => dsd::read_dsf(path)?,
-        "dff" => dsd::read_dff(path)?,
-        "m4a" | "mp4" => read_mp4(path)?,
-        _ => read_lofty(path)?,
+    match ext.as_str() {
+        "dsf" => dsd::read_dsf(path),
+        "dff" => dsd::read_dff(path),
+        "m4a" | "mp4" => read_mp4(path),
+        _ => read_lofty(path),
+    }
+}
+
+/// The tags stored in the file, for the metadata editor. Unlike [`read_file`], a missing
+/// track number is not guessed from the file name, because the editor writes back what it
+/// shows. A missing title still is: a track needs one, and the field shows what Save writes.
+pub fn read_file_tags(path: &Path) -> Result<TrackTags, TagError> {
+    let mut tags = read_stored(path)?.tags;
+    tags.cover = None;
+    if tags.title.is_none() {
+        let mut guess = TrackTags::default();
+        fill_from_file_name(&mut guess, path);
+        tags.title = guess.title;
+    }
+    Ok(tags)
+}
+
+/// Writes `edit` into the file at `path`, keeping every tag the editor does not own.
+///
+/// The file is rebuilt in a temporary file beside it and moved over the original, so a
+/// failure (a full disk, a read-only folder) leaves the original untouched. A file the user
+/// cannot write to is refused. FLAC, ALAC, WAV and AIFF go through lofty; DSF and DFF carry
+/// an ID3v2 tag that is replaced in the container.
+pub fn write_file(path: &Path, edit: &TagEdit) -> Result<(), TagError> {
+    if edit.title.trim().is_empty() {
+        return Err(TagError::Parse("a track needs a title".into()));
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    match ext.as_str() {
+        "dsf" => dsd::write_dsf(path, edit),
+        "dff" => dsd::write_dff(path, edit),
+        _ => write_lofty(path, edit),
+    }
+}
+
+/// Writes the tags lofty owns (FLAC, ALAC/MP4, WAV, AIFF).
+fn write_lofty(path: &Path, edit: &TagEdit) -> Result<(), TagError> {
+    let mut tagged = Probe::open(path)?.guess_file_type()?.read()?;
+    let tag_type = tagged.primary_tag_type();
+    if tagged.tag_mut(tag_type).is_none() {
+        if !tagged.file_type().tag_support(tag_type).is_writable() {
+            return Err(TagError::Unsupported(format!(
+                "{:?} files cannot hold tags",
+                tagged.file_type()
+            )));
+        }
+        tagged.insert_tag(Tag::new(tag_type));
+    }
+    // Every tag gets the edit, not only the primary one: the reader falls back to the others
+    // (a WAV's RIFF INFO, an AIFF's text chunks), so a value cleared in one would come back.
+    let file_type = tagged.file_type();
+    let types: Vec<TagType> = tagged
+        .tags()
+        .iter()
+        .map(Tag::tag_type)
+        .filter(|t| file_type.tag_support(*t).is_writable())
+        .collect();
+    for tag_type in types {
+        if let Some(tag) = tagged.tag_mut(tag_type) {
+            apply_edit(tag, edit);
+        }
+    }
+    // lofty writes in place; it gets a copy of the file instead, which then replaces it.
+    rewrite(path, |source, tmp| {
+        io::copy(source, tmp)?;
+        tmp.seek(SeekFrom::Start(0))?;
+        tagged
+            .save_to(tmp, WriteOptions::new())
+            .map_err(|e| TagError::Parse(format!("cannot write tags: {e}")))
+    })
+}
+
+/// Rebuilds the file at `path` through `build`, which reads the original from its first
+/// argument and writes the new file to the second, then moves the result over the original,
+/// so a failed write never leaves a half-written track. The original is opened for writing
+/// first so that a file the user may not change is refused instead of being replaced (a
+/// rename only needs the folder to be writable), and the new file takes its permissions.
+fn rewrite(
+    path: &Path,
+    build: impl FnOnce(&mut File, &mut File) -> Result<(), TagError>,
+) -> Result<(), TagError> {
+    let mut source = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let permissions = source.metadata()?.permissions();
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    build(&mut source, tmp.as_file_mut())?;
+    tmp.as_file().set_permissions(permissions)?;
+    tmp.as_file_mut().sync_all()?;
+    // Windows refuses to replace a file that is still open.
+    drop(source);
+    tmp.persist(path)
+        .map(|_| ())
+        .map_err(|err| TagError::Io(err.error))
+}
+
+/// Copies `from..to` of `source` to `tmp`.
+fn copy_range(source: &mut File, tmp: &mut File, from: u64, to: u64) -> Result<(), TagError> {
+    if to <= from {
+        return Ok(());
+    }
+    source.seek(SeekFrom::Start(from))?;
+    io::copy(&mut source.take(to - from), tmp)?;
+    Ok(())
+}
+
+/// Replaces the fields the editor owns, leaving every other item (and every picture) alone.
+fn apply_edit(tag: &mut Tag, edit: &TagEdit) {
+    let title = edit.title.trim();
+    tag.set_title(title.to_string());
+    match clean(&edit.album) {
+        Some(album) => tag.set_album(album),
+        None => tag.remove_album(),
+    }
+    match clean(&edit.genre) {
+        Some(genre) => tag.set_genre(genre),
+        None => tag.remove_genre(),
+    }
+    write_names(
+        tag,
+        &[ItemKey::TrackArtist, ItemKey::TrackArtists],
+        &edit.artists,
+    );
+    write_names(tag, &[ItemKey::AlbumArtist], &edit.album_artists);
+    match edit.track_no {
+        Some(number) => tag.set_track(number),
+        None => tag.remove_track(),
+    }
+    match edit.disc_no {
+        Some(number) => tag.set_disk(number),
+        None => tag.remove_disk(),
+    }
+    match edit.year {
+        Some(year) => tag.set_date(Timestamp {
+            year: year.clamp(0, 9999) as u16,
+            month: None,
+            day: None,
+            hour: None,
+            minute: None,
+            second: None,
+        }),
+        None => tag.remove_date(),
+    }
+}
+
+/// Writes an ordered list of names. Every listed key is cleared first: a file can carry the
+/// same credit under two spellings (ID3v2 `TPE1` and a `TXXX:ARTISTS` frame, for example), and
+/// the reader prefers one of them. Each name is its own value under the first key: Vorbis
+/// comments repeat the field, MP4 repeats the data atom and ID3v2.4 separates them with NUL,
+/// and the reader splits all three back into names. Only the formats that hold a single text
+/// (RIFF INFO, AIFF text chunks, ID3v1) get them joined, the way the library displays them.
+fn write_names(tag: &mut Tag, keys: &[ItemKey], names: &[String]) {
+    let Some(&key) = keys.first() else {
+        return;
     };
-    fill_from_file_name(&mut meta.tags, path);
-    Ok(meta)
+    for other in keys {
+        tag.remove_key(*other);
+    }
+    let names: Vec<String> = names.iter().filter_map(|n| clean(n)).collect();
+    let single = matches!(
+        tag.tag_type(),
+        TagType::RiffInfo | TagType::AiffText | TagType::Id3v1
+    );
+    if !single {
+        for name in names {
+            tag.push(TagItem::new(key, ItemValue::Text(name)));
+        }
+    } else if !names.is_empty() {
+        tag.insert_text(key, names.join("; "));
+    }
 }
 
 fn read_mp4(path: &Path) -> Result<FileMeta, TagError> {
@@ -423,15 +625,16 @@ fn split_track_number(stem: &str) -> (Option<u32>, &str) {
     }
 }
 
-/// Parses a raw ID3v2 tag (as embedded in DSF/DFF) with lofty.
-fn parse_id3v2(blob: Vec<u8>) -> Result<TrackTags, TagError> {
+/// Parses a standalone ID3v2 tag with every frame it holds, including the ones lofty's generic
+/// [`Tag`] has no item for (private, binary, chapter frames), so a rewrite can keep them.
+fn parse_id3_blob(blob: Vec<u8>) -> Result<Option<Id3v2Tag>, TagError> {
     // lofty's MPEG reader accepts a stream that is only an ID3v2 tag when it is not asked
     // for audio properties; that is the only public entry point to its ID3v2 parser.
-    let tagged = Probe::new(Cursor::new(blob))
-        .set_file_type(FileType::Mpeg)
-        .options(ParseOptions::new().read_properties(false))
-        .read()?;
-    Ok(extract(&tagged))
+    let file = MpegFile::read_from(
+        &mut Cursor::new(blob),
+        ParseOptions::new().read_properties(false),
+    )?;
+    Ok(file.id3v2().cloned())
 }
 
 fn read_id3_at<R: Read + Seek>(
@@ -439,6 +642,15 @@ fn read_id3_at<R: Read + Seek>(
     offset: u64,
     len: u64,
 ) -> Result<Option<TrackTags>, TagError> {
+    Ok(read_tag_at(r, offset, len)?.as_ref().map(id3_tags))
+}
+
+/// Reads the ID3v2 tag at `offset`, if the bytes there are one.
+fn read_tag_at<R: Read + Seek>(
+    r: &mut R,
+    offset: u64,
+    len: u64,
+) -> Result<Option<Id3v2Tag>, TagError> {
     if len < 10 {
         return Ok(None);
     }
@@ -448,7 +660,29 @@ fn read_id3_at<R: Read + Seek>(
     if !blob.starts_with(b"ID3") {
         return Ok(None);
     }
-    parse_id3v2(blob).map(Some)
+    parse_id3_blob(blob)
+}
+
+/// The fields of an ID3v2 tag as the reader sees them.
+fn id3_tags(tag: &Id3v2Tag) -> TrackTags {
+    extract_tags(&[&Tag::from(tag.clone())])
+}
+
+/// Applies `edit` to `tag` (or to a new tag) and serializes the result as a standalone ID3v2
+/// tag, ready to be embedded in a DSD file. Frames outside the editor's fields stay as they
+/// were, down to the ones lofty cannot convert.
+fn edited_id3(tag: Option<Id3v2Tag>, edit: &TagEdit) -> Result<Vec<u8>, TagError> {
+    let (rest, mut fields) = tag.unwrap_or_default().split_tag();
+    apply_edit(&mut fields, edit);
+    dump_id3(&rest.merge_tag(fields))
+}
+
+/// Serializes `tag` as a standalone ID3v2 tag.
+fn dump_id3(tag: &Id3v2Tag) -> Result<Vec<u8>, TagError> {
+    let mut blob = Vec::new();
+    tag.dump_to(&mut blob, WriteOptions::new())
+        .map_err(|e| TagError::Parse(format!("cannot write an ID3 tag: {e}")))?;
+    Ok(blob)
 }
 
 mod dsd {
@@ -530,7 +764,7 @@ mod dsd {
         let mut channels = 0u16;
         let mut sound_bytes: Option<u64> = None;
         let mut dst_frames: Option<(u32, u16)> = None;
-        let mut id3: Option<TrackTags> = None;
+        let mut id3: Option<Id3v2Tag> = None;
         let mut native = TrackTags::default();
 
         let mut pos = 16u64;
@@ -545,13 +779,19 @@ mod dsd {
                 b"DSD " => sound_bytes = Some(len),
                 b"DST " => dst_frames = read_dst_info(&mut f, data, len)?,
                 b"DIIN" => read_diin(&mut f, data, len, &mut native)?,
-                b"ID3 " => id3 = read_id3_at(&mut f, data, len)?,
+                b"ID3 " => id3 = read_tag_at(&mut f, data, len)?,
                 _ => {}
             }
             match next_chunk(data, size, form_end) {
                 Some(next) => pos = next,
                 None => break,
             }
+        }
+        // Files written by sacd_extract carry the tag after the form instead of inside it.
+        if id3.is_none()
+            && let Some(spot) = tail_spot(&mut f, form_end, file_len)?
+        {
+            id3 = read_tag_at(&mut f, spot.body, spot.len)?;
         }
         if rate == 0 || channels == 0 {
             return Err(bad("DSDIFF property chunk is missing or invalid"));
@@ -563,7 +803,7 @@ mod dsd {
             (None, Some((frames, fps))) if fps > 0 => u64::from(frames) * 1000 / u64::from(fps),
             _ => 0,
         };
-        let mut tags = id3.unwrap_or_default();
+        let mut tags = id3.as_ref().map(id3_tags).unwrap_or_default();
         if tags.title.is_none() {
             tags.title = native.title;
         }
@@ -673,6 +913,205 @@ mod dsd {
             }
         }
         Ok(())
+    }
+
+    /// An ID3 tag in a DSDIFF file and where its bytes sit. `chunked` records whether it is
+    /// wrapped in an `ID3 ` chunk or is the bare tag, as each writer of these files does it.
+    #[derive(Debug, Clone, Copy)]
+    pub(super) struct TagSpot {
+        /// Offset of the tag or of its chunk header.
+        start: u64,
+        /// Offset of the ID3v2 blob.
+        body: u64,
+        /// Length of the ID3v2 blob.
+        len: u64,
+        /// End of the tag or chunk, including the pad byte of an odd chunk.
+        end: u64,
+        chunked: bool,
+    }
+
+    /// The tag a DDF file appends after its form, if the bytes there are one.
+    pub(super) fn tail_spot(
+        f: &mut File,
+        start: u64,
+        file_len: u64,
+    ) -> Result<Option<TagSpot>, TagError> {
+        if file_len.saturating_sub(start) < 10 {
+            return Ok(None);
+        }
+        let mut head = [0u8; 12];
+        f.seek(SeekFrom::Start(start))?;
+        let n = f.read(&mut head)?;
+        let head = &head[..n];
+        if n >= 12 && head.starts_with(b"ID3 ") {
+            let size = u64::from_be_bytes(head[4..12].try_into().unwrap());
+            return Ok(next_chunk(start + 12, size, file_len).map(|end| TagSpot {
+                start,
+                body: start + 12,
+                len: size,
+                end,
+                chunked: true,
+            }));
+        }
+        if head.starts_with(b"ID3") && n >= 10 {
+            // A bare ID3v2 tag: its ten-byte header ends with a syncsafe size.
+            let size = head[6..10]
+                .iter()
+                .fold(0u64, |size, byte| (size << 7) | u64::from(byte & 0x7f));
+            let len = 10 + size;
+            let end = start + len;
+            if end <= file_len {
+                return Ok(Some(TagSpot {
+                    start,
+                    body: start,
+                    len,
+                    end,
+                    chunked: false,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Replaces the ID3v2 tag of a DSF file, keeping its audio untouched.
+    pub(super) fn write_dsf(path: &Path, edit: &TagEdit) -> Result<(), TagError> {
+        let mut source = File::open(path)?;
+        let file_len = source.metadata()?.len();
+        let mut header = [0u8; 28];
+        source
+            .read_exact(&mut header)
+            .map_err(|_| bad("DSF header truncated"))?;
+        if &header[0..4] != b"DSD " {
+            return Err(bad("not a DSF file"));
+        }
+        // The metadata pointer is zero or past the end when the file has no tag yet.
+        let metadata_offset = le_u64(&header[20..28]);
+        let tagged = metadata_offset >= 28 && metadata_offset < file_len;
+        let sound_end = if tagged { metadata_offset } else { file_len };
+        let tag = if tagged {
+            read_tag_at(&mut source, metadata_offset, file_len - metadata_offset)?
+        } else {
+            None
+        };
+        let blob = edited_id3(tag, edit)?;
+        drop(source);
+
+        header[12..20].copy_from_slice(&(sound_end + blob.len() as u64).to_le_bytes());
+        header[20..28].copy_from_slice(&sound_end.to_le_bytes());
+        rewrite(path, |source, tmp| {
+            tmp.write_all(&header)?;
+            copy_range(source, tmp, 28, sound_end)?;
+            tmp.write_all(&blob)?;
+            Ok(())
+        })
+    }
+
+    /// Replaces the ID3v2 tag of a DSDIFF file, keeping its audio and its non-tag chunks.
+    pub(super) fn write_dff(path: &Path, edit: &TagEdit) -> Result<(), TagError> {
+        let mut source = File::open(path)?;
+        let file_len = source.metadata()?.len();
+        let mut header = [0u8; 16];
+        source
+            .read_exact(&mut header)
+            .map_err(|_| bad("DFF header truncated"))?;
+        if &header[0..4] != b"FRM8" || &header[12..16] != b"DSD " {
+            return Err(bad("not a DSDIFF file"));
+        }
+        let form_end = u64::from_be_bytes(header[4..12].try_into().unwrap())
+            .saturating_add(12)
+            .min(file_len);
+
+        // The tag the form carries, if any.
+        let mut inside: Option<TagSpot> = None;
+        let mut pos = 16u64;
+        while pos + 12 <= form_end {
+            let (id, size) = chunk_header(&mut source, pos)?;
+            // An odd last chunk may lack its pad byte; the reader still reads it, so the
+            // writer must find it too, or the edit would land in a second tag nobody reads.
+            let Some(end) = next_chunk(pos + 12, size, form_end)
+                .or_else(|| (pos + 12).checked_add(size).filter(|end| *end == form_end))
+            else {
+                break;
+            };
+            if &id == b"ID3 " {
+                inside = Some(TagSpot {
+                    start: pos,
+                    body: pos + 12,
+                    len: size,
+                    end,
+                    chunked: true,
+                });
+                break;
+            }
+            pos = end;
+        }
+        let tail = tail_spot(&mut source, form_end, file_len)?;
+
+        // The tag in force is the one inside the form; a file with both keeps them in sync,
+        // and the rewrite leaves only the inside one.
+        let tag = match inside.or(tail) {
+            Some(spot) => read_tag_at(&mut source, spot.body, spot.len)?,
+            None => None,
+        };
+        let chunk = id3_chunk(&edited_id3(tag, edit)?);
+        drop(source);
+
+        rewrite(path, |source, tmp| match (inside, tail) {
+            (Some(spot), tail) => {
+                let form_len = 4
+                    + (form_end - 16)
+                        .saturating_sub(spot.end - spot.start)
+                        .saturating_add(chunk.len() as u64);
+                tmp.write_all(b"FRM8")?;
+                tmp.write_all(&form_len.to_be_bytes())?;
+                tmp.write_all(b"DSD ")?;
+                copy_range(source, tmp, 16, spot.start)?;
+                tmp.write_all(&chunk)?;
+                copy_range(source, tmp, spot.end, form_end)?;
+                copy_range(source, tmp, tail.map_or(form_end, |t| t.end), file_len)?;
+                Ok(())
+            }
+            (None, Some(spot)) => {
+                copy_range(source, tmp, 0, spot.start)?;
+                if spot.chunked {
+                    tmp.write_all(&chunk)?;
+                } else {
+                    tmp.write_all(&chunk[12..chunk.len() - (chunk.len() & 1)])?;
+                }
+                copy_range(source, tmp, spot.end, file_len)?;
+                Ok(())
+            }
+            // No tag anywhere: append an `ID3 ` chunk after the form, the way these files
+            // usually carry one. Bytes after the form that are not a tag stay where they are,
+            // with the chunk put inside the form so the reader still finds it.
+            (None, None) if form_end == file_len => {
+                copy_range(source, tmp, 0, file_len)?;
+                tmp.write_all(&chunk)?;
+                Ok(())
+            }
+            (None, None) => {
+                let form_len = 4 + (form_end - 16).saturating_add(chunk.len() as u64);
+                tmp.write_all(b"FRM8")?;
+                tmp.write_all(&form_len.to_be_bytes())?;
+                tmp.write_all(b"DSD ")?;
+                copy_range(source, tmp, 16, form_end)?;
+                tmp.write_all(&chunk)?;
+                copy_range(source, tmp, form_end, file_len)?;
+                Ok(())
+            }
+        })
+    }
+
+    /// An `ID3 ` chunk holding `blob`, padded to an even length as DSDIFF requires.
+    pub(super) fn id3_chunk(blob: &[u8]) -> Vec<u8> {
+        let mut chunk = Vec::with_capacity(12 + blob.len() + 1);
+        chunk.extend_from_slice(b"ID3 ");
+        chunk.extend_from_slice(&(blob.len() as u64).to_be_bytes());
+        chunk.extend_from_slice(blob);
+        if blob.len() & 1 == 1 {
+            chunk.push(0);
+        }
+        chunk
     }
 }
 
@@ -806,5 +1245,434 @@ mod tests {
         let meta = read_dff_bytes(bytes).unwrap();
         // 705 600 bytes of stereo DSD64 is one second; the claimed size is ignored.
         assert_eq!(meta.audio.duration_ms, 1_000);
+    }
+
+    fn edit() -> TagEdit {
+        TagEdit {
+            title: "So What".into(),
+            artists: vec!["Miles Davis".into()],
+            album: "Kind of Blue".into(),
+            album_artists: vec!["Miles Davis".into()],
+            track_no: Some(1),
+            disc_no: Some(1),
+            year: Some(1959),
+            genre: "Jazz".into(),
+        }
+    }
+
+    fn assert_edited(meta: &FileMeta) {
+        assert_eq!(meta.tags.title.as_deref(), Some("So What"));
+        assert_eq!(meta.tags.artists, ["Miles Davis"]);
+        assert_eq!(meta.tags.album.as_deref(), Some("Kind of Blue"));
+        assert_eq!(meta.tags.album_artists, ["Miles Davis"]);
+        assert_eq!(meta.tags.track_no, Some(1));
+        assert_eq!(meta.tags.disc_no, Some(1));
+        assert_eq!(meta.tags.year, Some(1959));
+        assert_eq!(meta.tags.genre.as_deref(), Some("Jazz"));
+    }
+
+    fn wav(path: &Path) {
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for i in 0..882 {
+            writer.write_sample((i % 64) as i16).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn wav_tags_are_written_and_untouched_tags_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.wav");
+        wav(&path);
+        write_file(&path, &edit()).unwrap();
+        assert_edited(&read_file(&path).unwrap());
+
+        // A comment is not a field of the editor; a later write must leave it alone.
+        {
+            let mut tagged = Probe::open(&path).unwrap().read().unwrap();
+            let tag = tagged
+                .primary_tag_mut()
+                .expect("the first write made a tag");
+            tag.insert_text(ItemKey::Comment, "keep me".into());
+            tagged.save_to_path(&path, WriteOptions::new()).unwrap();
+        }
+        let mut second = edit();
+        second.title = "Freddie Freeloader".into();
+        second.artists.clear();
+        second.album.clear();
+        second.year = None;
+        write_file(&path, &second).unwrap();
+
+        let meta = read_file(&path).unwrap();
+        assert_eq!(meta.tags.title.as_deref(), Some("Freddie Freeloader"));
+        assert!(meta.tags.artists.is_empty());
+        // The file name stands in for a cleared album; its own tag no longer has one.
+        assert_eq!(meta.tags.year, None);
+        let tagged = Probe::open(&path).unwrap().read().unwrap();
+        assert_eq!(
+            tagged
+                .primary_tag()
+                .and_then(|tag| tag.get_string(ItemKey::Comment)),
+            Some("keep me")
+        );
+    }
+
+    #[test]
+    fn a_second_artist_spelling_does_not_survive_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.wav");
+        wav(&path);
+        write_file(&path, &edit()).unwrap();
+        // Files tagged by other tools can carry the credit twice (TPE1 and TXXX:ARTISTS);
+        // the reader prefers the second spelling, so clearing only TPE1 would show the old
+        // name for ever.
+        {
+            let mut tagged = Probe::open(&path).unwrap().read().unwrap();
+            let tag = tagged.primary_tag_mut().unwrap();
+            tag.insert_text(ItemKey::TrackArtists, "Old Artist".into());
+            tagged.save_to_path(&path, WriteOptions::new()).unwrap();
+        }
+        let mut second = edit();
+        second.artists = vec!["New Artist".into()];
+        write_file(&path, &second).unwrap();
+        assert_eq!(read_file(&path).unwrap().tags.artists, ["New Artist"]);
+    }
+
+    #[test]
+    fn empty_title_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.wav");
+        wav(&path);
+        let mut empty = edit();
+        empty.title = "   ".into();
+        assert!(write_file(&path, &empty).is_err());
+    }
+
+    fn dsf(samples: u64, sound: &[u8]) -> Vec<u8> {
+        let data_len = 12 + sound.len() as u64;
+        let total = 28 + 52 + data_len;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"DSD ");
+        out.extend_from_slice(&28u64.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
+        out.extend_from_slice(b"fmt ");
+        out.extend_from_slice(&52u64.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&2_822_400u32.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&samples.to_le_bytes());
+        out.extend_from_slice(&4096u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_len.to_le_bytes());
+        out.extend_from_slice(sound);
+        out
+    }
+
+    #[test]
+    fn dsf_tags_are_written_behind_the_audio_and_rewritten_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track.dsf");
+        std::fs::write(&path, dsf(2_822_400, &[0x69; 4096])).unwrap();
+        let before = read_file(&path).unwrap();
+
+        write_file(&path, &edit()).unwrap();
+        let after = read_file(&path).unwrap();
+        assert_edited(&after);
+        assert_eq!(after.audio, before.audio);
+
+        // The header points at the tag that follows the audio.
+        let raw = std::fs::read(&path).unwrap();
+        let metadata = u64::from_le_bytes(raw[20..28].try_into().unwrap());
+        assert!(metadata > 28);
+        assert!(raw[metadata as usize..].starts_with(b"ID3"));
+        assert_eq!(
+            u64::from_le_bytes(raw[12..20].try_into().unwrap()),
+            raw.len() as u64
+        );
+
+        // A second write replaces the tag instead of appending another one.
+        let mut second = edit();
+        second.title = "Blue in Green".into();
+        write_file(&path, &second).unwrap();
+        let raw = std::fs::read(&path).unwrap();
+        assert_eq!(raw.windows(3).filter(|w| *w == b"ID3").count(), 1);
+        assert_eq!(
+            read_file(&path).unwrap().tags.title.as_deref(),
+            Some("Blue in Green")
+        );
+    }
+
+    #[test]
+    fn dff_tags_are_appended_after_the_form_and_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track.dff");
+        let sound = [0x69; 705_600];
+        let bytes = form(&[
+            snd_prop(2_822_400),
+            chunk(b"DSD ", sound.len() as u64, &sound),
+        ]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        write_file(&path, &edit()).unwrap();
+        let meta = read_file(&path).unwrap();
+        assert_edited(&meta);
+        assert_eq!(meta.audio.duration_ms, 1_000);
+        let raw = std::fs::read(&path).unwrap();
+        assert_eq!(&raw[..func_head(&bytes)], &bytes[..func_head(&bytes)]);
+
+        let mut second = edit();
+        second.title = "All Blues".into();
+        write_file(&path, &second).unwrap();
+        assert_eq!(
+            read_file(&path).unwrap().tags.title.as_deref(),
+            Some("All Blues")
+        );
+    }
+
+    /// The header bytes of `form`, whose size the append must not touch.
+    fn func_head(bytes: &[u8]) -> usize {
+        let size = u64::from_be_bytes(bytes[4..12].try_into().unwrap());
+        12 + size as usize
+    }
+
+    #[test]
+    fn dff_data_after_the_form_is_kept_and_the_tag_goes_inside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tail.dff");
+        let sound = [0x69; 705_600];
+        let mut bytes = form(&[
+            snd_prop(2_822_400),
+            chunk(b"DSD ", sound.len() as u64, &sound),
+        ]);
+        bytes.extend_from_slice(b"JUNK");
+        std::fs::write(&path, &bytes).unwrap();
+        // No tag yet: the title comes from the file name.
+        assert_eq!(
+            read_file(&path).unwrap().tags.title.as_deref(),
+            Some("tail")
+        );
+
+        write_file(&path, &edit()).unwrap();
+        let meta = read_file(&path).unwrap();
+        assert_edited(&meta);
+        let raw = std::fs::read(&path).unwrap();
+        assert!(raw.ends_with(b"JUNK"));
+        // The form grew by the chunk, and its size still covers everything before the tail.
+        assert_eq!(
+            u64::from_be_bytes(raw[4..12].try_into().unwrap()),
+            raw.len() as u64 - 12 - 4
+        );
+    }
+
+    #[test]
+    fn dff_tag_inside_the_form_is_replaced_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("inside.dff");
+        let mut old = Tag::new(TagType::Id3v2);
+        old.set_title("Old title".into());
+        let blob = dump_id3(&Id3v2Tag::from(old)).unwrap();
+        let sound = [0x69; 705_600];
+        let bytes = form(&[
+            snd_prop(2_822_400),
+            chunk(b"DSD ", sound.len() as u64, &sound),
+            chunk(b"ID3 ", blob.len() as u64, &blob),
+        ]);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            read_file(&path).unwrap().tags.title.as_deref(),
+            Some("Old title")
+        );
+
+        write_file(&path, &edit()).unwrap();
+        let meta = read_file(&path).unwrap();
+        assert_edited(&meta);
+        assert_eq!(meta.audio.duration_ms, 1_000);
+        let raw = std::fs::read(&path).unwrap();
+        // The form still holds exactly one ID3 chunk, in the place the old one had.
+        assert_eq!(raw.windows(4).filter(|w| *w == b"ID3 ").count(), 1);
+        assert_eq!(
+            u64::from_be_bytes(raw[4..12].try_into().unwrap()),
+            raw.len() as u64 - 12
+        );
+    }
+
+    #[test]
+    fn several_artists_are_stored_as_separate_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.wav");
+        wav(&path);
+        let mut two = edit();
+        two.artists = vec!["Miles Davis".into(), "John Coltrane".into()];
+        two.album_artists = vec!["Miles Davis".into(), "Bill Evans".into()];
+        write_file(&path, &two).unwrap();
+        let tags = read_file(&path).unwrap().tags;
+        assert_eq!(tags.artists, ["Miles Davis", "John Coltrane"]);
+        assert_eq!(tags.album_artists, ["Miles Davis", "Bill Evans"]);
+    }
+
+    #[test]
+    fn several_artists_survive_a_dsd_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track.dsf");
+        std::fs::write(&path, dsf(2_822_400, &[0x69; 4096])).unwrap();
+        let mut two = edit();
+        two.artists = vec!["Miles Davis".into(), "John Coltrane".into()];
+        write_file(&path, &two).unwrap();
+        assert_eq!(
+            read_file(&path).unwrap().tags.artists,
+            ["Miles Davis", "John Coltrane"]
+        );
+    }
+
+    #[test]
+    fn a_cleared_field_does_not_come_back_from_a_second_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.wav");
+        wav(&path);
+        // A WAV tagged by a ripper often carries RIFF INFO next to its ID3v2 tag; the reader
+        // falls back to it, so leaving it alone would bring cleared values back.
+        {
+            let mut tagged = Probe::open(&path).unwrap().read().unwrap();
+            let mut info = Tag::new(TagType::RiffInfo);
+            info.insert_text(ItemKey::TrackArtist, "Old Artist".into());
+            info.insert_text(ItemKey::Genre, "Old Genre".into());
+            tagged.insert_tag(info);
+            tagged.save_to_path(&path, WriteOptions::new()).unwrap();
+        }
+        let mut cleared = edit();
+        cleared.artists.clear();
+        cleared.genre.clear();
+        write_file(&path, &cleared).unwrap();
+        let tags = read_file(&path).unwrap().tags;
+        assert!(tags.artists.is_empty(), "{:?}", tags.artists);
+        assert_eq!(tags.genre, None);
+    }
+
+    #[test]
+    fn dsd_rewrite_keeps_id3_frames_the_editor_does_not_know() {
+        use lofty::id3::v2::{Frame, PrivateFrame};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private.dff");
+        let mut old = Id3v2Tag::new();
+        old.set_title("Old title".into());
+        old.insert(Frame::Private(PrivateFrame::new(
+            "sonder-test",
+            vec![1u8, 2, 3],
+        )));
+        let blob = dump_id3(&old).unwrap();
+        let sound = [0x69; 705_600];
+        let bytes = form(&[
+            snd_prop(2_822_400),
+            chunk(b"DSD ", sound.len() as u64, &sound),
+            dsd::id3_chunk(&blob),
+        ]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        write_file(&path, &edit()).unwrap();
+        assert_edited(&read_file(&path).unwrap());
+        let raw = std::fs::read(&path).unwrap();
+        assert!(
+            raw.windows(11).any(|w| w == b"sonder-test"),
+            "the PRIV frame was dropped"
+        );
+    }
+
+    #[test]
+    fn dff_unpadded_last_tag_chunk_is_replaced_not_shadowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unpadded.dff");
+        let mut old = Tag::new(TagType::Id3v2);
+        old.set_title("Old title".into());
+        let mut blob = dump_id3(&Id3v2Tag::from(old)).unwrap();
+        if blob.len().is_multiple_of(2) {
+            blob.push(0); // ID3 padding, so the chunk is odd and needs a pad byte it lacks.
+        }
+        let sound = [0x69; 705_600];
+        let bytes = form(&[
+            snd_prop(2_822_400),
+            chunk(b"DSD ", sound.len() as u64, &sound),
+            chunk(b"ID3 ", blob.len() as u64, &blob),
+        ]);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            read_file(&path).unwrap().tags.title.as_deref(),
+            Some("Old title")
+        );
+
+        write_file(&path, &edit()).unwrap();
+        assert_edited(&read_file(&path).unwrap());
+        let raw = std::fs::read(&path).unwrap();
+        assert_eq!(raw.windows(4).filter(|w| *w == b"ID3 ").count(), 1);
+    }
+
+    #[test]
+    fn a_read_only_file_is_refused_and_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track.dsf");
+        std::fs::write(&path, dsf(2_822_400, &[0x69; 4096])).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms.clone()).unwrap();
+
+        let refused = write_file(&path, &edit()).is_err();
+        let after = std::fs::read(&path).unwrap();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms).unwrap();
+        assert!(refused);
+        assert_eq!(after, before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rewritten_file_keeps_its_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track.dsf");
+        std::fs::write(&path, dsf(2_822_400, &[0x69; 4096])).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_file(&path, &edit()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644);
+    }
+
+    #[test]
+    fn a_lofty_write_leaves_no_temporary_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.wav");
+        wav(&path);
+        write_file(&path, &edit()).unwrap();
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [std::ffi::OsString::from("song.wav")]);
+        assert_edited(&read_file(&path).unwrap());
+    }
+
+    #[test]
+    fn the_editor_sees_the_file_tags_without_file_name_guesses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("07 - Untitled.wav");
+        wav(&path);
+        // The library shows a track number guessed from the name ...
+        assert_eq!(read_file(&path).unwrap().tags.track_no, Some(7));
+        // ... but the file holds none, so the editor must not offer one to save. The title
+        // stays filled in: a track needs one, and the field shows exactly what Save writes.
+        let editable = read_file_tags(&path).unwrap();
+        assert_eq!(editable.track_no, None);
+        assert_eq!(editable.title.as_deref(), Some("Untitled"));
     }
 }

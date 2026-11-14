@@ -43,6 +43,18 @@ export const commands = {
 	/**  Removes one queue entry. Removing the playing entry moves on to the next one. */
 	queueRemove: (entryId: number) => __TAURI_INVOKE<null>("queue_remove", { entryId }),
 	libraryArtistTracks: (id: number) => __TAURI_INVOKE<TrackItem[]>("library_artist_tracks", { id }),
+	/**
+	 *  The metadata stored in a track's own file, for the editor to show. Read fresh from the
+	 *  file rather than from the index, and without the track number the library guesses from
+	 *  the file name, so Save never writes a value the user did not see come from the file. A
+	 *  missing title is still filled from the file name, since a track needs one.
+	 */
+	trackTags: (trackId: number) => __TAURI_INVOKE<TrackEdit | null>("track_tags", { trackId }),
+	/**
+	 *  Writes edited metadata into the track's file itself, then updates the index and tells the
+	 *  UI. Returns the track as it is indexed now; `None` when it has left the library.
+	 */
+	trackUpdateTags: (trackId: number, edit: TrackEdit) => __TAURI_INVOKE<TrackItem | null>("track_update_tags", { trackId, edit }),
 	/**  Every track in the library, by title. */
 	libraryTracks: () => __TAURI_INVOKE<TrackItem[]>("library_tracks"),
 	queueItems: () => __TAURI_INVOKE<QueueItem[]>("queue_items"),
@@ -116,6 +128,10 @@ export const commands = {
 	 *  Progress arrives as `UpdateProgressEvent`. On Windows the installer closes the app itself.
 	 */
 	updateInstall: () => __TAURI_INVOKE<null>("update_install"),
+	/**  Brings the main window back and puts the mini player away. */
+	windowShowMain: () => __TAURI_INVOKE<void>("window_show_main"),
+	/**  Quits Sonder (the mini player's close button). */
+	appQuit: () => __TAURI_INVOKE<void>("app_quit"),
 };
 
 /** Events */
@@ -487,6 +503,11 @@ export type Settings = {
 	lyricsOnline?: boolean,
 	/**  Look for a newer release on GitHub when the app starts. */
 	updateCheck?: boolean,
+	/**
+	 *  Closing the main window while a track is loaded shows the mini player instead of
+	 *  quitting.
+	 */
+	miniPlayer?: boolean,
 	/**  DSD handling per output device id; devices without an entry use DoP. */
 	dsdModes?: { [key in string]: DsdMode },
 	/**  Output rate when DSD is converted to PCM. */
@@ -576,6 +597,17 @@ export type SrcTargetSetting =
 "keepFamily" | 
 /**  A fixed rate chosen by the user. */
 "fixed";
+
+export type TrackEdit = {
+	title: string,
+	artists: string[],
+	album: string,
+	albumArtists: string[],
+	trackNo: number | null,
+	discNo: number | null,
+	year: number | null,
+	genre: string,
+};
 
 export type TrackItem = {
 	id: number,

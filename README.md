@@ -88,6 +88,12 @@ cargo run -p sonder-cli -- play ~/Music/album --verify-hash
 - **Repeat** — the button next to Next cycles off → all → one. Repeat-one replays the entry
   gaplessly and manual Next still moves on; repeat-all wraps from the last entry to the first
   without a gap; turning it off keeps the entry already decoded ahead.
+- **Mini player** — `Settings → Mini player` (on by default): closing the main window while a
+  track is loaded hides it and opens a small always-on-top window in the screen's bottom-right
+  corner with the cover, a spinning record, and previous / play-pause / next on hover. Drag it
+  anywhere; double-click it or use its expand button to bring the main window back; its close
+  button quits Sonder. With the setting off, or nothing loaded, closing the window quits as
+  before.
 - **Updates** — `Settings → Updates` shows the running version and checks the project's GitHub
   releases; **Check on launch** (on by default) does the same once at start-up and raises a
   notice when a newer version is out. **Install … and restart** downloads the installer,
@@ -114,6 +120,23 @@ asks first and never touches the tracks.
 Entries point at the file path, not the library's track id, so they survive rescans. A file that
 is moved or deleted stays in the playlist as "not in library" and comes back when a rescan finds
 it at the same path again.
+
+## Editing metadata
+
+Any track's ⋯ menu → **Edit metadata** shows the tags stored in the file itself — title,
+artists, album, album artists, track and disc number, year and genre — and **Save** writes them
+back into that file, then re-indexes the track in place (its album follows the new tags). FLAC,
+ALAC (M4A), WAV and AIFF are written through lofty; DSF and DFF get their ID3v2 tag replaced in
+the container, and a tag a DFF file carries after its form (as sacd_extract writes one) is
+rewritten where it is. Cover art, lyrics, ReplayGain, comments and every other tag are left
+untouched. Several artists are typed separated by semicolons and stored as separate values, so
+each one is its own artist in the library and in other players. Every tag the file carries gets
+the edit (a WAV's RIFF INFO next to its ID3v2 tag, for example), so a cleared field stays
+cleared. The file is rebuilt through a temporary file beside it that keeps the original's
+permissions, so a failed write leaves the original as it was, and a read-only file or folder
+reports the error. The editor shows what the file holds: a track number the library guesses
+from the file name is not offered for saving. A tag edit keeps the loudness already measured for that audio; a
+track whose album changed gets its new album's value on the next analysis pass.
 
 ## Verification
 

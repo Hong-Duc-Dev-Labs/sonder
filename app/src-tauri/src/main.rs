@@ -8,12 +8,14 @@ mod art;
 mod commands;
 mod dto;
 mod events;
+mod history;
 mod loudness;
 mod media;
 mod mini;
 mod quality;
 mod scan;
 mod settings;
+mod sleep;
 mod state;
 mod update;
 
@@ -101,6 +103,12 @@ fn bindings() -> Builder<tauri::Wry> {
             quality::quality_cancel_check,
             quality::quality_cancel_batch,
             quality::quality_batch_status,
+            history::history_stats,
+            history::history_clear,
+            sleep::sleep_timer_set,
+            sleep::sleep_timer_get,
+            commands::playlist_import_m3u,
+            commands::playlist_export_m3u,
         ])
         .events(collect_events![
             events::PlayerStateEvent,
@@ -117,6 +125,8 @@ fn bindings() -> Builder<tauri::Wry> {
             quality::QualityProgressEvent,
             quality::QualityCheckedEvent,
             quality::QualityBatchEvent,
+            history::HistoryChangedEvent,
+            sleep::SleepTimerEvent,
         ])
         // Ids and millisecond counts stay far below 2^53.
         .dangerously_cast_bigints_to_number()

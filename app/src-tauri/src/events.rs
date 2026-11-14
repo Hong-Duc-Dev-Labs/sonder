@@ -16,7 +16,9 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
 use crate::dto::{Device, PlayState, PlayerSnapshot, QueueItem};
+use crate::history::{self, PlayTracker};
 use crate::media::{self, NowPlaying, Playback};
+use crate::sleep;
 use crate::state::{AppState, lock};
 
 const POSITION_INTERVAL: Duration = Duration::from_millis(100);
@@ -182,18 +184,21 @@ pub fn run_bridge(app: AppHandle, events: Receiver<PlayerEvent>) {
     let mut last_emit = Instant::now() - POSITION_INTERVAL;
     let mut last_now_playing: Option<NowPlaying> = None;
     let mut urgent = false;
+    let mut tracker = PlayTracker::default();
     loop {
         match events.recv_timeout(POSITION_INTERVAL) {
             Ok(event) => {
-                urgent |= handle(&app, &event);
+                urgent |= handle(&app, &event, &mut tracker);
                 // Fold everything already queued before emitting once.
                 while let Ok(event) = events.try_recv() {
-                    urgent |= handle(&app, &event);
+                    urgent |= handle(&app, &event, &mut tracker);
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
+        // The timed sleep timer is checked on every tick, events or not.
+        sleep::check(&app, None);
         let state = app.state::<AppState>();
         let snap = state.snapshot().clone();
         if last_emitted.as_ref() != Some(&snap)
@@ -216,9 +221,13 @@ pub fn run_bridge(app: AppHandle, events: Receiver<PlayerEvent>) {
 }
 
 /// Folds `event` into the snapshot and reports what needs the user's attention.
-fn handle(app: &AppHandle, event: &PlayerEvent) -> bool {
+fn handle(app: &AppHandle, event: &PlayerEvent, tracker: &mut PlayTracker) -> bool {
     let state = app.state::<AppState>();
     let urgent = apply(&mut state.snapshot(), event);
+    if let Some(play) = tracker.on_event(event, history::unix_now()) {
+        history::record(app, play);
+    }
+    sleep::check(app, Some(event));
     match event {
         PlayerEvent::TrackFailed { path, error, .. } => notice(
             app,

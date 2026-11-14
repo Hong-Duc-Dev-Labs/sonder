@@ -125,6 +125,8 @@ pub struct AppState {
     pub scan: ScanControl,
     /// Quality checks: the batch queue and cancel flags.
     pub quality: crate::quality::QualityControl,
+    /// The sleep timer, checked by the engine event bridge.
+    pub sleep: Mutex<crate::sleep::SleepTimer>,
     /// AutoEQ headphone search; the index loads on the first search.
     pub autoeq: Arc<sonder_autoeq::AutoEq>,
 }
@@ -179,6 +181,7 @@ impl AppState {
                 watcher: Mutex::new(None),
                 scan: ScanControl::default(),
                 quality: crate::quality::QualityControl::default(),
+                sleep: Mutex::default(),
                 autoeq,
             },
             events,

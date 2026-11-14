@@ -27,7 +27,10 @@
       <h1 tabindex="-1" data-view-heading>{t("common.playlists")}</h1>
       {#if loaded}<span class="dim small">{plural(app.playlists.length, "playlist")}</span>{/if}
     </div>
-    <button class="btn" onclick={create}><Icon name="add" size={18} /> {t("common.newPlaylist")}</button>
+    <div class="tools">
+      <button class="btn" onclick={() => app.importM3u()}><Icon name="folder" size={18} /> {t("m3u.import")}</button>
+      <button class="btn" onclick={create}><Icon name="add" size={18} /> {t("common.newPlaylist")}</button>
+    </div>
   </header>
 
   {#if loaded && !app.playlists.length}
@@ -52,6 +55,11 @@
 </div>
 
 <style>
+  .tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
   .head {
     display: flex;
     align-items: flex-end;

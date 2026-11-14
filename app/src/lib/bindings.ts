@@ -177,11 +177,34 @@ export const commands = {
 	qualityCancelBatch: () => __TAURI_INVOKE<null>("quality_cancel_batch"),
 	/**  Where the batch stands, for a view that opens while it runs. */
 	qualityBatchStatus: () => __TAURI_INVOKE<QualityBatchEvent>("quality_batch_status"),
+	/**  Listening stats for `period`, plus the most recent plays. */
+	historyStats: (period: StatsPeriodSetting) => __TAURI_INVOKE<ListeningStatsInfo>("history_stats", { period }),
+	/**  Deletes the whole listening history; returns how many plays were removed. */
+	historyClear: () => __TAURI_INVOKE<number>("history_clear"),
+	/**
+	 *  Sets the timer: `minutes` from now, or the end of the current track, or off when neither
+	 *  is given.
+	 */
+	sleepTimerSet: (minutes: number | null, endOfTrack: boolean) => __TAURI_INVOKE<SleepTimerEvent>("sleep_timer_set", { minutes, endOfTrack }),
+	/**  What the timer is set to. */
+	sleepTimerGet: () => __TAURI_INVOKE<SleepTimerEvent>("sleep_timer_get"),
+	/**
+	 *  Picks an M3U/M3U8 file and creates a playlist from it, named after the file. Entries whose
+	 *  file is not in the library are kept (they show as "not in library"); web streams are
+	 *  skipped. `None` when the dialog was cancelled.
+	 */
+	playlistImportM3u: () => __TAURI_INVOKE<M3uImported | null>("playlist_import_m3u"),
+	/**
+	 *  Saves a playlist as an extended M3U8 file (absolute paths, `#EXTINF` for tracks in the
+	 *  library) and returns the saved path; `None` when the dialog was cancelled.
+	 */
+	playlistExportM3u: (id: number) => __TAURI_INVOKE<string | null>("playlist_export_m3u", { id }),
 };
 
 /** Events */
 export const events = {
 	devicesChangedEvent: makeEvent<DevicesChangedEvent, DevicesChangedEvent>("devices-changed-event"),
+	historyChangedEvent: makeEvent<HistoryChangedEvent, HistoryChangedEvent>("history-changed-event"),
 	libraryChangedEvent: makeEvent<LibraryChangedEvent, LibraryChangedEvent>("library-changed-event"),
 	loudnessFinishedEvent: makeEvent<LoudnessFinishedEvent, LoudnessFinishedEvent>("loudness-finished-event"),
 	loudnessProgressEvent: makeEvent<LoudnessProgressEvent, LoudnessProgressEvent>("loudness-progress-event"),
@@ -193,6 +216,7 @@ export const events = {
 	queueChangedEvent: makeEvent<QueueChangedEvent, QueueChangedEvent>("queue-changed-event"),
 	scanFinishedEvent: makeEvent<ScanFinishedEvent, ScanFinishedEvent>("scan-finished-event"),
 	scanProgressEvent: makeEvent<ScanProgressEvent, ScanProgressEvent>("scan-progress-event"),
+	sleepTimerEvent: makeEvent<SleepTimerEvent, SleepTimerEvent>("sleep-timer-event"),
 	updateAvailableEvent: makeEvent<UpdateAvailableEvent, UpdateAvailableEvent>("update-available-event"),
 	updateProgressEvent: makeEvent<UpdateProgressEvent, UpdateProgressEvent>("update-progress-event"),
 };
@@ -365,6 +389,9 @@ export type GlassQuality = "full" |
 /**  Opaque surfaces, no blur. */
 "off";
 
+/**  A play was recorded: the Stats page reloads. */
+export type HistoryChangedEvent = null;
+
 /**  What Settings shows about an impulse response file. */
 export type ImpulseResponseInfo = {
 	path: string,
@@ -386,6 +413,17 @@ export type LevelingSetting = "off" | "track" | "album" | "auto";
 
 /**  The index changed (scan, watcher, root removed): reload what is on screen. */
 export type LibraryChangedEvent = null;
+
+export type ListeningStatsInfo = {
+	plays: number,
+	listenedMs: number,
+	tracks: number,
+	topTracks: TopTrackItem[],
+	topArtists: TopArtistItem[],
+	topAlbums: TopAlbumItem[],
+	bars: StatsBar[],
+	recent: RecentPlayItem[],
+};
 
 /**  What the editor asks online catalogues and lyrics services with: the fields as typed. */
 export type LookupQuery = {
@@ -428,6 +466,17 @@ export type Lyrics = {
 export type LyricsLine = {
 	startMs: number,
 	text: string,
+};
+
+/**  What an M3U import created. */
+export type M3uImported = {
+	playlist: Playlist,
+	/**  Entries added, missing ones included. */
+	added: number,
+	/**  Added entries whose file is not in the library (yet). */
+	missing: number,
+	/**  Web streams and other entries that are not local files. */
+	skipped: number,
 };
 
 /**  One online catalogue's idea of the track, for the editor to fill its fields from. */
@@ -687,6 +736,12 @@ export type QueueItem = {
 	durationMs: number,
 };
 
+export type RecentPlayItem = {
+	track: TrackItem,
+	/**  Unix seconds. */
+	playedAt: number,
+};
+
 /**  What plays after a track ends. */
 export type RepeatMode = "off" | 
 /**  After the last entry, continue at the first. */
@@ -799,6 +854,15 @@ export type SignalPathStage = {
 	detail: string,
 };
 
+/**  What the timer is set to, for the UI. */
+export type SleepTimerEvent = {
+	/**  When it fires, as Unix milliseconds; `None` when off or waiting for the track's end. */
+	endsAtMs: number | null,
+	endOfTrack: boolean,
+	/**  Sent once when the timer has just paused playback. */
+	fired: boolean,
+};
+
 export type SortOrder = "artist" | "title" | "added" | "year";
 
 /**  What a file contains. */
@@ -835,6 +899,37 @@ export type SrcTargetSetting =
 "keepFamily" | 
 /**  A fixed rate chosen by the user. */
 "fixed";
+
+/**  One bar of the chart: a local day (`YYYY-MM-DD`) or month (`YYYY-MM`). */
+export type StatsBar = {
+	label: string,
+	listenedMs: number,
+};
+
+export type StatsPeriodSetting = "week" | "month" | "year" | "all";
+
+export type TopAlbumItem = {
+	id: number,
+	title: string,
+	artist: string | null,
+	art: string | null,
+	plays: number,
+	listenedMs: number,
+};
+
+export type TopArtistItem = {
+	id: number,
+	name: string,
+	art: string | null,
+	plays: number,
+	listenedMs: number,
+};
+
+export type TopTrackItem = {
+	track: TrackItem,
+	plays: number,
+	listenedMs: number,
+};
 
 export type TrackEdit = {
 	title: string,

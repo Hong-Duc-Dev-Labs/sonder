@@ -57,7 +57,6 @@
   --font-figures: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
   /* a single-weight script face, only for the wordmark and the Home greeting */
   --font-signature: "Momo Signature", var(--font);
-  --mono: "Cascadia Mono", "SF Mono", ui-monospace, monospace;
   --fs-display: clamp(34px, 3.4vw + 8px, 52px);
   --fs-headline: 30px;
   --fs-title: 18px;
@@ -503,7 +502,7 @@ h3 {
   background: var(--soft);
   box-shadow: inset 0 0 0 1px var(--hairline);
   color: var(--ink-2);
-  font-family: var(--mono);
+  font-family: var(--font);
   white-space: nowrap;
 }
 .badge.accent {

@@ -1298,7 +1298,7 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-family: var(--mono);
+    font-family: var(--font);
     font-size: var(--fs-label);
     font-weight: 700;
     letter-spacing: 0.08em;
@@ -1381,7 +1381,7 @@
     margin: 0;
   }
   .path {
-    font-family: var(--mono);
+    font-family: var(--font);
     font-size: 13px;
     white-space: nowrap;
     overflow: hidden;
@@ -1542,7 +1542,7 @@
   .failures {
     margin: 0 14px 12px;
     padding-left: 18px;
-    font-family: var(--mono);
+    font-family: var(--font);
     font-size: 12px;
     color: var(--ink-2);
     user-select: text;

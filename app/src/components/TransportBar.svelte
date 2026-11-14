@@ -408,7 +408,7 @@
     border-radius: var(--r-pill);
     background: var(--soft);
     box-shadow: inset 0 0 0 1px var(--hairline);
-    font-family: var(--mono);
+    font-family: var(--font);
     font-size: 11px;
     font-weight: 650;
     color: var(--ink-2);
@@ -583,7 +583,7 @@
     padding: 10px;
   }
   .device {
-    font-family: var(--mono);
+    font-family: var(--font);
     font-size: var(--fs-label);
     color: var(--ink-2);
   }

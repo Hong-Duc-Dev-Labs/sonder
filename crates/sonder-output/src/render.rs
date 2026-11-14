@@ -97,7 +97,7 @@ impl Renderer {
     }
 
     pub(crate) fn input_finished(&self) -> bool {
-        self.source.handle.0.end_of_input.load(Ordering::Acquire)
+        self.source.handle.0.input_ended()
     }
 
     /// Discards everything queued if the producer asked for a flush since the last call.
@@ -155,7 +155,8 @@ impl Renderer {
 
         // Read the end-of-input flag before the queue length: once the flag is seen, every
         // sample pushed before it is visible, so an empty queue really means the end.
-        let finished = shared.end_of_input.load(Ordering::Acquire);
+        let input = shared.input();
+        let finished = crate::stream::input_ended(input);
         let want = frames * self.channels;
         let take = self.source.consumer.slots().min(want) / self.channels * self.channels;
 
@@ -199,10 +200,7 @@ impl Renderer {
             &mut self.scratch[payload_bytes..total_bytes],
         );
 
-        let exhausted_now = || {
-            shared.end_of_input.load(Ordering::Acquire)
-                && self.source.consumer.slots() < self.channels
-        };
+        let exhausted_now = || shared.input_ended() && self.source.consumer.slots() < self.channels;
         // Re-check after the read: the producer may have pushed its last block and finished
         // between the two loads above, which is the end of the track, not an underrun.
         if payload_frames < frames && !finished && !exhausted_now() {
@@ -219,7 +217,10 @@ impl Renderer {
 
         Fill {
             payload_frames,
-            input_exhausted: finished && self.source.consumer.slots() < self.channels,
+            // Only an end the producer cannot take back any more stops the stream.
+            input_exhausted: finished
+                && self.source.consumer.slots() < self.channels
+                && shared.exhaust_input(input),
         }
     }
 
@@ -406,6 +407,50 @@ mod tests {
         assert_eq!(fill.payload_frames, 1);
         assert!(fill.input_exhausted);
         assert_eq!(handle.underruns(), 0);
+    }
+
+    #[test]
+    fn a_finish_taken_back_in_time_keeps_the_stream_going() {
+        let (mut producer, source) = sample_ring(16, 2);
+        let mut renderer = Renderer::new(source, FORMAT, 8, None, false);
+        assert!(producer.push(&[1 << 8, 2 << 8]));
+        producer.finish();
+        assert!(producer.is_finished());
+        assert!(producer.reopen());
+        assert!(!producer.is_finished());
+        assert!(producer.push(&[3 << 8, 4 << 8]));
+
+        let fill = renderer.fill(4);
+        assert_eq!(fill.payload_frames, 2);
+        assert!(!fill.input_exhausted);
+        // Reopening an open input is a no-op that succeeds.
+        assert!(producer.reopen());
+    }
+
+    #[test]
+    fn a_finish_the_render_thread_acted_on_cannot_be_taken_back() {
+        let (mut producer, source) = sample_ring(16, 2);
+        let mut renderer = Renderer::new(source, FORMAT, 8, None, false);
+        assert!(producer.push(&[1 << 8, 2 << 8]));
+        producer.finish();
+        assert!(renderer.fill(4).input_exhausted);
+        assert!(!producer.reopen());
+    }
+
+    #[test]
+    fn an_end_ended_again_after_a_reopen_is_not_the_one_the_render_thread_saw() {
+        let (mut producer, source) = sample_ring(16, 2);
+        let shared = source.handle.0.clone();
+        producer.finish();
+        let seen = shared.input();
+        // The producer takes the end back, pushes and ends again before the render thread
+        // commits: the samples in between must not be dropped.
+        assert!(producer.reopen());
+        assert!(producer.push(&[1 << 8, 2 << 8]));
+        producer.finish();
+        assert!(!shared.exhaust_input(seen));
+        assert!(shared.exhaust_input(shared.input()));
+        assert!(!producer.reopen());
     }
 
     #[test]

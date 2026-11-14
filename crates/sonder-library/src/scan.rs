@@ -878,6 +878,7 @@ mod tests {
             disc_no: Some(1),
             year: Some(1959),
             genre: "Jazz".into(),
+            ..Default::default()
         };
         crate::tags::write_file(&path, &edit).unwrap();
         let updated = library

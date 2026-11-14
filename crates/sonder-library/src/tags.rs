@@ -14,7 +14,7 @@ use lofty::file::{AudioFile, FileType, TaggedFile, TaggedFileExt};
 use lofty::id3::v2::Id3v2Tag;
 use lofty::mp4::{Mp4Codec, Mp4File};
 use lofty::mpeg::MpegFile;
-use lofty::picture::PictureType;
+use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::probe::Probe;
 use lofty::tag::items::Timestamp;
 use lofty::tag::{Accessor, ItemKey, ItemValue, MergeTag, SplitTag, Tag, TagExt, TagItem, TagType};
@@ -119,9 +119,10 @@ pub struct FileMeta {
     pub audio: AudioInfo,
 }
 
-/// The metadata fields the editor can change. Values are the complete new state: an empty
-/// string or list clears the field. Everything else in the file — cover art, lyrics,
-/// ReplayGain, comments and format-specific frames — is left as it was.
+/// The metadata fields the editor can change. Text and number values are the complete new
+/// state: an empty string or list clears the field. Lyrics and cover art change only when the
+/// edit says so. Everything else in the file — ReplayGain, comments and format-specific
+/// frames — is left as it was.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TagEdit {
     /// Never empty: a file with no title has nothing to show in the library.
@@ -133,6 +134,34 @@ pub struct TagEdit {
     pub disc_no: Option<u32>,
     pub year: Option<i32>,
     pub genre: String,
+    /// `None` keeps the file's lyrics; blank text removes them.
+    pub lyrics: Option<String>,
+    pub cover: CoverEdit,
+}
+
+/// What happens to the file's embedded pictures.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum CoverEdit {
+    /// The pictures stay as they are.
+    #[default]
+    Keep,
+    /// Every picture goes: the reader falls back to any picture, so leaving one would keep
+    /// showing it as the cover.
+    Remove,
+    /// The front cover becomes this JPEG or PNG; other pictures (a back cover, a booklet
+    /// page) stay.
+    Set(Vec<u8>),
+}
+
+/// The media type of a cover image the tag formats all accept, from its first bytes.
+pub fn cover_mime(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -173,12 +202,12 @@ fn read_stored(path: &Path) -> Result<FileMeta, TagError> {
     }
 }
 
-/// The tags stored in the file, for the metadata editor. Unlike [`read_file`], a missing
-/// track number is not guessed from the file name, because the editor writes back what it
-/// shows. A missing title still is: a track needs one, and the field shows what Save writes.
+/// The tags stored in the file, for the metadata editor, embedded cover included. Unlike
+/// [`read_file`], a missing track number is not guessed from the file name, because the
+/// editor writes back what it shows. A missing title still is: a track needs one, and the
+/// field shows what Save writes.
 pub fn read_file_tags(path: &Path) -> Result<TrackTags, TagError> {
     let mut tags = read_stored(path)?.tags;
-    tags.cover = None;
     if tags.title.is_none() {
         let mut guess = TrackTags::default();
         fill_from_file_name(&mut guess, path);
@@ -196,6 +225,13 @@ pub fn read_file_tags(path: &Path) -> Result<TrackTags, TagError> {
 pub fn write_file(path: &Path, edit: &TagEdit) -> Result<(), TagError> {
     if edit.title.trim().is_empty() {
         return Err(TagError::Parse("a track needs a title".into()));
+    }
+    if let CoverEdit::Set(data) = &edit.cover
+        && cover_mime(data).is_none()
+    {
+        return Err(TagError::Unsupported(
+            "the cover must be a JPEG or PNG image".into(),
+        ));
     }
     let ext = path
         .extension()
@@ -242,7 +278,14 @@ fn write_lofty(path: &Path, edit: &TagEdit) -> Result<(), TagError> {
         tmp.seek(SeekFrom::Start(0))?;
         tagged
             .save_to(tmp, WriteOptions::new())
-            .map_err(|e| TagError::Parse(format!("cannot write tags: {e}")))
+            .map_err(|e| TagError::Parse(format!("cannot write tags: {e}")))?;
+        // lofty 0.25 cuts a FLAC short when its shrunken metadata ends the file (no audio
+        // frames after it). The copy must read back before it replaces the original.
+        tmp.seek(SeekFrom::Start(0))?;
+        Probe::with_file_type(io::BufReader::new(&mut *tmp), file_type)
+            .read()
+            .map(drop)
+            .map_err(|e| TagError::Parse(format!("the rewritten file does not read back: {e}")))
     })
 }
 
@@ -321,6 +364,47 @@ fn apply_edit(tag: &mut Tag, edit: &TagEdit) {
             second: None,
         }),
         None => tag.remove_date(),
+    }
+    if let Some(lyrics) = &edit.lyrics {
+        // Not `clean`: line breaks and indentation inside lyrics are meaningful.
+        let text = lyrics.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+        tag.remove_key(ItemKey::Lyrics);
+        tag.remove_key(ItemKey::UnsyncLyrics);
+        // ID3v2 has only its unsynced-lyrics frame (USLT) for text. Formats with no lyrics
+        // field at all (RIFF INFO, AIFF text) refuse both; the file's other tag carries them.
+        if !text.is_empty() && !tag.insert_text(ItemKey::Lyrics, text.to_string()) {
+            tag.insert_text(ItemKey::UnsyncLyrics, text.to_string());
+        }
+    }
+    match &edit.cover {
+        CoverEdit::Keep => {}
+        CoverEdit::Remove => {
+            while !tag.pictures().is_empty() {
+                tag.remove_picture(0);
+            }
+        }
+        CoverEdit::Set(data) => {
+            tag.remove_picture_type(PictureType::CoverFront);
+            let mime = if cover_mime(data) == Some("image/png") {
+                MimeType::Png
+            } else {
+                MimeType::Jpeg
+            };
+            // First, so a reader that takes the first picture also finds it.
+            let mut pictures: Vec<Picture> = Vec::new();
+            while !tag.pictures().is_empty() {
+                pictures.push(tag.remove_picture(0));
+            }
+            tag.push_picture(
+                Picture::unchecked(data.clone())
+                    .pic_type(PictureType::CoverFront)
+                    .mime_type(mime)
+                    .build(),
+            );
+            for picture in pictures {
+                tag.push_picture(picture);
+            }
+        }
     }
 }
 
@@ -522,8 +606,10 @@ fn extract_tags(tags: &[&Tag]) -> TrackTags {
         },
         cover,
         // Not `clean`: line breaks and indentation inside lyrics are meaningful.
+        // ID3v2 keeps lyrics only as unsynced text (USLT), even when they are LRC.
         lyrics: first(tags, |t| {
             t.get_string(ItemKey::Lyrics)
+                .or_else(|| t.get_string(ItemKey::UnsyncLyrics))
                 .map(|s| s.trim_matches(|c: char| c.is_whitespace() || c == '\0'))
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
@@ -1257,6 +1343,7 @@ mod tests {
             disc_no: Some(1),
             year: Some(1959),
             genre: "Jazz".into(),
+            ..Default::default()
         }
     }
 
@@ -1352,6 +1439,79 @@ mod tests {
         let mut empty = edit();
         empty.title = "   ".into();
         assert!(write_file(&path, &empty).is_err());
+    }
+
+    /// The smallest valid-looking JPEG and PNG for the cover tests: only the signature is
+    /// checked on the way in, and the bytes come back as they were stored.
+    const JPEG: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 0, 16, b'J', b'F', b'I', b'F', 0, 1];
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+    /// Sets lyrics and a cover, checks a later edit keeps them, then replaces and removes them.
+    fn lyrics_and_cover_round_trip(path: &Path) {
+        let mut first = edit();
+        first.lyrics = Some("[00:01.00]Line one\n[00:02.50]Line two\n".into());
+        first.cover = CoverEdit::Set(JPEG.to_vec());
+        write_file(path, &first).unwrap();
+        let tags = read_file_tags(path).unwrap();
+        assert_eq!(
+            tags.lyrics.as_deref(),
+            Some("[00:01.00]Line one\n[00:02.50]Line two")
+        );
+        assert_eq!(tags.cover.as_deref(), Some(JPEG));
+
+        // An edit of other fields leaves both alone.
+        let mut keep = edit();
+        keep.title = "Blue in Green".into();
+        write_file(path, &keep).unwrap();
+        let tags = read_file_tags(path).unwrap();
+        assert_eq!(tags.title.as_deref(), Some("Blue in Green"));
+        assert!(tags.lyrics.is_some());
+        assert_eq!(tags.cover.as_deref(), Some(JPEG));
+
+        let mut replace = edit();
+        replace.lyrics = Some("Plain words".into());
+        replace.cover = CoverEdit::Set(PNG.to_vec());
+        write_file(path, &replace).unwrap();
+        let tags = read_file_tags(path).unwrap();
+        assert_eq!(tags.lyrics.as_deref(), Some("Plain words"));
+        assert_eq!(tags.cover.as_deref(), Some(PNG));
+
+        let mut clear = edit();
+        clear.lyrics = Some("  \n".into());
+        clear.cover = CoverEdit::Remove;
+        write_file(path, &clear).unwrap();
+        let tags = read_file_tags(path).unwrap();
+        assert_eq!(tags.lyrics, None);
+        assert_eq!(tags.cover, None);
+        assert_edited(&read_file(path).unwrap());
+    }
+
+    #[test]
+    fn wav_lyrics_and_cover_are_written_kept_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.wav");
+        wav(&path);
+        lyrics_and_cover_round_trip(&path);
+    }
+
+    #[test]
+    fn dsf_lyrics_and_cover_are_written_kept_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.dsf");
+        std::fs::write(&path, dsf(2_822_400, &[0x69; 4096])).unwrap();
+        lyrics_and_cover_round_trip(&path);
+    }
+
+    #[test]
+    fn a_cover_that_is_not_jpeg_or_png_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song.wav");
+        wav(&path);
+        let mut gif = edit();
+        gif.cover = CoverEdit::Set(b"GIF89a....".to_vec());
+        assert!(write_file(&path, &gif).is_err());
+        assert_eq!(cover_mime(JPEG), Some("image/jpeg"));
+        assert_eq!(cover_mime(PNG), Some("image/png"));
     }
 
     fn dsf(samples: u64, sound: &[u8]) -> Vec<u8> {

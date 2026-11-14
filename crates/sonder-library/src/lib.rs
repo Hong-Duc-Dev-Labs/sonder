@@ -41,7 +41,8 @@ pub use query::{AlbumDetail, AlbumSort, AlbumSummary, ArtistDetail, ArtistSummar
 pub use scan::{ScanFailure, ScanProgress, ScanReport};
 pub use schema::SCHEMA_VERSION;
 pub use tags::{
-    AUDIO_EXTENSIONS, AudioInfo, Codec, FileMeta, ReplayGain, TagEdit, TagError, TrackTags,
+    AUDIO_EXTENSIONS, AudioInfo, Codec, CoverEdit, FileMeta, ReplayGain, TagEdit, TagError,
+    TrackTags, cover_mime,
 };
 pub use tags::{is_audio_file, read_file, read_file_tags, write_file};
 pub use watch::{LibraryWatcher, WatchEvent};

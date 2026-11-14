@@ -13,6 +13,7 @@ mod media;
 mod scan;
 mod settings;
 mod state;
+mod update;
 
 use tauri::Manager;
 use tauri_specta::{Builder, collect_commands, collect_events};
@@ -78,6 +79,10 @@ fn bindings() -> Builder<tauri::Wry> {
             commands::library_loudness_pending,
             commands::library_is_analyzing,
             commands::lyrics_get,
+            update::app_version,
+            update::update_pending,
+            update::update_check,
+            update::update_install,
         ])
         .events(collect_events![
             events::PlayerStateEvent,
@@ -89,6 +94,8 @@ fn bindings() -> Builder<tauri::Wry> {
             events::LibraryChangedEvent,
             events::DevicesChangedEvent,
             events::NoticeEvent,
+            update::UpdateAvailableEvent,
+            update::UpdateProgressEvent,
         ])
         // Ids and millisecond counts stay far below 2^53.
         .dangerously_cast_bigints_to_number()
@@ -127,6 +134,8 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(update::PendingUpdate::default())
         .invoke_handler(builder.invoke_handler())
         .register_asynchronous_uri_scheme_protocol(art::SCHEME, move |_ctx, request, responder| {
             let cache = art_cache.clone();
@@ -150,6 +159,7 @@ fn main() {
                 .spawn(move || events::run_bridge(handle, player_events))?;
             scan::start_watcher(app.handle());
             scan::backfill_cover_colors(app.handle());
+            update::check_on_launch(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 media::init(app.handle(), &window);
             }

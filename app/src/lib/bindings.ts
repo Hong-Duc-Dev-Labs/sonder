@@ -100,6 +100,20 @@ export const commands = {
 	 *  setting allows, through the on-disk cache. `None` when there are none anywhere.
 	 */
 	lyricsGet: (trackId: number) => __TAURI_INVOKE<Lyrics | null>("lyrics_get", { trackId }),
+	/**  The running build's version. */
+	appVersion: () => __TAURI_INVOKE<string>("app_version"),
+	/**
+	 *  The update a previous check found, if any; the launch check can finish before the UI
+	 *  listens for `UpdateAvailableEvent`.
+	 */
+	updatePending: () => __TAURI_INVOKE<UpdateInfo | null>("update_pending"),
+	/**  Checks GitHub Releases now. `None` means this build is the newest. */
+	updateCheck: () => __TAURI_INVOKE<UpdateInfo | null>("update_check"),
+	/**
+	 *  Downloads, verifies and installs the update the last check found, then restarts Sonder.
+	 *  Progress arrives as `UpdateProgressEvent`. On Windows the installer closes the app itself.
+	 */
+	updateInstall: () => __TAURI_INVOKE<null>("update_install"),
 };
 
 /** Events */
@@ -113,6 +127,8 @@ export const events = {
 	queueChangedEvent: makeEvent<QueueChangedEvent, QueueChangedEvent>("queue-changed-event"),
 	scanFinishedEvent: makeEvent<ScanFinishedEvent, ScanFinishedEvent>("scan-finished-event"),
 	scanProgressEvent: makeEvent<ScanProgressEvent, ScanProgressEvent>("scan-progress-event"),
+	updateAvailableEvent: makeEvent<UpdateAvailableEvent, UpdateAvailableEvent>("update-available-event"),
+	updateProgressEvent: makeEvent<UpdateProgressEvent, UpdateProgressEvent>("update-progress-event"),
 };
 
 /* Types */
@@ -460,6 +476,8 @@ export type Settings = {
 	 *  none of its own.
 	 */
 	lyricsOnline?: boolean,
+	/**  Look for a newer release on GitHub when the app starts. */
+	updateCheck?: boolean,
 	/**  DSD handling per output device id; devices without an entry use DoP. */
 	dsdModes?: { [key in string]: DsdMode },
 	/**  Output rate when DSD is converted to PCM. */
@@ -569,6 +587,26 @@ export type TrackItem = {
 	durationMs: number,
 	art: string | null,
 	artColors: string[],
+};
+
+/**  The launch check found a newer release. */
+export type UpdateAvailableEvent = {
+	update: UpdateInfo,
+};
+
+/**  A newer release than the running build. */
+export type UpdateInfo = {
+	version: string,
+	currentVersion: string,
+	/**  Release notes, as written on the GitHub release. */
+	notes: string | null,
+};
+
+/**  Download progress of the update being installed. */
+export type UpdateProgressEvent = {
+	downloaded: number,
+	/**  `None` when the server does not send a length. */
+	total: number | null,
 };
 
 /* Tauri Specta runtime */

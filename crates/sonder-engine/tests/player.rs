@@ -77,6 +77,26 @@ fn slow() -> NullBackend {
     NullBackend::new().with_period(64, Duration::from_millis(1))
 }
 
+/// The ring of [`start_decoded_ahead`].
+const AHEAD_RING: Duration = Duration::from_secs(4);
+/// The playing track of the decoded-ahead tests: 3.5 s of audio, shorter than the ring so
+/// the decoder is past it as soon as it starts, and about 2.4 s on [`slow`], so a test
+/// thread stalled for a second or two on a busy runner still edits the queue mid-track.
+const AHEAD_FRAMES: usize = 154_350;
+/// A track after it, longer than the ring, so the decoder is still feeding the stream when
+/// the edit lands rather than done with the whole queue.
+const TAIL_FRAMES: usize = 220_500;
+/// A playing track that lasts over 3 s on [`slow`] with the default ring.
+const LONG_FRAMES: usize = 220_500;
+
+/// The slow device behind a ring longer than [`AHEAD_FRAMES`]: a queue edit after the
+/// playing entry always meets audio already decoded from the old order.
+fn start_decoded_ahead() -> (Player, Receiver<PlayerEvent>, NullControl) {
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.ring = AHEAD_RING;
+    start_with(config, slow())
+}
+
 /// Waits for an event matching `pred`, returning it and everything seen before it.
 fn wait_for(
     events: &Receiver<PlayerEvent>,
@@ -762,11 +782,10 @@ fn wait_playing(events: &Receiver<PlayerEvent>, index: usize) -> Vec<PlayerEvent
 
 #[test]
 fn removing_an_entry_decoded_ahead_skips_it_gaplessly() {
-    // `a` is short enough that `b` is already decoded when the removal lands.
-    let a = wav("rm-ahead-a.wav", 44_100, 16, 30_000, 40);
+    let a = wav("rm-ahead-a.wav", 44_100, 16, AHEAD_FRAMES, 40);
     let b = wav("rm-ahead-b.wav", 44_100, 16, 20_000, 41);
-    let c = wav("rm-ahead-c.wav", 44_100, 16, 20_000, 42);
-    let (player, events, control) = start(slow());
+    let c = wav("rm-ahead-c.wav", 44_100, 16, TAIL_FRAMES, 42);
+    let (player, events, control) = start_decoded_ahead();
     player.enqueue(vec![a.clone(), b.clone(), c.clone()]);
     player.play();
     let mut seen = wait_playing(&events, 0);
@@ -841,10 +860,10 @@ fn removing_the_last_playing_entry_ends_the_queue() {
 
 #[test]
 fn inserting_after_the_playing_entry_plays_it_next_gaplessly() {
-    let a = wav("ins-next-a.wav", 44_100, 16, 30_000, 49);
+    let a = wav("ins-next-a.wav", 44_100, 16, AHEAD_FRAMES, 49);
     let b = wav("ins-next-b.wav", 44_100, 16, 20_000, 50);
-    let c = wav("ins-next-c.wav", 44_100, 16, 20_000, 51);
-    let (player, events, control) = start(slow());
+    let c = wav("ins-next-c.wav", 44_100, 16, TAIL_FRAMES, 51);
+    let (player, events, control) = start_decoded_ahead();
     player.enqueue(vec![a.clone(), c.clone()]);
     player.play();
     let mut seen = wait_playing(&events, 0);
@@ -865,7 +884,7 @@ fn inserting_after_the_playing_entry_plays_it_next_gaplessly() {
 
 #[test]
 fn inserting_after_a_fully_decoded_queue_continues_the_stream() {
-    let a = wav("ins-end-a.wav", 44_100, 16, 30_000, 52);
+    let a = wav("ins-end-a.wav", 44_100, 16, LONG_FRAMES, 52);
     let b = wav("ins-end-b.wav", 44_100, 16, 10_000, 53);
     let (player, events, control) = start(slow());
     player.enqueue(vec![a.clone()]);

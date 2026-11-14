@@ -59,6 +59,11 @@ impl StreamHandle {
         self.0.frames_written.load(Ordering::Relaxed)
     }
 
+    /// Frames a flush removed from the queue unplayed, in the producer's index space.
+    pub fn frames_discarded(&self) -> u64 {
+        self.0.frames_discarded.load(Ordering::Acquire)
+    }
+
     /// Frames taken off the queue: written to the device or discarded by a flush.
     ///
     /// This counts in the same index space as the frames pushed by the producer, so the

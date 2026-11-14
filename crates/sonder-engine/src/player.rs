@@ -1056,7 +1056,7 @@ impl Engine {
             && reach.is_some_and(|r| index <= r)
         {
             // Audio after the playing entry is already decoded from the old order.
-            self.restart(cur, pos);
+            self.restart_from_heard(cur, pos);
         } else {
             self.continue_after_end();
         }
@@ -1138,7 +1138,7 @@ impl Engine {
             && reach.is_some_and(|r| index <= r)
         {
             // The removed entry is already decoded ahead: rebuild from where we are.
-            self.restart(cur, pos);
+            self.restart_from_heard(cur, pos);
         }
         self.report_current();
     }
@@ -1868,14 +1868,38 @@ impl Engine {
     /// Drops everything decoded ahead, empties the ring (or reopens), and starts decoding
     /// `index` at `pos`.
     fn restart(&mut self, index: usize, pos: Pos) {
+        self.restart_inner(index, pos, false);
+    }
+
+    /// Like [`restart`](Self::restart), for a queue edit that rebuilds the stream from where
+    /// the playing entry `index` is heard. `pos` was read before the flush, and the device
+    /// keeps taking periods until the flush lands; resuming from `pos` would play those twice.
+    /// The position is read again once the ring is empty, from what the device was given.
+    fn restart_from_heard(&mut self, index: usize, pos: Pos) {
+        self.restart_inner(index, pos, true);
+    }
+
+    fn restart_inner(&mut self, index: usize, mut pos: Pos, from_heard: bool) {
         self.reset_decoding();
         self.hold = None;
         if let Some(out) = &mut self.out {
+            // Only flushes discard frames, and only this thread asks for one.
+            let discarded = out.handle.frames_discarded();
             let flushed = out
                 .producer
                 .as_mut()
                 .is_some_and(|p| p.flush(FLUSH_TIMEOUT));
             if flushed {
+                if from_heard
+                    && let Some(now) = now_at(
+                        discarded + out.handle.frames_written(),
+                        &out.segments,
+                        out.format,
+                    )
+                    && now.segment.index == index
+                {
+                    pos = Pos::frames(now.frame, now.segment.source.rate);
+                }
                 out.segments.clear();
             } else {
                 self.close_output();
@@ -3128,7 +3152,11 @@ fn now_in(
     segments: &[Segment],
     format: DeviceFormat,
 ) -> Option<Now> {
-    let consumed = handle.frames_consumed().min(pushed);
+    now_at(handle.frames_consumed().min(pushed), segments, format)
+}
+
+/// What is playing once the device has taken `consumed` of the frames pushed.
+fn now_at(consumed: u64, segments: &[Segment], format: DeviceFormat) -> Option<Now> {
     let segment = segments.iter().rev().find(|s| s.start <= consumed)?.clone();
     let played = consumed - segment.start;
     let played = Pos::frames(played, format.rate).frames_at(segment.source.rate);

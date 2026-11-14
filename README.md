@@ -136,18 +136,22 @@ key means installed copies can no longer be updated, so keep a backup of it.
 
 1. Bump `version` in the root `Cargo.toml` (the app takes the workspace version) and in
    `app/package.json`, merge to `main` and push a tag such as `v0.2.0`.
-2. The `release` workflow builds Windows, macOS and Linux installers, signs them with the
-   `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repository secrets and
-   attaches them with `latest.json` to a draft release. Publishing the draft ships it.
+2. The `release` workflow checks that the tag matches both versions, builds Windows, universal
+   macOS and Linux installers, signs them with the `TAURI_SIGNING_PRIVATE_KEY` and
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repository secrets and attaches them with `latest.json`
+   to a draft release. Before publishing the draft, open its `latest.json` and confirm it lists
+   every platform (the build jobs update it one after another). The in-app release notes are
+   copied into `latest.json` at build time, so editing the draft's text does not change them.
 3. Without the workflow, build on each OS with the key in the environment, then write the
-   manifest and attach it with the installers and their `.sig` files:
+   manifest; on a second OS pass the first manifest with `--merge` so one file lists both.
+   The script prints each installer and `.sig` to attach as an `attach:` line:
 
    ```sh
    export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/sonder-updater.key)"
    export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
    (cd app && pnpm tauri build)
-   node scripts/updater-manifest.mjs v0.2.0 notes.md > latest.json
-   gh release create v0.2.0 latest.json target/release/bundle/nsis/*-setup.exe* --notes-file notes.md
+   node scripts/updater-manifest.mjs v0.2.0 --notes notes.md > latest.json
+   gh release create v0.2.0 latest.json <every attach: path> --notes-file notes.md
    ```
 
 The updater downloads release assets without credentials, so it only works while the

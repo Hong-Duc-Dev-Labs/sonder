@@ -1115,3 +1115,89 @@ fn rescans_remeasure_changed_tracks_and_rebuild_their_album_without_placeholders
         "{album:?} vs {remeasured}"
     );
 }
+
+#[test]
+fn a_new_cover_and_lyrics_saved_into_a_flac_reach_the_index() {
+    let env = Env::new();
+    let path = env.path("Album/01 - So What.flac");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    flac(
+        &path,
+        44_100,
+        16,
+        2,
+        1,
+        &Meta {
+            title: Some("So What"),
+            artist: Some("Miles Davis"),
+            album: Some("Kind of Blue"),
+            cover: Some(png(8, 8, 40)),
+            ..Default::default()
+        },
+    );
+    // Stand-in audio frames: in a real file the metadata never ends the file.
+    let mut bytes = fs::read(&path).unwrap();
+    bytes.extend_from_slice(&[0xff; 4096]);
+    fs::write(&path, &bytes).unwrap();
+    let mut lib = env.open();
+    lib.add_root(&env.music, false).unwrap();
+    lib.scan().unwrap();
+    let track = lib.tracks().unwrap().into_iter().next().unwrap();
+    let old_art = track.art.clone().expect("the embedded cover is indexed");
+
+    let new_cover = png(8, 8, 200);
+    let edit = sonder_library::TagEdit {
+        title: "So What".into(),
+        artists: vec!["Miles Davis".into()],
+        album: "Kind of Blue".into(),
+        lyrics: Some("[00:01.00]So what\n".into()),
+        cover: sonder_library::CoverEdit::Set(new_cover.clone()),
+        ..Default::default()
+    };
+    sonder_library::write_file(&path, &edit).unwrap();
+
+    // FLAC keeps pictures in PICTURE blocks; the reader must find the new one there.
+    let tags = sonder_library::read_file_tags(&path).unwrap();
+    assert_eq!(tags.cover.as_deref(), Some(new_cover.as_slice()));
+    assert_eq!(tags.lyrics.as_deref(), Some("[00:01.00]So what"));
+    let updated = lib.reindex_track(track.id).unwrap().unwrap();
+    assert_ne!(updated.art, Some(old_art));
+    assert!(updated.art.is_some());
+
+    let removed = sonder_library::TagEdit {
+        cover: sonder_library::CoverEdit::Remove,
+        lyrics: Some(String::new()),
+        ..edit
+    };
+    sonder_library::write_file(&path, &removed).unwrap();
+    let tags = sonder_library::read_file_tags(&path).unwrap();
+    assert_eq!((tags.cover, tags.lyrics), (None, None));
+    assert_eq!(lib.reindex_track(track.id).unwrap().unwrap().art, None);
+}
+
+#[test]
+fn a_rewrite_that_does_not_read_back_leaves_the_original() {
+    // A FLAC with no audio frames: lofty cuts it short when its metadata shrinks.
+    let env = Env::new();
+    let path = env.path("a.flac");
+    flac(
+        &path,
+        44_100,
+        16,
+        2,
+        1,
+        &Meta {
+            title: Some("T"),
+            cover: Some(png(8, 8, 40)),
+            ..Default::default()
+        },
+    );
+    let before = fs::read(&path).unwrap();
+    let edit = sonder_library::TagEdit {
+        title: "T".into(),
+        cover: sonder_library::CoverEdit::Remove,
+        ..Default::default()
+    };
+    assert!(sonder_library::write_file(&path, &edit).is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+}

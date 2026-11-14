@@ -50,3 +50,10 @@ export function activeLine(lines: LyricsLine[], ms: number): number {
   }
   return found;
 }
+
+/** Drops what is kept for `trackId`, after its own lyrics changed. */
+export function forgetLyrics(trackId: number) {
+  for (const key of [...loaded.keys()]) {
+    if (key.startsWith(`${trackId}:`)) loaded.delete(key);
+  }
+}

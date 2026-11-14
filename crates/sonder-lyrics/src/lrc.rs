@@ -56,6 +56,26 @@ pub fn parse(text: &str, source: &str) -> Option<Lyrics> {
     Lyrics::plain(source, &plain.join("\n"))
 }
 
+/// The lyrics as text to store in a tag or file: LRC (`[mm:ss.xx]` per line) when synced,
+/// plain lines otherwise, nothing for an instrumental. [`parse`] reads it back.
+pub fn format(lyrics: &Lyrics) -> String {
+    let mut out = String::new();
+    for line in &lyrics.lines {
+        if lyrics.synced {
+            let cs = line.start_ms / 10;
+            out.push_str(&format!(
+                "[{:02}:{:02}.{:02}]",
+                cs / 6000,
+                cs / 100 % 60,
+                cs % 100
+            ));
+        }
+        out.push_str(&line.text);
+        out.push('\n');
+    }
+    out
+}
+
 /// `mm:ss`, `mm:ss.x`, `mm:ss.xx`, `mm:ss.xxx` or `mm:ss:xx` in milliseconds.
 fn timestamp(tag: &str) -> Option<i64> {
     let (min, rest) = tag.split_once(':')?;
@@ -113,6 +133,34 @@ fn strip_word_stamps(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formatted_lyrics_parse_back_to_the_same_lines() {
+        let synced = Lyrics::synced(
+            "LRCLIB",
+            vec![
+                Line {
+                    start_ms: 5_120,
+                    text: "Verse".into(),
+                },
+                Line {
+                    start_ms: 62_000,
+                    text: String::new(),
+                },
+                Line {
+                    start_ms: 3_725_990,
+                    text: "Late".into(),
+                },
+            ],
+        );
+        let text = format(&synced);
+        assert_eq!(text, "[00:05.12]Verse\n[01:02.00]\n[62:05.99]Late\n");
+        assert_eq!(parse(&text, "LRCLIB").unwrap(), synced);
+
+        let plain = Lyrics::plain("Kugou", "One\n\nTwo").unwrap();
+        assert_eq!(format(&plain), "One\n\nTwo\n");
+        assert_eq!(format(&Lyrics::instrumental("LRCLIB")), "");
+    }
 
     #[test]
     fn synced_lines_are_sorted_with_repeated_stamps_and_offset() {

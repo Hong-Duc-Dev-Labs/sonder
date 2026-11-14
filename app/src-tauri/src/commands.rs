@@ -14,15 +14,28 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
 
 use crate::dto::{
-    Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, Device,
-    ImpulseResponseInfo, Lyrics, PeqImport, PlayerSnapshot, Playlist, PlaylistInfo, QueueItem,
-    RepeatMode, RootFolder, SortOrder, TrackEdit, TrackItem, export_file_name,
+    Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, CoverImage, Device,
+    FoundLyrics, ImpulseResponseInfo, LookupQuery, Lyrics, MetadataCandidate, PeqImport,
+    PlayerSnapshot, Playlist, PlaylistInfo, QueueItem, RepeatMode, RootFolder, SortOrder,
+    TrackEdit, TrackItem, TrackTagsInfo, export_file_name,
 };
 use crate::events::{LibraryChangedEvent, QueueChangedEvent};
 use crate::settings::{PeqSetting, Settings};
 use crate::state::{AppState, lock};
 
 const SEARCH_LIMIT: usize = 200;
+
+static LYRICS_ONLINE: LazyLock<sonder_lyrics::Online> =
+    LazyLock::new(|| sonder_lyrics::Online::new(concat!("Sonder/", env!("CARGO_PKG_VERSION"))));
+
+/// MusicBrainz asks clients to name themselves and a way to reach their authors.
+static METADATA_ONLINE: LazyLock<sonder_metadata::Online> = LazyLock::new(|| {
+    sonder_metadata::Online::new(concat!(
+        "Sonder/",
+        env!("CARGO_PKG_VERSION"),
+        " ( https://github.com/Hong-Duc-Dev-Labs/sonder )"
+    ))
+});
 const MAX_PAGE: u32 = 1000;
 
 // ----- library -----
@@ -423,14 +436,23 @@ pub async fn library_artist_tracks(
 /// missing title is still filled from the file name, since a track needs one.
 #[tauri::command]
 #[specta::specta]
-pub async fn track_tags(state: State<'_, AppState>, track_id: i64) -> AppResult<Option<TrackEdit>> {
+pub async fn track_tags(
+    state: State<'_, AppState>,
+    track_id: i64,
+) -> AppResult<Option<TrackTagsInfo>> {
     let Some(track) = lock(&state.library).track(track_id)? else {
         return Ok(None);
     };
-    let tags =
+    let mut tags =
         tauri::async_runtime::spawn_blocking(move || sonder_library::read_file_tags(&track.path))
             .await??;
-    Ok(Some(tags.into()))
+    // A picture in a format the tags cannot take back (GIF, BMP) is not offered as the cover;
+    // Save keeps it unless the user replaces or removes it.
+    let cover = tags.cover.take().and_then(|c| CoverImage::from_bytes(&c));
+    Ok(Some(TrackTagsInfo {
+        tags: tags.into(),
+        cover,
+    }))
 }
 
 /// Writes edited metadata into the track's file itself, then updates the index and tells the
@@ -447,7 +469,7 @@ pub async fn track_update_tags(
         return Ok(None);
     };
     let path = track.path;
-    let library_edit: sonder_library::TagEdit = edit.into();
+    let library_edit: sonder_library::TagEdit = edit.try_into()?;
     tauri::async_runtime::spawn_blocking(move || sonder_library::write_file(&path, &library_edit))
         .await??;
     let updated: Option<TrackItem> = lock(&state.library)
@@ -461,6 +483,95 @@ pub async fn track_update_tags(
     // album's value; an analysis pass with nothing pending returns at once.
     crate::loudness::start_analysis(&app);
     Ok(updated)
+}
+
+/// Asks iTunes, Deezer and MusicBrainz about the track, with the fields as the editor has
+/// them and the track's length. Only on the user's request, so the lyrics setting does not
+/// apply. Candidates whose length matches come first.
+#[tauri::command]
+#[specta::specta]
+pub async fn track_lookup(
+    state: State<'_, AppState>,
+    track_id: i64,
+    query: LookupQuery,
+) -> AppResult<Vec<MetadataCandidate>> {
+    let Some(track) = lock(&state.library).track(track_id)? else {
+        return Ok(Vec::new());
+    };
+    let duration_ms = track.audio.duration_ms;
+    let query = sonder_metadata::Query {
+        title: query.title.trim().to_string(),
+        artist: filled(&query.artist),
+        album: filled(&query.album),
+        duration_ms,
+    };
+    if query.title.is_empty() {
+        return Err(AppError("a title is needed to search".into()));
+    }
+    let found =
+        tauri::async_runtime::spawn_blocking(move || METADATA_ONLINE.search(&query)).await?;
+    Ok(found
+        .map_err(AppError)?
+        .into_iter()
+        .map(|c| MetadataCandidate::new(c, duration_ms))
+        .collect())
+}
+
+/// Fetches a cover image an online catalogue named, for the editor to show and save. `None`
+/// when the catalogue has no image there.
+#[tauri::command]
+#[specta::specta]
+pub async fn cover_download(url: String) -> AppResult<Option<CoverImage>> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || METADATA_ONLINE.cover(&url))
+        .await?
+        .map_err(|e| AppError(format!("cannot download the cover: {e}")))?;
+    match bytes {
+        None => Ok(None),
+        Some(bytes) => CoverImage::from_bytes(&bytes)
+            .map(Some)
+            .ok_or_else(|| AppError("the cover is not a JPEG or PNG image".into())),
+    }
+}
+
+/// Asks the online lyrics services with the fields as the editor has them, for the user to
+/// review and save into the file. Only on the user's request, so the lyrics setting does not
+/// apply; the answer is cached like any other lookup.
+#[tauri::command]
+#[specta::specta]
+pub async fn track_find_lyrics(
+    state: State<'_, AppState>,
+    track_id: i64,
+    query: LookupQuery,
+) -> AppResult<Option<FoundLyrics>> {
+    let Some(track) = lock(&state.library).track(track_id)? else {
+        return Ok(None);
+    };
+    let query = sonder_lyrics::Query {
+        title: query.title.trim().to_string(),
+        artist: filled(&query.artist),
+        album: filled(&query.album),
+        duration_ms: track.audio.duration_ms,
+    };
+    if query.title.is_empty() {
+        return Err(AppError("a title is needed to search".into()));
+    }
+    let cache = sonder_lyrics::Cache::new(state.paths.lyrics.clone());
+    let found = tauri::async_runtime::spawn_blocking(move || {
+        let found = LYRICS_ONLINE.find(&query);
+        cache.put(&query, found.as_ref());
+        found
+    })
+    .await?;
+    Ok(found.map(Into::into))
+}
+
+/// The first of several names typed with `;` between them, `None` when blank: the online
+/// services match on one artist.
+fn filled(text: &str) -> Option<String> {
+    text.split(';')
+        .map(str::trim)
+        .find(|t| !t.is_empty())
+        .map(str::to_string)
 }
 
 /// Replaces the metadata of every queue entry holding `track`, so Now Playing and the queue
@@ -643,9 +754,6 @@ pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> App
 #[tauri::command]
 #[specta::specta]
 pub async fn lyrics_get(state: State<'_, AppState>, track_id: i64) -> AppResult<Option<Lyrics>> {
-    static ONLINE: LazyLock<sonder_lyrics::Online> =
-        LazyLock::new(|| sonder_lyrics::Online::new(concat!("Sonder/", env!("CARGO_PKG_VERSION"))));
-
     let Some(track) = lock(&state.library).track(track_id)? else {
         return Ok(None);
     };
@@ -670,7 +778,7 @@ pub async fn lyrics_get(state: State<'_, AppState>, track_id: i64) -> AppResult<
             if !online {
                 return None;
             }
-            let found = ONLINE.find(&query);
+            let found = LYRICS_ONLINE.find(&query);
             cache.put(&query, found.as_ref());
             found
         })

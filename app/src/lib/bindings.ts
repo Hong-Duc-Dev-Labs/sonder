@@ -49,12 +49,29 @@ export const commands = {
 	 *  the file name, so Save never writes a value the user did not see come from the file. A
 	 *  missing title is still filled from the file name, since a track needs one.
 	 */
-	trackTags: (trackId: number) => __TAURI_INVOKE<TrackEdit | null>("track_tags", { trackId }),
+	trackTags: (trackId: number) => __TAURI_INVOKE<TrackTagsInfo | null>("track_tags", { trackId }),
 	/**
 	 *  Writes edited metadata into the track's file itself, then updates the index and tells the
 	 *  UI. Returns the track as it is indexed now; `None` when it has left the library.
 	 */
 	trackUpdateTags: (trackId: number, edit: TrackEdit) => __TAURI_INVOKE<TrackItem | null>("track_update_tags", { trackId, edit }),
+	/**
+	 *  Asks iTunes, Deezer and MusicBrainz about the track, with the fields as the editor has
+	 *  them and the track's length. Only on the user's request, so the lyrics setting does not
+	 *  apply. Candidates whose length matches come first.
+	 */
+	trackLookup: (trackId: number, query: LookupQuery) => __TAURI_INVOKE<MetadataCandidate[]>("track_lookup", { trackId, query }),
+	/**
+	 *  Fetches a cover image an online catalogue named, for the editor to show and save. `None`
+	 *  when the catalogue has no image there.
+	 */
+	coverDownload: (url: string) => __TAURI_INVOKE<CoverImage | null>("cover_download", { url }),
+	/**
+	 *  Asks the online lyrics services with the fields as the editor has them, for the user to
+	 *  review and save into the file. Only on the user's request, so the lyrics setting does not
+	 *  apply; the answer is cached like any other lookup.
+	 */
+	trackFindLyrics: (trackId: number, query: LookupQuery) => __TAURI_INVOKE<FoundLyrics | null>("track_find_lyrics", { trackId, query }),
 	/**  Every track in the library, by title. */
 	libraryTracks: () => __TAURI_INVOKE<TrackItem[]>("library_tracks"),
 	queueItems: () => __TAURI_INVOKE<QueueItem[]>("queue_items"),
@@ -204,6 +221,19 @@ export type ConvolutionSetting = {
 	path?: string | null,
 };
 
+/**  A change to the cover embedded in a file. */
+export type CoverChange = { kind: "keep" } | 
+/**  Removes every embedded picture. */
+{ kind: "remove" } | 
+/**  Makes this JPEG or PNG (base64) the front cover. */
+{ kind: "set"; data: string };
+
+/**  An image for the UI to show: a JPEG or PNG, base64-encoded. */
+export type CoverImage = {
+	mime: string,
+	data: string,
+};
+
 /**  How Now Playing shows the cover. */
 export type CoverStyle = 
 /**  The cover as the label of a spinning record, under a tonearm. */
@@ -272,6 +302,17 @@ export type FilterSourceSetting =
 /**  Filter sharpness choice for Sonder-designed tables. */
 export type FilterVariantSetting = "precise" | "smooth";
 
+/**  Lyrics found online for the editor, as the text Save would store in the file. */
+export type FoundLyrics = {
+	/**  The service's name. */
+	source: string,
+	/**  The text is LRC, with a time on every line. */
+	synced: boolean,
+	/**  The service says the track has no vocals; the text is empty. */
+	instrumental: boolean,
+	text: string,
+};
+
 /**
  *  How much frosted glass the UI draws. Blur is the costliest effect in the UI; `Off` keeps the
  *  same layout with opaque surfaces.
@@ -303,6 +344,13 @@ export type LevelingSetting = "off" | "track" | "album" | "auto";
 
 /**  The index changed (scan, watcher, root removed): reload what is on screen. */
 export type LibraryChangedEvent = null;
+
+/**  What the editor asks online catalogues and lyrics services with: the fields as typed. */
+export type LookupQuery = {
+	title: string,
+	artist: string,
+	album: string,
+};
 
 /**  A loudness analysis pass ended. */
 export type LoudnessFinishedEvent = {
@@ -338,6 +386,26 @@ export type Lyrics = {
 export type LyricsLine = {
 	startMs: number,
 	text: string,
+};
+
+/**  One online catalogue's idea of the track, for the editor to fill its fields from. */
+export type MetadataCandidate = {
+	/**  "iTunes", "Deezer" or "MusicBrainz". */
+	source: string,
+	title: string,
+	artists: string[],
+	album: string,
+	albumArtists: string[],
+	trackNo: number | null,
+	discNo: number | null,
+	year: number | null,
+	genre: string,
+	durationMs: number | null,
+	/**  Its length is the track's, give or take a few seconds: most likely the same recording. */
+	lengthMatches: boolean,
+	/**  For `cover_download`. */
+	coverUrl: string | null,
+	thumbUrl: string | null,
 };
 
 /**  Something the user should see once (a skipped track, a lost device). */
@@ -607,6 +675,13 @@ export type TrackEdit = {
 	discNo: number | null,
 	year: number | null,
 	genre: string,
+	/**
+	 *  The file's lyrics (plain or LRC text). When saving, `null` keeps the file's lyrics as
+	 *  they are and blank text removes them.
+	 */
+	lyrics: string | null,
+	/**  What Save does to the embedded cover; reading always gives `keep`. */
+	cover: CoverChange,
 };
 
 export type TrackItem = {
@@ -628,6 +703,15 @@ export type TrackItem = {
 	durationMs: number,
 	art: string | null,
 	artColors: string[],
+};
+
+/**
+ *  What the metadata editor shows for a track: the tags in its file and the cover embedded
+ *  there. A cover the library found beside the file (`folder.jpg`) is not part of it.
+ */
+export type TrackTagsInfo = {
+	tags: TrackEdit,
+	cover: CoverImage | null,
 };
 
 /**  The launch check found a newer release. */

@@ -88,6 +88,12 @@ cargo run -p sonder-cli -- play ~/Music/album --verify-hash
 - **Repeat** — the button next to Next cycles off → all → one. Repeat-one replays the entry
   gaplessly and manual Next still moves on; repeat-all wraps from the last entry to the first
   without a gap; turning it off keeps the entry already decoded ahead.
+- **Updates** — `Settings → Updates` shows the running version and checks the project's GitHub
+  releases; **Check on launch** (on by default) does the same once at start-up and raises a
+  notice when a newer version is out. **Install … and restart** downloads the installer,
+  verifies its minisign signature against the public key built into the app, installs it and
+  restarts. Nothing is downloaded or installed without that click, and a check sends no library
+  data.
 
 The Now Playing view shows the signal path stage by stage (the icon next to the device line).
 
@@ -120,6 +126,32 @@ python tools/design_sdm.py      # modulator stability and noise shaping
 the device tap the `--verify-hash` hook uses, resampler image rejection, PEQ response against the
 RBJ formulas, dither, DoP round-trip, the SDM round-trip and the signal-path model.
 `docs/verification.md` records what has been run on real hardware and what is still open.
+
+## Releasing
+
+Releases are what the in-app updater follows: it reads `latest.json` from the newest published
+(not draft, not pre-release) release. Every installer must be signed with the updater key whose
+public half is `plugins.updater.pubkey` in `app/src-tauri/tauri.conf.json`. Losing that private
+key means installed copies can no longer be updated, so keep a backup of it.
+
+1. Bump `version` in the root `Cargo.toml` (the app takes the workspace version) and in
+   `app/package.json`, merge to `main` and push a tag such as `v0.2.0`.
+2. The `release` workflow builds Windows, macOS and Linux installers, signs them with the
+   `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repository secrets and
+   attaches them with `latest.json` to a draft release. Publishing the draft ships it.
+3. Without the workflow, build on each OS with the key in the environment, then write the
+   manifest and attach it with the installers and their `.sig` files:
+
+   ```sh
+   export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/sonder-updater.key)"
+   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+   (cd app && pnpm tauri build)
+   node scripts/updater-manifest.mjs v0.2.0 notes.md > latest.json
+   gh release create v0.2.0 latest.json target/release/bundle/nsis/*-setup.exe* --notes-file notes.md
+   ```
+
+The updater downloads release assets without credentials, so it only works while the
+repository's releases are publicly readable.
 
 ## Repository layout
 

@@ -16,6 +16,10 @@ use sonder_output::{DeviceFormat, DeviceInfo, OutputBackend, SampleContainer, Wr
 
 /// File extensions queued when a folder is given.
 const AUDIO_EXTENSIONS: [&str; 7] = ["flac", "wav", "aif", "aiff", "m4a", "mp4", "alac"];
+/// Extensions `check` also picks up from folders: the PCM ones plus DSD.
+const CHECK_EXTENSIONS: [&str; 9] = [
+    "flac", "wav", "aif", "aiff", "m4a", "mp4", "alac", "dsf", "dff",
+];
 
 #[derive(Parser)]
 #[command(
@@ -75,6 +79,16 @@ enum Command {
         /// Follow symbolic links inside the added folders, even when they lead outside.
         #[arg(long)]
         follow_symlinks: bool,
+    },
+    /// Check whether lossless files are genuine: spectral cutoff, lossy fingerprints, real
+    /// bit depth, hi-res content and the FLAC MD5. A spectral estimate, not proof.
+    Check {
+        /// Audio files, or folders whose audio files (DSD included) are checked in name order.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Print each report as one line of JSON instead of text.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -183,7 +197,71 @@ fn main() -> Result<()> {
             art,
             follow_symlinks,
         } => scan(paths, db, art, follow_symlinks),
+        Command::Check { paths, json } => check(&paths, json),
     }
+}
+
+fn check(paths: &[PathBuf], json: bool) -> Result<()> {
+    use sonder_quality::{CriterionId, EvidenceStatus};
+
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let mut failed = 0;
+    for path in collect_tracks(paths, &CHECK_EXTENSIONS)? {
+        let started = std::time::Instant::now();
+        let report = match sonder_quality::analyze(&path, &Default::default(), &cancel, |_| {}) {
+            Ok(report) => report,
+            Err(e) => {
+                eprintln!("{}: {e}", path.display());
+                failed += 1;
+                continue;
+            }
+        };
+        if json {
+            println!("{}", serde_json::to_string(&report)?);
+            continue;
+        }
+        let source = report.source;
+        let format = if source.dsd {
+            format!("DSD {:.1} MHz", f64::from(source.rate) / 1e6)
+        } else {
+            format!(
+                "{}-bit / {:.1} kHz",
+                source.bits,
+                f64::from(source.rate) / 1e3
+            )
+        };
+        println!("{}", path.display());
+        println!(
+            "  {} ({} confidence) — {format}, {:.0} s, checked in {:.2?}",
+            report.verdict.as_str(),
+            report.confidence.as_str(),
+            report.duration_secs,
+            started.elapsed()
+        );
+        for e in &report.evidence {
+            let status = match e.status {
+                EvidenceStatus::Pass => "pass",
+                EvidenceStatus::Warn => "warn",
+                EvidenceStatus::Fail => "FAIL",
+                EvidenceStatus::Info => "info",
+                EvidenceStatus::NotMeasured => "not measured",
+            };
+            let value = e.value.map_or(String::new(), |v| match e.id {
+                CriterionId::Cutoff | CriterionId::ChannelSymmetry | CriterionId::Stability => {
+                    format!("{:.1} kHz", v / 1e3)
+                }
+                CriterionId::Holes => format!("{:.0} % of frames", v * 100.0),
+                CriterionId::BitDepth => format!("{v:.0} bits"),
+                CriterionId::QuietLevel => format!("{v:.1} dBFS"),
+                _ => format!("{v:.1} dB"),
+            });
+            println!("  {:<18} {status:<13} {value}", format!("{:?}", e.id));
+        }
+    }
+    if failed > 0 {
+        bail!("{failed} file(s) could not be checked");
+    }
+    Ok(())
 }
 
 fn scan(
@@ -280,14 +358,14 @@ fn pick_device(devices: &[DeviceInfo], index: Option<usize>) -> Result<&DeviceIn
 }
 
 /// Expands folders into their audio files, sorted by name; files are kept in the given order.
-fn collect_tracks(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+fn collect_tracks(paths: &[PathBuf], extensions: &[&str]) -> Result<Vec<PathBuf>> {
     let mut tracks = Vec::new();
     for path in paths {
         if path.is_dir() {
             let mut files: Vec<PathBuf> = std::fs::read_dir(path)
                 .with_context(|| format!("cannot read {}", path.display()))?
                 .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.is_file() && is_audio(p))
+                .filter(|p| p.is_file() && has_extension(p, extensions))
                 .collect();
             files.sort();
             tracks.extend(files);
@@ -301,10 +379,10 @@ fn collect_tracks(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
     Ok(tracks)
 }
 
-fn is_audio(path: &Path) -> bool {
+fn has_extension(path: &Path, extensions: &[&str]) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| AUDIO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+        .is_some_and(|e| extensions.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 /// SHA-256 of every audio byte written into the device buffer, one entry per stream.
@@ -344,7 +422,7 @@ fn play(
     sdm_mode: SdmMode,
     sdm_order: SdmOrder,
 ) -> Result<()> {
-    let tracks = collect_tracks(&paths)?;
+    let tracks = collect_tracks(&paths, &AUDIO_EXTENSIONS)?;
     let backend = backend()?;
     let devices = backend.devices()?;
     let device = pick_device(&devices, device)?;

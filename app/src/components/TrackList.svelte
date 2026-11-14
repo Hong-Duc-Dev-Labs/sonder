@@ -1,7 +1,8 @@
 <script lang="ts">
   // Tracks as one grouped soft card. A row plays on double-click, or through its play button
   // (shown in place of the number on hover and focus, and always reachable by keyboard and
-  // screen readers). The quality badge only shows where a track differs from the album.
+  // screen readers). The format badge only shows where a track differs from the album; a
+  // checked track also shows its quality verdict.
   // With `onmove`, each row has a grip: drag it, or press Up/Down on it, to reorder.
   // Dragging a row anywhere else carries the track to a playlist in the sidebar, and a
   // right-click opens the row's ⋯ menu at the pointer.
@@ -14,6 +15,7 @@
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import MiniDisc from "./MiniDisc.svelte";
+  import QualityBadge from "./QualityBadge.svelte";
   import RowMenu from "./RowMenu.svelte";
 
   let {
@@ -200,11 +202,12 @@
           <span class="sub">{track.artist}</span>
         {/if}
       </span>
-      {#if key(track) !== common}
-        <span class="badge" class:accent={isHiRes(track)}>{track.codec.toUpperCase()} {quality(track)}</span>
-      {:else}
-        <span></span>
-      {/if}
+      <span class="tags">
+        <QualityBadge {track} />
+        {#if key(track) !== common}
+          <span class="badge" class:accent={isHiRes(track)}>{track.codec.toUpperCase()} {quality(track)}</span>
+        {/if}
+      </span>
       <span class="dur">{duration(track.durationMs)}</span>
       <RowMenu bind:this={menus[i]} {track} showAlbum={mixed} onremove={onremove ? () => onremove(i) : undefined} />
     </div>
@@ -367,6 +370,12 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
+  }
+  .tags {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
   }
   .t,
   .sub {

@@ -11,6 +11,7 @@ mod events;
 mod loudness;
 mod media;
 mod mini;
+mod quality;
 mod scan;
 mod settings;
 mod state;
@@ -92,6 +93,12 @@ fn bindings() -> Builder<tauri::Wry> {
             update::update_install,
             mini::window_show_main,
             mini::app_quit,
+            quality::quality_check_track,
+            quality::quality_cached,
+            quality::quality_check_batch,
+            quality::quality_cancel_check,
+            quality::quality_cancel_batch,
+            quality::quality_batch_status,
         ])
         .events(collect_events![
             events::PlayerStateEvent,
@@ -105,6 +112,9 @@ fn bindings() -> Builder<tauri::Wry> {
             events::NoticeEvent,
             update::UpdateAvailableEvent,
             update::UpdateProgressEvent,
+            quality::QualityProgressEvent,
+            quality::QualityCheckedEvent,
+            quality::QualityBatchEvent,
         ])
         // Ids and millisecond counts stay far below 2^53.
         .dangerously_cast_bigints_to_number()

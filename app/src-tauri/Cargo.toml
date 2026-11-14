@@ -20,6 +20,7 @@ sonder-dsp.workspace = true
 sonder-library.workspace = true
 sonder-lyrics.workspace = true
 sonder-metadata.workspace = true
+sonder-quality = { workspace = true, features = ["specta"] }
 sonder-output.workspace = true
 crossbeam-channel.workspace = true
 thiserror.workspace = true

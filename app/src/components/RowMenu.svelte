@@ -100,6 +100,9 @@
       <button role="menuitem" onclick={() => act(() => app.editTags(track))}>
         <Icon name="edit" size={18} /> {t("menu.editTags")}
       </button>
+      <button role="menuitem" onclick={() => act(() => app.checkQuality(track))}>
+        <Icon name="spectrum" size={18} /> {t("menu.checkQuality")}
+      </button>
       {#if onremove}
         <button role="menuitem" onclick={() => act(onremove)}>
           <Icon name="trash" size={18} /> {t("menu.removeFromPlaylist")}

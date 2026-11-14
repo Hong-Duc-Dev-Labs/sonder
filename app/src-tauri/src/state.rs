@@ -120,6 +120,8 @@ pub struct AppState {
     pub store: SettingsStore,
     pub watcher: Mutex<Option<LibraryWatcher>>,
     pub scan: ScanControl,
+    /// Quality checks: the batch queue and cancel flags.
+    pub quality: crate::quality::QualityControl,
 }
 
 impl AppState {
@@ -127,7 +129,8 @@ impl AppState {
     pub fn open(paths: AppPaths) -> AppResult<(Self, Receiver<PlayerEvent>)> {
         let store = SettingsStore::new(paths.settings.clone());
         let settings = store.load();
-        let library = Library::open(&paths.db, &paths.art)?;
+        let mut library = Library::open(&paths.db, &paths.art)?;
+        crate::quality::forget_outdated(&mut library);
         let loudness = Arc::new(Mutex::new(Library::open(&paths.db, &paths.art)?));
 
         let mut devices = DeviceList::new(backend());
@@ -166,6 +169,7 @@ impl AppState {
                 store,
                 watcher: Mutex::new(None),
                 scan: ScanControl::default(),
+                quality: crate::quality::QualityControl::default(),
             },
             events,
         ))

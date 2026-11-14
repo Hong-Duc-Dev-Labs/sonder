@@ -43,6 +43,17 @@ export function applyLanguage(setting: LanguageSetting | null | undefined) {
 
 export type Params = Record<string, string | number>;
 
+/** Plural rules and number format per locale, built once: `t` runs for every row of a list. */
+const formats = new Map<Locale, { plural: Intl.PluralRules; number: Intl.NumberFormat }>();
+function formatsFor(locale: Locale) {
+  let found = formats.get(locale);
+  if (!found) {
+    found = { plural: new Intl.PluralRules(locale), number: new Intl.NumberFormat(locale) };
+    formats.set(locale, found);
+  }
+  return found;
+}
+
 /**
  * The message `key` in the active language, with `{name}` placeholders filled from `params`.
  * A plural message picks its form by `params.count`.
@@ -54,12 +65,12 @@ export function t(key: MessageKey, params?: Params): string {
   if (typeof message === "string") {
     text = message;
   } else {
-    const form = new Intl.PluralRules(locale).select(Number(params?.count ?? 0));
+    const form = formatsFor(locale).plural.select(Number(params?.count ?? 0));
     text = form === "one" ? message.one : message.other;
   }
   if (!params) return text;
   // Numbers read in the locale's own style ("1,234" / "1.234"); preformatted strings stay as given.
-  const number = new Intl.NumberFormat(locale);
+  const { number } = formatsFor(locale);
   return text.replace(/\{(\w+)\}/g, (whole, name: string) => {
     if (!(name in params)) return whole;
     const value = params[name];

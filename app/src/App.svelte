@@ -25,6 +25,7 @@
   import QueuePanel from "./components/QueuePanel.svelte";
   import SearchView from "./components/SearchView.svelte";
   import SettingsView from "./components/SettingsView.svelte";
+  import SongsView from "./components/SongsView.svelte";
   import TransportBar from "./components/TransportBar.svelte";
 
   type NavItem = { view: View; label: string; icon: IconName; hint?: string };
@@ -35,6 +36,7 @@
   let library = $derived<NavItem[]>([
     { view: { kind: "albums" }, label: t("common.albums"), icon: "albums" },
     { view: { kind: "artists" }, label: t("common.artists"), icon: "artists" },
+    { view: { kind: "songs" }, label: t("common.songs"), icon: "note" },
   ]);
   /** Playlists listed in the sidebar itself; the rest are one click away in "All playlists". */
   const SIDEBAR_PLAYLISTS = 8;
@@ -151,6 +153,8 @@
               <ArtistsView />
             {:else if app.view.kind === "artist"}
               <ArtistView id={app.view.id} />
+            {:else if app.view.kind === "songs"}
+              <SongsView />
             {:else if app.view.kind === "playlists"}
               <PlaylistsView />
             {:else if app.view.kind === "playlist"}

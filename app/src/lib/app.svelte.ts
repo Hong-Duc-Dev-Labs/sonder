@@ -24,6 +24,7 @@ export type View =
   | { kind: "album"; id: number }
   | { kind: "artists" }
   | { kind: "artist"; id: number }
+  | { kind: "songs" }
   | { kind: "playlists" }
   | { kind: "playlist"; id: number }
   | { kind: "search" }

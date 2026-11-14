@@ -71,6 +71,17 @@ pub async fn library_artist(state: State<'_, AppState>, id: i64) -> AppResult<Op
     Ok(lock(&state.library).artist(id)?.map(Into::into))
 }
 
+/// Every track in the library, by title.
+#[tauri::command]
+#[specta::specta]
+pub async fn library_tracks(state: State<'_, AppState>) -> AppResult<Vec<TrackItem>> {
+    Ok(lock(&state.library)
+        .tracks()?
+        .into_iter()
+        .map(Into::into)
+        .collect())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn library_search(

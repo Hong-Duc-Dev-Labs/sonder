@@ -54,6 +54,7 @@ fn bindings() -> Builder<tauri::Wry> {
             commands::player_play_next_album,
             commands::queue_remove,
             commands::library_artist_tracks,
+            commands::library_tracks,
             commands::queue_items,
             commands::queue_clear,
             commands::player_play,

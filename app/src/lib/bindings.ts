@@ -43,6 +43,8 @@ export const commands = {
 	/**  Removes one queue entry. Removing the playing entry moves on to the next one. */
 	queueRemove: (entryId: number) => __TAURI_INVOKE<null>("queue_remove", { entryId }),
 	libraryArtistTracks: (id: number) => __TAURI_INVOKE<TrackItem[]>("library_artist_tracks", { id }),
+	/**  Every track in the library, by title. */
+	libraryTracks: () => __TAURI_INVOKE<TrackItem[]>("library_tracks"),
 	queueItems: () => __TAURI_INVOKE<QueueItem[]>("queue_items"),
 	queueClear: () => __TAURI_INVOKE<null>("queue_clear"),
 	playerPlay: () => __TAURI_INVOKE<null>("player_play"),

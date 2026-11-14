@@ -598,7 +598,7 @@ export type UpdateAvailableEvent = {
 export type UpdateInfo = {
 	version: string,
 	currentVersion: string,
-	/**  Release notes, as written on the GitHub release. */
+	/**  Release notes from `latest.json`, fixed when the release was built. */
 	notes: string | null,
 };
 

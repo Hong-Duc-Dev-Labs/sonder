@@ -6,15 +6,38 @@
 //! commands, so the webview gets no updater permission of its own.
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::Serialize;
 use specta::Type;
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_updater::{Update, UpdaterExt};
+use tauri_plugin_updater::{Update, Updater, UpdaterExt};
 use tauri_specta::Event;
 
 use crate::dto::{AppError, AppResult};
 use crate::state::{AppState, lock};
+
+/// Longest a check may take, start to finish.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest a connection may go without sending anything, so a stalled download fails instead
+/// of leaving the install waiting forever. A slow but moving download is never cut off.
+const STALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn updater(app: &AppHandle) -> AppResult<Updater> {
+    app.updater_builder()
+        .timeout(CHECK_TIMEOUT)
+        .configure_client(|client| {
+            client
+                .connect_timeout(STALL_TIMEOUT)
+                .read_timeout(STALL_TIMEOUT)
+        })
+        // The default hook tears the app down and hides every window before the Windows
+        // installer launches; when the launch then fails (blocked, or elevation declined)
+        // Sonder would keep running with no window. The player is stopped explicitly instead.
+        .on_before_exit(|| {})
+        .build()
+        .map_err(|e| AppError(format!("cannot check for updates: {e}")))
+}
 
 /// The update the last check found, kept until it is installed or a later check replaces it.
 #[derive(Default)]
@@ -26,7 +49,7 @@ pub struct PendingUpdate(Mutex<Option<Update>>);
 pub struct UpdateInfo {
     pub version: String,
     pub current_version: String,
-    /// Release notes, as written on the GitHub release.
+    /// Release notes from `latest.json`, fixed when the release was built.
     pub notes: Option<String>,
 }
 
@@ -73,15 +96,24 @@ fn next_progress_mark(downloaded: u64, total: Option<u64>) -> u64 {
 
 /// Asks GitHub for the newest release and remembers it when it is newer than this build.
 async fn check(app: &AppHandle) -> AppResult<Option<UpdateInfo>> {
-    let update = app
-        .updater()
-        .map_err(|e| AppError(format!("cannot check for updates: {e}")))?
+    let update = updater(app)?
         .check()
         .await
         .map_err(|e| AppError(format!("cannot check for updates: {e}")))?;
     let info = update.as_ref().map(UpdateInfo::from);
     *lock(&app.state::<PendingUpdate>().0) = update;
     Ok(info)
+}
+
+/// Puts `update` back so the user can retry without checking again, and describes `err`.
+fn keep_for_retry(
+    app: &AppHandle,
+    update: Update,
+    step: &str,
+    err: tauri_plugin_updater::Error,
+) -> AppError {
+    *lock(&app.state::<PendingUpdate>().0) = Some(update);
+    AppError(format!("cannot {step} the update: {err}"))
 }
 
 /// Checks once at launch when the setting allows it. A failure stays quiet (offline, or the
@@ -134,15 +166,13 @@ pub async fn update_install(app: AppHandle) -> AppResult<()> {
             "no update to install; check for updates first".into(),
         ));
     };
-    // The installer replaces the binary under a running engine; release the exclusive
-    // device first so it is not left held.
-    app.state::<AppState>().player.stop();
-
     let mut downloaded = 0u64;
     let mut mark = 0u64;
     let progress_app = app.clone();
-    let installed = update
-        .download_and_install(
+    // `download` checks the signature before returning the bytes; music keeps playing until
+    // a verified installer is in hand.
+    let bytes = update
+        .download(
             |chunk, total| {
                 downloaded += chunk as u64;
                 if downloaded >= mark {
@@ -153,10 +183,19 @@ pub async fn update_install(app: AppHandle) -> AppResult<()> {
             || {},
         )
         .await;
+    let bytes = match bytes {
+        Ok(bytes) => bytes,
+        Err(err) => return Err(keep_for_retry(&app, update, "download", err)),
+    };
+
+    // The installer replaces the binary under a running engine; release the exclusive
+    // device first so it is not left held. On Windows `install` exits the process once the
+    // installer has started, and the installer restarts Sonder.
+    app.state::<AppState>().player.stop();
+    let installing = update.clone();
+    let installed = tauri::async_runtime::spawn_blocking(move || installing.install(bytes)).await?;
     if let Err(err) = installed {
-        // Keep the update so the user can retry without checking again.
-        *lock(&app.state::<PendingUpdate>().0) = Some(update);
-        return Err(AppError(format!("cannot install the update: {err}")));
+        return Err(keep_for_retry(&app, update, "install", err));
     }
     app.restart()
 }

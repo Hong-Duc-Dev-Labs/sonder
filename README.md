@@ -115,6 +115,23 @@ Entries point at the file path, not the library's track id, so they survive resc
 is moved or deleted stays in the playlist as "not in library" and comes back when a rescan finds
 it at the same path again.
 
+## Editing metadata
+
+Any track's ⋯ menu → **Edit metadata** shows the tags stored in the file itself — title,
+artists, album, album artists, track and disc number, year and genre — and **Save** writes them
+back into that file, then re-indexes the track in place (its album follows the new tags). FLAC,
+ALAC (M4A), WAV and AIFF are written through lofty; DSF and DFF get their ID3v2 tag replaced in
+the container, and a tag a DFF file carries after its form (as sacd_extract writes one) is
+rewritten where it is. Cover art, lyrics, ReplayGain, comments and every other tag are left
+untouched. Several artists are typed separated by semicolons and stored as separate values, so
+each one is its own artist in the library and in other players. Every tag the file carries gets
+the edit (a WAV's RIFF INFO next to its ID3v2 tag, for example), so a cleared field stays
+cleared. The file is rebuilt through a temporary file beside it that keeps the original's
+permissions, so a failed write leaves the original as it was, and a read-only file or folder
+reports the error. The editor shows what the file holds: a track number the library guesses
+from the file name is not offered for saving. A tag edit keeps the loudness already measured for that audio; a
+track whose album changed gets its new album's value on the next analysis pass.
+
 ## Verification
 
 ```sh

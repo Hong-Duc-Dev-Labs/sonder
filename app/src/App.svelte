@@ -26,6 +26,7 @@
   import SearchView from "./components/SearchView.svelte";
   import SettingsView from "./components/SettingsView.svelte";
   import SongsView from "./components/SongsView.svelte";
+  import TrackEditDialog from "./components/TrackEditDialog.svelte";
   import TransportBar from "./components/TransportBar.svelte";
 
   type NavItem = { view: View; label: string; icon: IconName; hint?: string };
@@ -277,6 +278,7 @@
   <TransportBar hidden={onNow} />
 
   <Dialog />
+  <TrackEditDialog />
 
   {#if app.flight}
     {#key app.flight}

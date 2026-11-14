@@ -16,7 +16,7 @@ use tauri_specta::Event;
 use crate::dto::{
     Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, Device,
     ImpulseResponseInfo, Lyrics, PeqImport, PlayerSnapshot, Playlist, PlaylistInfo, QueueItem,
-    RepeatMode, RootFolder, SortOrder, TrackItem, export_file_name,
+    RepeatMode, RootFolder, SortOrder, TrackEdit, TrackItem, export_file_name,
 };
 use crate::events::{LibraryChangedEvent, QueueChangedEvent};
 use crate::settings::{PeqSetting, Settings};
@@ -413,6 +413,69 @@ pub async fn library_artist_tracks(
         .into_iter()
         .map(Into::into)
         .collect())
+}
+
+// ----- tags -----
+
+/// The metadata stored in a track's own file, for the editor to show. Read fresh from the
+/// file rather than from the index, and without the track number the library guesses from
+/// the file name, so Save never writes a value the user did not see come from the file. A
+/// missing title is still filled from the file name, since a track needs one.
+#[tauri::command]
+#[specta::specta]
+pub async fn track_tags(state: State<'_, AppState>, track_id: i64) -> AppResult<Option<TrackEdit>> {
+    let Some(track) = lock(&state.library).track(track_id)? else {
+        return Ok(None);
+    };
+    let tags =
+        tauri::async_runtime::spawn_blocking(move || sonder_library::read_file_tags(&track.path))
+            .await??;
+    Ok(Some(tags.into()))
+}
+
+/// Writes edited metadata into the track's file itself, then updates the index and tells the
+/// UI. Returns the track as it is indexed now; `None` when it has left the library.
+#[tauri::command]
+#[specta::specta]
+pub async fn track_update_tags(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    track_id: i64,
+    edit: TrackEdit,
+) -> AppResult<Option<TrackItem>> {
+    let Some(track) = lock(&state.library).track(track_id)? else {
+        return Ok(None);
+    };
+    let path = track.path;
+    let library_edit: sonder_library::TagEdit = edit.into();
+    tauri::async_runtime::spawn_blocking(move || sonder_library::write_file(&path, &library_edit))
+        .await??;
+    let updated: Option<TrackItem> = lock(&state.library)
+        .reindex_track(track_id)?
+        .map(Into::into);
+    if let Some(item) = &updated {
+        refresh_queue(&app, item);
+    }
+    let _ = LibraryChangedEvent.emit(&app);
+    // A tag edit keeps the measured loudness, but a track that changed album needs its new
+    // album's value; an analysis pass with nothing pending returns at once.
+    crate::loudness::start_analysis(&app);
+    Ok(updated)
+}
+
+/// Replaces the metadata of every queue entry holding `track`, so Now Playing and the queue
+/// show an edited title or cover without a restart. The engine only holds paths.
+fn refresh_queue(app: &AppHandle, track: &TrackItem) {
+    let state = app.state::<AppState>();
+    let mut queue = lock(&state.queue);
+    let mut touched = false;
+    for entry in queue.iter_mut().filter(|e| e.track_id == track.id) {
+        *entry = QueueItem::new(entry.entry_id, track);
+        touched = true;
+    }
+    if touched {
+        let _ = QueueChangedEvent(queue.clone()).emit(app);
+    }
 }
 
 #[tauri::command]

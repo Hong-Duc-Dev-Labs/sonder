@@ -43,6 +43,18 @@ export const commands = {
 	/**  Removes one queue entry. Removing the playing entry moves on to the next one. */
 	queueRemove: (entryId: number) => __TAURI_INVOKE<null>("queue_remove", { entryId }),
 	libraryArtistTracks: (id: number) => __TAURI_INVOKE<TrackItem[]>("library_artist_tracks", { id }),
+	/**
+	 *  The metadata stored in a track's own file, for the editor to show. Read fresh from the
+	 *  file rather than from the index, and without the track number the library guesses from
+	 *  the file name, so Save never writes a value the user did not see come from the file. A
+	 *  missing title is still filled from the file name, since a track needs one.
+	 */
+	trackTags: (trackId: number) => __TAURI_INVOKE<TrackEdit | null>("track_tags", { trackId }),
+	/**
+	 *  Writes edited metadata into the track's file itself, then updates the index and tells the
+	 *  UI. Returns the track as it is indexed now; `None` when it has left the library.
+	 */
+	trackUpdateTags: (trackId: number, edit: TrackEdit) => __TAURI_INVOKE<TrackItem | null>("track_update_tags", { trackId, edit }),
 	/**  Every track in the library, by title. */
 	libraryTracks: () => __TAURI_INVOKE<TrackItem[]>("library_tracks"),
 	queueItems: () => __TAURI_INVOKE<QueueItem[]>("queue_items"),
@@ -576,6 +588,17 @@ export type SrcTargetSetting =
 "keepFamily" | 
 /**  A fixed rate chosen by the user. */
 "fixed";
+
+export type TrackEdit = {
+	title: string,
+	artists: string[],
+	album: string,
+	albumArtists: string[],
+	trackNo: number | null,
+	discNo: number | null,
+	year: number | null,
+	genre: string,
+};
 
 export type TrackItem = {
 	id: number,

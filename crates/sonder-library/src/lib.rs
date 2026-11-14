@@ -40,8 +40,10 @@ pub use playlist::{PlaylistDetail, PlaylistItem, PlaylistSummary};
 pub use query::{AlbumDetail, AlbumSort, AlbumSummary, ArtistDetail, ArtistSummary, Track};
 pub use scan::{ScanFailure, ScanProgress, ScanReport};
 pub use schema::SCHEMA_VERSION;
-pub use tags::{AUDIO_EXTENSIONS, AudioInfo, Codec, FileMeta, ReplayGain, TagError, TrackTags};
-pub use tags::{is_audio_file, read_file};
+pub use tags::{
+    AUDIO_EXTENSIONS, AudioInfo, Codec, FileMeta, ReplayGain, TagEdit, TagError, TrackTags,
+};
+pub use tags::{is_audio_file, read_file, read_file_tags, write_file};
 pub use watch::{LibraryWatcher, WatchEvent};
 
 #[derive(Debug, thiserror::Error)]
@@ -66,6 +68,8 @@ pub enum LibraryError {
     PlaylistNotFound(i64),
     #[error("file watcher error: {0}")]
     Watch(#[from] notify_debouncer_mini::notify::Error),
+    #[error(transparent)]
+    Tags(#[from] TagError),
 }
 
 /// A folder the library indexes.

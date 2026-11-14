@@ -20,11 +20,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use rayon::prelude::*;
-use rusqlite::{Transaction, TransactionBehavior, params};
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use walkdir::WalkDir;
 
 use crate::art::{ArtImage, ArtResolver};
 use crate::group::album_identity;
+use crate::query::Track;
 use crate::tags::{FileMeta, TagError, is_audio_file, read_file};
 use crate::{Library, LibraryError, Root, path_str, unix_now};
 
@@ -281,6 +282,96 @@ impl Library {
         Ok(report)
     }
 
+    /// Re-reads one indexed file and updates its row, even when its size and modification time
+    /// look unchanged: a tag write can leave both as they were. Returns the track as it is now
+    /// indexed, or `None` when the file is gone or no longer readable.
+    ///
+    /// Loudness measured for the audio is kept, because the audio did not change; a track that
+    /// moved to another album leaves its album-level values to a later analysis.
+    pub fn reindex_track(&mut self, id: i64) -> Result<Option<Track>, LibraryError> {
+        let Some((path, root_id, album_id, mtime, size)) = self
+            .conn
+            .query_row(
+                "SELECT path, root_id, album_id, mtime, size FROM tracks WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok((
+                        PathBuf::from(row.get::<_, String>(0)?),
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let Some((new_mtime, new_size)) = fs::metadata(&path).ok().as_ref().map(stamp) else {
+            return Ok(None);
+        };
+        let mut meta = read_file(&path)?;
+        let cover = meta.tags.cover.take();
+        let art = ArtResolver::new(&self.art, self.known_art()?).resolve(cover.as_deref(), &path);
+        let loudness: (Option<f64>, Option<f64>, Option<f64>, Option<f64>) = self
+            .conn
+            .prepare_cached(
+                "SELECT loudness_lufs, loudness_peak, album_lufs, album_peak FROM tracks
+                 WHERE id = ?1",
+            )?
+            .query_row([id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+
+        let pending = Pending {
+            root_id,
+            file: FoundFile {
+                key: path_str(&path)?.to_string(),
+                path,
+                mtime: new_mtime,
+                size: new_size,
+            },
+            indexed: Some(Indexed {
+                id,
+                mtime,
+                size,
+                album_id,
+            }),
+        };
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let new_album = write_track(&tx, &pending, &meta, art.as_ref(), unix_now())?;
+        // The decode did not change, so the track's own measurements still hold. Album values
+        // describe the album's track set, which only stays valid when the album did.
+        let moved = new_album != album_id;
+        tx.prepare_cached(
+            "UPDATE tracks SET loudness_lufs = ?1, loudness_peak = ?2, album_lufs = ?3,
+             album_peak = ?4 WHERE id = ?5",
+        )?
+        .execute(params![
+            loudness.0,
+            loudness.1,
+            if moved { None } else { loudness.2 },
+            if moved { None } else { loudness.3 },
+            id
+        ])?;
+        if moved {
+            crate::loudness::invalidate_album_loudness(
+                &tx,
+                &BTreeSet::from([album_id, new_album]),
+            )?;
+        }
+        refresh_albums(&tx, [album_id, new_album])?;
+        let orphan_art = delete_orphans(&tx)?;
+        tx.commit()?;
+        for hash in orphan_art {
+            self.art.remove(&hash);
+        }
+        self.track(id)
+    }
+
     /// Indexed tracks at `path` or below it, keyed by path.
     fn indexed_under(&self, path: &Path) -> Result<HashMap<String, Indexed>, LibraryError> {
         let exact = path_str(path)?;
@@ -457,6 +548,16 @@ fn walk_tree(path: &Path, follow_links: bool) -> WalkOutput {
     out
 }
 
+/// `(modification time, size)` as the index stores them.
+fn stamp(meta: &fs::Metadata) -> (i64, i64) {
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos() as i64);
+    (mtime, meta.len() as i64)
+}
+
 fn add_file(out: &mut WalkOutput, path: &Path, meta: &fs::Metadata) {
     if !is_audio_file(path) {
         return;
@@ -473,16 +574,12 @@ fn add_file(out: &mut WalkOutput, path: &Path, meta: &fs::Metadata) {
         out.fail(path, "path is not valid UTF-8", false);
         return;
     };
-    let mtime = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_nanos() as i64);
+    let (mtime, size) = stamp(meta);
     out.files.push(FoundFile {
         path: path.to_path_buf(),
         key: key.to_string(),
         mtime,
-        size: meta.len() as i64,
+        size,
     });
 }
 
@@ -724,6 +821,7 @@ pub(crate) fn delete_orphans(tx: &Transaction) -> Result<Vec<String>, LibraryErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AlbumSort;
 
     #[test]
     fn prefix_range_selects_only_descendants() {
@@ -740,5 +838,59 @@ mod tests {
         assert!(!between(&sibling));
         assert!(!between(&itself));
         assert_eq!(prefix_range(&format!("{dir}{sep}")), (lo, hi));
+    }
+
+    fn wav(path: &Path) {
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for i in 0..882 {
+            writer.write_sample((i % 64) as i16).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn reindex_picks_up_written_tags_and_moves_the_track_to_its_new_album() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("music");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("01 - So What.wav");
+        wav(&path);
+
+        let mut library =
+            Library::open(dir.path().join("library.db"), dir.path().join("art")).unwrap();
+        library.add_root(&root, false).unwrap();
+        library.scan().unwrap();
+        let track = library.tracks().unwrap().into_iter().next().unwrap();
+        let old_album = track.album_id;
+
+        let edit = crate::tags::TagEdit {
+            title: "So What".into(),
+            artists: vec!["Miles Davis".into()],
+            album: "Kind of Blue".into(),
+            album_artists: vec!["Miles Davis".into()],
+            track_no: Some(1),
+            disc_no: Some(1),
+            year: Some(1959),
+            genre: "Jazz".into(),
+        };
+        crate::tags::write_file(&path, &edit).unwrap();
+        let updated = library
+            .reindex_track(track.id)
+            .unwrap()
+            .expect("still indexed");
+
+        assert_eq!(updated.title, "So What");
+        assert_eq!(updated.artist.as_deref(), Some("Miles Davis"));
+        assert_eq!(updated.album, "Kind of Blue");
+        assert_eq!(updated.year, Some(1959));
+        assert_ne!(updated.album_id, old_album);
+        assert_eq!(library.albums(AlbumSort::Artist).unwrap().len(), 1);
+        assert!(library.album(old_album).unwrap().is_none());
     }
 }

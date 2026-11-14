@@ -11,6 +11,7 @@ import {
   type QueueItem,
   type ScanPhase,
   type Settings,
+  type TrackItem,
   type UpdateInfo,
 } from "./bindings";
 import { tick } from "svelte";
@@ -213,6 +214,8 @@ export class AppState {
   playlistsVersion = $state(0);
   /** The question the modal dialog is showing, if any. */
   dialog = $state<DialogRequest | null>(null);
+  /** The track whose tags the metadata editor is showing, if any. */
+  editing = $state<TrackItem | null>(null);
   /** A newer release on GitHub, once a check has found one. */
   update = $state<UpdateInfo | null>(null);
   /** Download progress while an update installs; `null` otherwise. */
@@ -356,6 +359,16 @@ export class AppState {
     const id = this.nextNotice++;
     this.notices.push({ id, level, message });
     this.startNoticeTimer(id, level === "error" ? 10_000 : 6_000);
+  }
+
+  /** Opens the metadata editor for `track`. */
+  editTags(track: TrackItem) {
+    this.editing = track;
+  }
+
+  /** Closes the metadata editor. */
+  closeEditor() {
+    this.editing = null;
   }
 
   private startNoticeTimer(id: number, ms: number) {

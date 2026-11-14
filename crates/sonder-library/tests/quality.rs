@@ -42,7 +42,10 @@ fn results_follow_the_file_and_the_analyzer_version() {
     assert_eq!(subject.path, file);
     // A file picked from disk is recognised as the library track stored at that path.
     assert_eq!(lib.track_id_at(&file).unwrap(), Some(id));
-    assert_eq!(lib.track_id_at(&music.join("elsewhere.flac")).unwrap(), None);
+    assert_eq!(
+        lib.track_id_at(&music.join("elsewhere.flac")).unwrap(),
+        None
+    );
     lib.save_quality(&subject, &result(1, "transcoded"))
         .unwrap();
     assert_eq!(lib.quality(id).unwrap(), Some(result(1, "transcoded")));

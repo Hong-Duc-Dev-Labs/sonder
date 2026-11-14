@@ -57,7 +57,9 @@ impl Library {
         };
         Ok(self
             .conn
-            .query_row("SELECT id FROM tracks WHERE path = ?1", [key], |row| row.get(0))
+            .query_row("SELECT id FROM tracks WHERE path = ?1", [key], |row| {
+                row.get(0)
+            })
             .optional()?)
     }
 

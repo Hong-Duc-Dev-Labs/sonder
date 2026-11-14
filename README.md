@@ -88,6 +88,12 @@ cargo run -p sonder-cli -- play ~/Music/album --verify-hash
 - **Repeat** — the button next to Next cycles off → all → one. Repeat-one replays the entry
   gaplessly and manual Next still moves on; repeat-all wraps from the last entry to the first
   without a gap; turning it off keeps the entry already decoded ahead.
+- **Mini player** — `Settings → Mini player` (on by default): closing the main window while a
+  track is loaded hides it and opens a small always-on-top window in the screen's bottom-right
+  corner with the cover, a spinning record, and previous / play-pause / next on hover. Drag it
+  anywhere; double-click it or use its expand button to bring the main window back; its close
+  button quits Sonder. With the setting off, or nothing loaded, closing the window quits as
+  before.
 - **Updates** — `Settings → Updates` shows the running version and checks the project's GitHub
   releases; **Check on launch** (on by default) does the same once at start-up and raises a
   notice when a newer version is out. **Install … and restart** downloads the installer,

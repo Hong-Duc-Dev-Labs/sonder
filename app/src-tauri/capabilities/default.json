@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window: typed app commands and event listening only. No shell, fs or dialog access from the webview; the folder picker runs in Rust.",
-  "windows": ["main"],
-  "permissions": ["core:event:default"]
+  "description": "The main window and the mini player: typed app commands and event listening, plus dragging the frameless mini player. No shell, fs or dialog access from the webview; the folder picker runs in Rust.",
+  "windows": ["main", "mini"],
+  "permissions": ["core:event:default", "core:window:allow-start-dragging"]
 }

@@ -10,6 +10,7 @@ mod dto;
 mod events;
 mod loudness;
 mod media;
+mod mini;
 mod scan;
 mod settings;
 mod state;
@@ -86,6 +87,8 @@ fn bindings() -> Builder<tauri::Wry> {
             update::update_pending,
             update::update_check,
             update::update_install,
+            mini::window_show_main,
+            mini::app_quit,
         ])
         .events(collect_events![
             events::PlayerStateEvent,
@@ -140,6 +143,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(update::PendingUpdate::default())
         .invoke_handler(builder.invoke_handler())
+        .on_window_event(mini::on_window_event)
         .register_asynchronous_uri_scheme_protocol(art::SCHEME, move |_ctx, request, responder| {
             let cache = art_cache.clone();
             tauri::async_runtime::spawn_blocking(move || {

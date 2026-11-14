@@ -1163,6 +1163,31 @@
       </div>
     </section>
 
+    <section aria-labelledby="mini-title">
+      <div class="group-head"><h3 id="mini-title">{t("settings.mini.title")}</h3></div>
+      <div class="card soft">
+        <div class="row">
+          <span class="icon"><Icon name="disc" size={18} /></span>
+          <span class="info">
+            <span class="name" id="mini-player-label">{t("settings.mini.name")}</span>
+            <span class="dim small">{t("settings.mini.hint")}</span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="mini-player-label">
+            {#each [true, false] as on (on)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(app.settings.miniPlayer ?? true) === on}
+                onclick={() => app.saveSettings({ ...app.settings, miniPlayer: on })}
+              >
+                {on ? t("common.on") : t("common.off")}
+              </button>
+            {/each}
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section aria-labelledby="lyrics-title">
       <div class="group-head"><h3 id="lyrics-title">{t("common.lyrics")}</h3></div>
       <div class="card soft">

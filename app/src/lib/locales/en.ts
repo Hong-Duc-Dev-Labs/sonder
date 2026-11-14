@@ -191,6 +191,8 @@ export const en = {
   "np.showVinyl": "Show the vinyl record",
   "np.deviceOpened": "Device opened at {format}",
   "np.underrunsTitle": "The device ran out of audio this many times since it opened; a dropout may have been heard",
+  "mini.open": "Open Sonder",
+  "mini.quit": "Quit Sonder",
   "transport.player": "Player",
   "transport.repeatOff": "Repeat off",
   "transport.repeatAll": "Repeat all",
@@ -398,6 +400,12 @@ export const en = {
   "settings.lang.name": "Language",
   "settings.lang.hint": "The language of Sonder's interface. System follows your computer's language.",
   "settings.lang.system": "System",
+
+  // settings: mini player
+  "settings.mini.title": "Mini player",
+  "settings.mini.name": "Show the mini player on close",
+  "settings.mini.hint":
+    "Closing Sonder's window while a track is loaded keeps the music going in a small window that stays on top. Close the mini player to quit.",
 
   // settings: lyrics
   "settings.lyrics.online": "Find lyrics online",

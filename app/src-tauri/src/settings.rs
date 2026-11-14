@@ -215,6 +215,9 @@ pub struct Settings {
     pub lyrics_online: bool,
     /// Look for a newer release on GitHub when the app starts.
     pub update_check: bool,
+    /// Closing the main window while a track is loaded shows the mini player instead of
+    /// quitting.
+    pub mini_player: bool,
     /// DSD handling per output device id; devices without an entry use DoP.
     pub dsd_modes: BTreeMap<String, DsdMode>,
     /// Output rate when DSD is converted to PCM.
@@ -256,6 +259,7 @@ impl Default for Settings {
             language: LanguageSetting::default(),
             lyrics_online: true,
             update_check: true,
+            mini_player: true,
             dsd_modes: BTreeMap::new(),
             dsd_pcm_rate: DsdPcmRate::default(),
             pcm_to_dsd: PcmToDsd::default(),

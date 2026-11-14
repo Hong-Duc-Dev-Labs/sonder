@@ -128,6 +128,10 @@ export const commands = {
 	 *  Progress arrives as `UpdateProgressEvent`. On Windows the installer closes the app itself.
 	 */
 	updateInstall: () => __TAURI_INVOKE<null>("update_install"),
+	/**  Brings the main window back and puts the mini player away. */
+	windowShowMain: () => __TAURI_INVOKE<void>("window_show_main"),
+	/**  Quits Sonder (the mini player's close button). */
+	appQuit: () => __TAURI_INVOKE<void>("app_quit"),
 };
 
 /** Events */
@@ -499,6 +503,11 @@ export type Settings = {
 	lyricsOnline?: boolean,
 	/**  Look for a newer release on GitHub when the app starts. */
 	updateCheck?: boolean,
+	/**
+	 *  Closing the main window while a track is loaded shows the mini player instead of
+	 *  quitting.
+	 */
+	miniPlayer?: boolean,
 	/**  DSD handling per output device id; devices without an entry use DoP. */
 	dsdModes?: { [key in string]: DsdMode },
 	/**  Output rate when DSD is converted to PCM. */

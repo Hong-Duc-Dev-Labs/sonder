@@ -11,6 +11,7 @@ import {
   type QueueItem,
   type ScanPhase,
   type Settings,
+  type UpdateInfo,
 } from "./bindings";
 import { tick } from "svelte";
 import { reducedMotion } from "./motion";
@@ -209,6 +210,10 @@ export class AppState {
   playlistsVersion = $state(0);
   /** The question the modal dialog is showing, if any. */
   dialog = $state<DialogRequest | null>(null);
+  /** A newer release on GitHub, once a check has found one. */
+  update = $state<UpdateInfo | null>(null);
+  /** Download progress while an update installs; `null` otherwise. */
+  updateProgress = $state<{ downloaded: number; total: number | null } | null>(null);
 
   current = $derived<QueueItem | null>(
     this.player.index != null ? (this.queue[this.player.index] ?? null) : null,
@@ -476,7 +481,18 @@ export class AppState {
         this.loudnessAsked = false;
         this.loudness = { running: false, done: 0, total: 0, pending: r.error ? this.loudness.pending : r.pending, last };
       }),
+      events.updateAvailableEvent.listen((e) => this.updateFound(e.payload.update)),
+      events.updateProgressEvent.listen((e) => {
+        if (this.updateProgress) this.updateProgress = e.payload;
+      }),
     ]);
+    // The launch check may have finished before the listener above was attached.
+    void commands
+      .updatePending()
+      .then((found) => {
+        if (found && !this.update) this.updateFound(found);
+      })
+      .catch(() => {});
     const [player, queue, settings, scanning, analyzing, pending] = await Promise.all([
       commands.playerSnapshot(),
       commands.queueItems(),
@@ -494,6 +510,27 @@ export class AppState {
     this.loudness = { ...this.loudness, running: this.loudness.running || analyzing, pending };
     // Not part of start-up: a failure only leaves the row menus without playlists.
     void this.refreshPlaylists();
+  }
+
+  private updateFound(found: UpdateInfo) {
+    this.update = found;
+    this.notify("info", `Sonder ${found.version} is available. Install it from Settings → Updates.`);
+  }
+
+  /** Asks GitHub for a newer release. Returns `undefined` when the check failed. */
+  async checkForUpdate(): Promise<UpdateInfo | null | undefined> {
+    const found = await this.run(commands.updateCheck());
+    if (found !== undefined) this.update = found;
+    return found;
+  }
+
+  /** Downloads and installs `update`; Sonder restarts when it succeeds. */
+  async installUpdate() {
+    if (!this.update || this.updateProgress) return;
+    this.updateProgress = { downloaded: 0, total: null };
+    await this.run(commands.updateInstall());
+    // Reached only when the install failed: a successful one restarts the app.
+    this.updateProgress = null;
   }
 
   /** Starts (or queues) a loudness analysis pass; its events update `loudness`. */

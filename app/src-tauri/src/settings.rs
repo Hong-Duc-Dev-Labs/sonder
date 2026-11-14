@@ -200,6 +200,8 @@ pub struct Settings {
     /// Look up lyrics online (title, artist, album and length are sent) when a track has
     /// none of its own.
     pub lyrics_online: bool,
+    /// Look for a newer release on GitHub when the app starts.
+    pub update_check: bool,
     /// DSD handling per output device id; devices without an entry use DoP.
     pub dsd_modes: BTreeMap<String, DsdMode>,
     /// Output rate when DSD is converted to PCM.
@@ -239,6 +241,7 @@ impl Default for Settings {
             cover_style: CoverStyle::default(),
             glass: GlassQuality::default(),
             lyrics_online: true,
+            update_check: true,
             dsd_modes: BTreeMap::new(),
             dsd_pcm_rate: DsdPcmRate::default(),
             pcm_to_dsd: PcmToDsd::default(),

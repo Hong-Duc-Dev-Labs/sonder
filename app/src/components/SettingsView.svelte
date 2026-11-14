@@ -91,6 +91,34 @@
     }
   });
 
+  // ----- updates -----
+
+  let appVersion = $state("");
+  app.run(commands.appVersion()).then((v) => {
+    if (v) appVersion = v;
+  });
+  let checking = $state(false);
+  /** What the last check from this page said, until the next one. */
+  let checkResult = $state<string | null>(null);
+
+  async function checkForUpdate() {
+    checking = true;
+    const found = await app.checkForUpdate();
+    checking = false;
+    checkResult = found === undefined ? "The check failed" : found ? null : "This is the newest version";
+  }
+
+  let updateStatus = $derived.by(() => {
+    const p = app.updateProgress;
+    if (p) {
+      return p.total
+        ? `Downloading ${Math.min(100, Math.round((p.downloaded / p.total) * 100))} %`
+        : "Downloading the update…";
+    }
+    if (app.update) return `Version ${app.update.version} is available`;
+    return checkResult ?? "Updates come from the project's GitHub releases";
+  });
+
   let bitPerfect = $derived(app.player.volumeDb == null);
   $effect(() => {
     if (app.player.volumeDb != null) volumeDraft = app.player.volumeDb;
@@ -1143,6 +1171,53 @@
         </div>
       </div>
     </section>
+
+    <section aria-labelledby="update-title">
+      <div class="group-head"><h3 id="update-title">Updates</h3></div>
+      <div class="card soft">
+        <div class="row">
+          <span class="icon"><Icon name="refresh" size={18} /></span>
+          <span class="info">
+            <span class="name">Sonder {appVersion}</span>
+            <span class="dim small" aria-live="polite">{updateStatus}</span>
+          </span>
+          {#if app.update}
+            <button class="btn small" disabled={app.updateProgress != null} onclick={() => app.installUpdate()}>
+              Install {app.update.version} and restart
+            </button>
+          {:else}
+            <button class="btn small" disabled={checking} onclick={checkForUpdate}>
+              {checking ? "Checking…" : "Check now"}
+            </button>
+          {/if}
+        </div>
+        {#if app.update?.notes}
+          <p class="note notes">{app.update.notes}</p>
+        {/if}
+        <div class="row">
+          <span class="icon"><Icon name="settings" size={18} /></span>
+          <span class="info">
+            <span class="name" id="update-check-label">Check on launch</span>
+            <span class="dim small">
+              Asks GitHub for the newest release when Sonder starts. Updates are signed and only install
+              when you choose to.
+            </span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="update-check-label">
+            {#each [true, false] as on (on)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(app.settings.updateCheck ?? true) === on}
+                onclick={() => app.saveSettings({ ...app.settings, updateCheck: on })}
+              >
+                {on ? "On" : "Off"}
+              </button>
+            {/each}
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 </div>
 
@@ -1548,6 +1623,11 @@
     padding: 0 14px 14px;
     color: var(--ink-2);
     font-size: var(--fs-small);
+  }
+  .notes {
+    white-space: pre-wrap;
+    max-height: 12em;
+    overflow-y: auto;
   }
   @media (max-width: 720px) {
     .band {

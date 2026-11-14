@@ -1,0 +1,85 @@
+name: release
+
+# Pushing a tag such as v0.2.0 builds signed installers for every OS and attaches them, their
+# .sig files and the updater's latest.json to a draft release. Publishing the draft is what
+# makes running copies of Sonder offer the update.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/check-forbidden-files.sh
+      # latest.json carries the app's own version; a tag that disagrees would publish a
+      # release no running copy is ever offered.
+      - name: Tag matches the app version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          node_version=$(node -p 'require("./app/package.json").version')
+          echo "tag $tag, Cargo.toml $cargo_version, package.json $node_version"
+          [ "$tag" = "$cargo_version" ] && [ "$tag" = "$node_version" ]
+
+  build:
+    needs: preflight
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: ""
+          # One universal app, so Intel and Apple silicon Macs both find their platform.
+          - os: macos-latest
+            args: --target universal-apple-darwin
+          - os: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ALSA and WebKitGTK headers
+        if: runner.os == 'Linux'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+          libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libxdo-dev
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.18.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: app
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+      # Run inside the repo so the targets land on the toolchain rust-toolchain.toml pins,
+      # which is the one cargo uses here.
+      - name: Add both Mac targets for the universal build
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The minisign key the app's updater public key belongs to.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: app
+          tauriScript: pnpm tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: Sonder ${{ github.ref_name }}
+          # Also the in-app release notes: latest.json copies this at build time, so editing
+          # the draft's text later does not change what the app shows.
+          releaseBody: See the commits since the previous release.
+          releaseDraft: true
+          prerelease: false
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }}

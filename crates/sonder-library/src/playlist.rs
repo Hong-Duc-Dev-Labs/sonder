@@ -33,6 +33,14 @@ pub struct PlaylistItem {
     pub track: Track,
 }
 
+/// Any entry, in the library or not.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistEntry {
+    pub path: std::path::PathBuf,
+    /// The library's track at that path, if indexed.
+    pub track: Option<Track>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaylistDetail {
     pub playlist: PlaylistSummary,
@@ -114,6 +122,67 @@ impl Library {
             items,
             missing,
         }))
+    }
+
+    /// Every entry of a playlist in order, missing files included, with the library's track
+    /// for those it has. `None` when the playlist does not exist.
+    pub fn playlist_entries(&self, id: i64) -> Result<Option<Vec<PlaylistEntry>>, LibraryError> {
+        let tx = self.conn.unchecked_transaction()?;
+        if summary(&tx, id)?.is_none() {
+            return Ok(None);
+        }
+        let paths: Vec<String> = tx
+            .prepare_cached(
+                "SELECT path FROM playlist_items WHERE playlist_id = ?1 ORDER BY position",
+            )?
+            .query_map([id], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        let mut by_path = tx.prepare_cached(&format!(
+            "SELECT {TRACK_COLUMNS} {TRACK_FROM} WHERE t.path = ?1"
+        ))?;
+        let mut entries = Vec::with_capacity(paths.len());
+        for path in paths {
+            let track = by_path.query_row([&path], track_row).optional()?;
+            entries.push(PlaylistEntry {
+                path: path.into(),
+                track,
+            });
+        }
+        Ok(Some(entries))
+    }
+
+    /// Appends files by path, in order, whether or not the library has them yet (those show
+    /// as missing until a scan finds them). Returns how many were added.
+    pub fn add_paths_to_playlist(
+        &mut self,
+        id: i64,
+        paths: &[std::path::PathBuf],
+    ) -> Result<usize, LibraryError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if !touch(&tx, id)? {
+            return Err(LibraryError::PlaylistNotFound(id));
+        }
+        let mut next: u32 = tx.query_row(
+            "SELECT count(*) FROM playlist_items WHERE playlist_id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        let mut added = 0;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO playlist_items (playlist_id, position, path) VALUES (?1, ?2, ?3)",
+            )?;
+            for path in paths {
+                let Some(path) = path.to_str() else { continue };
+                insert.execute(params![id, next, path])?;
+                next += 1;
+                added += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(added)
     }
 
     pub fn create_playlist(&mut self, name: &str) -> Result<PlaylistSummary, LibraryError> {

@@ -175,6 +175,15 @@
             >
               <Icon name="spectrum" size={18} /> {t("quality.checkPlaylist")}
             </button>
+            <button
+              role="menuitem"
+              onclick={() => {
+                menuOpen = false;
+                void app.exportM3u(playlist);
+              }}
+            >
+              <Icon name="folder" size={18} /> {t("m3u.export")}
+            </button>
             <button role="menuitem" onclick={rename}><Icon name="edit" size={18} /> {t("playlist.rename")}</button>
             <button role="menuitem" onclick={deletePlaylist}><Icon name="trash" size={18} /> {t("playlist.delete")}</button>
           </Popover>

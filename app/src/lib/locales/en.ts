@@ -291,6 +291,50 @@ export const en = {
   "quality.reason.md5.fail": "The decoded audio does not match the stored checksum: the file is damaged.",
   "quality.reason.md5.other": "The file carries no MD5 signature.",
 
+  // listening stats
+  "stats.title": "Stats",
+  "stats.local": "From your listening history on this computer. Nothing is sent anywhere.",
+  "stats.period": "Period",
+  "stats.period.week": "7 days",
+  "stats.period.month": "30 days",
+  "stats.period.year": "12 months",
+  "stats.period.all": "All time",
+  "stats.listened": "Listening time",
+  "stats.playsTitle": "Plays",
+  "stats.tracks": "Different tracks",
+  "stats.chart": "Listening time",
+  "stats.empty":
+    "Nothing played in this period yet. A track counts once it has played for 30 seconds, or half of it for a short one.",
+  "stats.topTracks": "Top tracks",
+  "stats.topArtists": "Top artists",
+  "stats.topAlbums": "Top albums",
+  "stats.recent": "Recently played",
+  "stats.plays": { one: "{count} play", other: "{count} plays" },
+  "stats.clear": "Clear history",
+  "stats.clearTitle": "Clear the listening history?",
+  "stats.clearMessage": "Every recorded play is deleted. Your music and playlists are not touched.",
+  "stats.cleared": { one: "{count} play deleted", other: "{count} plays deleted" },
+
+  // sleep timer
+  "sleep.title": "Sleep timer",
+  "sleep.left": "Sleep timer: {m} min left",
+  "sleep.atEndOfTrack": "Sleep timer: pauses at the end of this track",
+  "sleep.minutes": "{m} minutes",
+  "sleep.endOfTrack": "End of this track",
+  "sleep.off": "Turn off",
+  "sleep.fired": "Sleep timer: playback paused",
+
+  // M3U playlists
+  "m3u.import": "Import M3U…",
+  "m3u.export": "Export M3U…",
+  "m3u.imported": {
+    one: "Imported {name} with {count} entry",
+    other: "Imported {name} with {count} entries",
+  },
+  "m3u.missing": { one: "{count} not in the library", other: "{count} not in the library" },
+  "m3u.skipped": { one: "{count} web stream skipped", other: "{count} web streams skipped" },
+  "m3u.exported": "Playlist saved as {file}",
+
   "tags.editTitle": "Edit metadata",
   "tags.title": "Title",
   "tags.artists": "Artists",

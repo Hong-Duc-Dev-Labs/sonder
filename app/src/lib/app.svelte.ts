@@ -14,6 +14,7 @@ import {
   type QualityVerdict,
   type QueueItem,
   type ScanPhase,
+  type SleepTimerEvent,
   type Settings,
   type TrackItem,
   type UpdateInfo,
@@ -36,7 +37,8 @@ export type View =
   | { kind: "search" }
   | { kind: "now" }
   | { kind: "quality" }
-  | { kind: "settings" };
+  | { kind: "settings" }
+  | { kind: "stats" };
 
 /** What the quality page is checking: a library track, or a file picked from disk. */
 export type QualityTarget = { kind: "track"; track: TrackItem } | { kind: "file"; file: QualityFile };
@@ -242,6 +244,10 @@ export class AppState {
   update = $state<UpdateInfo | null>(null);
   /** Download progress while an update installs; `null` otherwise. */
   updateProgress = $state<{ downloaded: number; total: number | null } | null>(null);
+  /** What the sleep timer is set to. */
+  sleep = $state<SleepTimerEvent>({ endsAtMs: null, endOfTrack: false, fired: false });
+  /** Bumped when a play is recorded or the history is cleared; the Stats page reloads. */
+  historyVersion = $state(0);
 
   current = $derived<QueueItem | null>(
     this.player.index != null ? (this.queue[this.player.index] ?? null) : null,
@@ -516,6 +522,35 @@ export class AppState {
     this.notify("info", t("playlist.added", { count: added, name: playlist.name }));
   }
 
+  /** Picks an M3U/M3U8 file, creates a playlist from it and opens it. */
+  async importM3u() {
+    const imported = await this.run(commands.playlistImportM3u());
+    if (!imported) return;
+    await this.playlistsChanged();
+    const { playlist, added, missing, skipped } = imported;
+    const extra = [
+      missing ? t("m3u.missing", { count: missing }) : "",
+      skipped ? t("m3u.skipped", { count: skipped }) : "",
+    ].filter(Boolean);
+    this.notify(
+      missing || skipped ? "warning" : "info",
+      t("m3u.imported", { name: playlist.name, count: added }) + (extra.length ? ` — ${extra.join(" · ")}` : ""),
+    );
+    this.go({ kind: "playlist", id: playlist.id });
+  }
+
+  /** Saves a playlist as an M3U8 file the user picks. */
+  async exportM3u(playlist: Pick<Playlist, "id" | "name">) {
+    const saved = await this.run(commands.playlistExportM3u(playlist.id));
+    if (saved) this.notify("info", t("m3u.exported", { file: saved.split(/[\\/]/).pop() ?? saved }));
+  }
+
+  /** Sets the sleep timer: minutes from now, the end of the current track, or off. */
+  async setSleep(minutes: number | null, endOfTrack = false) {
+    const next = await this.run(commands.sleepTimerSet(minutes, endOfTrack));
+    if (next) this.sleep = next;
+  }
+
   /** Runs a command, turning a rejection into a notice. */
   async run<T>(work: Promise<T>): Promise<T | undefined> {
     try {
@@ -576,6 +611,11 @@ export class AppState {
         if (this.qualityBatch) this.batchVerdicts.push(verdict);
       }),
       events.qualityBatchEvent.listen((e) => this.qualityBatchChanged(e.payload)),
+      events.historyChangedEvent.listen(() => this.historyVersion++),
+      events.sleepTimerEvent.listen((e) => {
+        this.sleep = e.payload;
+        if (e.payload.fired) this.notify("info", t("sleep.fired"));
+      }),
       events.updateAvailableEvent.listen((e) => this.updateFound(e.payload.update)),
       events.updateProgressEvent.listen((e) => {
         if (this.updateProgress) this.updateProgress = e.payload;
@@ -606,6 +646,11 @@ export class AppState {
     this.loudness = { ...this.loudness, running: this.loudness.running || analyzing, pending };
     // Not part of start-up: a failure only leaves the row menus without playlists.
     void this.refreshPlaylists();
+    // A sleep timer set before the window reloaded keeps running in the backend.
+    void commands
+      .sleepTimerGet()
+      .then((sleep) => (this.sleep = sleep))
+      .catch(() => {});
     // A batch may still run from before the window reloaded.
     void commands
       .qualityBatchStatus()

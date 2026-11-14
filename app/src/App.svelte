@@ -28,6 +28,7 @@
   import SettingsView from "./components/SettingsView.svelte";
   import SongsView from "./components/SongsView.svelte";
   import QualityView from "./components/QualityView.svelte";
+  import StatsView from "./components/StatsView.svelte";
   import TrackEditDialog from "./components/TrackEditDialog.svelte";
   import TransportBar from "./components/TransportBar.svelte";
 
@@ -41,6 +42,7 @@
     { view: { kind: "albums" }, label: t("common.albums"), icon: "albums" },
     { view: { kind: "artists" }, label: t("common.artists"), icon: "artists" },
     { view: { kind: "songs" }, label: t("common.songs"), icon: "note" },
+    { view: { kind: "stats" }, label: t("stats.title"), icon: "chart" },
   ]);
   /** Playlists listed in the sidebar itself; the rest are one click away in "All playlists". */
   const SIDEBAR_PLAYLISTS = 8;
@@ -169,6 +171,8 @@
               <NowPlayingView />
             {:else if app.view.kind === "quality"}
               <QualityView />
+            {:else if app.view.kind === "stats"}
+              <StatsView />
             {:else if app.view.kind === "settings"}
               <SettingsView />
             {/if}

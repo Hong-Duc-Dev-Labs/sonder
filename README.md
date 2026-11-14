@@ -127,6 +127,34 @@ Entries point at the file path, not the library's track id, so they survive resc
 is moved or deleted stays in the playlist as "not in library" and comes back when a rescan finds
 it at the same path again.
 
+**Import M3U…** on the Playlists page turns an `.m3u` or `.m3u8` file into a new playlist named
+after the file. It reads UTF-8 (with or without a BOM) and Latin-1, absolute and relative paths
+(relative to the playlist's folder, with either slash) and `file://` URLs, and ignores `#EXTM3U`
+and `#EXTINF` lines. Entries that are not in the library are kept as "not in library"; web
+streams are skipped, and the notice counts both. **Export M3U…** in a playlist's ⋯ menu saves
+extended M3U8: UTF-8, `#EXTINF:<seconds>,<artist> - <title>` for tracks in the library, and the
+absolute path of every entry, missing ones included.
+
+## Listening stats
+
+Sonder records a play once a track has actually sounded for 30 seconds, or for half its length
+if it is shorter. Seeking and pausing do not count as listening, and a track skipped before that
+point is not recorded. The **Stats** page in the sidebar covers the last 7 days, 30 days, 12
+months or all time. It shows the listening time, the number of plays and of different tracks,
+a listening-time chart (per day, or per month for a year or more), the top tracks, artists and
+albums, and the latest plays; a click plays a track or opens an artist or album. The history
+lives in the library database (schema version 6; a version-5 database is backed up as
+`library.db.bak-5` first), keyed by path so it survives rescans, and is never sent anywhere.
+**Clear history** at the bottom of the page deletes it after asking.
+
+## Sleep timer
+
+The moon button in the player bar stops the music after 15, 30, 45, 60 or 90 minutes, or at the
+end of the current track, and shows the minutes left. The timer runs in the backend, so it also
+fires with the main window closed and only the mini player showing. When it fires, playback
+pauses and a notice says so. "End of this track" pauses as the next track starts (gapless
+playback has no gap to stop in), so a fraction of a second of that track can sound.
+
 ## Editing metadata
 
 Any track's ⋯ menu → **Edit metadata** shows the tags stored in the file itself — title,

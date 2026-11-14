@@ -144,7 +144,7 @@
     color: var(--ink-2);
   }
   .detail {
-    font-family: var(--mono);
+    font-family: var(--font);
     font-size: 11.5px;
     color: var(--ink-2);
     font-variant-numeric: tabular-nums;

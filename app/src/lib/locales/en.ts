@@ -168,6 +168,7 @@ export const en = {
   "tracks.disc": "Disc {n}",
   "tracks.move": "Move {title}, position {position} of {total}",
   "tracks.reorderHint": "Drag, or press Up or Down, to reorder",
+  "tracks.dropOnPlaylist": "Drop on a playlist to add it",
 
   // playback
   "badges.sourceTitle": "Source file",

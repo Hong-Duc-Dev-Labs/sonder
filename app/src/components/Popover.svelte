@@ -5,7 +5,8 @@
 <script lang="ts">
   // A small glass panel anchored to a trigger: row menus and the format status. Closes on
   // Escape, on a click outside and when its anchor scrolls away; Escape returns focus to the
-  // anchor. With `menu`, the arrow keys move between the menu items.
+  // anchor. With `menu`, the arrow keys move between the menu items. With `at`, the panel opens
+  // at that point (a right-click) instead of off the anchor.
   import { tick, type Snippet } from "svelte";
   import { reducedMotion } from "../lib/motion";
 
@@ -15,6 +16,7 @@
     placement = "bottom",
     menu = false,
     label,
+    at = null,
     children,
   }: {
     anchor: HTMLElement | undefined;
@@ -22,6 +24,8 @@
     placement?: PopoverPlacement;
     menu?: boolean;
     label: string;
+    /** A viewport point to open at instead of the anchor. */
+    at?: { x: number; y: number } | null;
     children: Snippet;
   } = $props();
 
@@ -32,15 +36,28 @@
   const MARGIN = 12;
 
   function place() {
-    if (!anchor || !panel) return;
-    const a = anchor.getBoundingClientRect();
+    if (!panel) return;
     const p = panel.getBoundingClientRect();
+    if (at) {
+      const above = window.innerHeight - at.y - MARGIN < p.height;
+      const left = Math.min(Math.max(MARGIN, at.x), window.innerWidth - p.width - MARGIN);
+      const top = Math.max(MARGIN, above ? at.y - p.height : at.y);
+      pos = { left, top, above };
+      return;
+    }
+    if (!anchor) return;
+    const a = anchor.getBoundingClientRect();
     const roomBelow = window.innerHeight - a.bottom - MARGIN;
     const above = placement === "top" ? a.top - MARGIN > p.height || roomBelow < p.height : roomBelow < p.height;
     const left = Math.min(Math.max(MARGIN, a.right - p.width), window.innerWidth - p.width - MARGIN);
     const top = above ? a.top - GAP - p.height : a.bottom + GAP;
     pos = { left, top, above };
   }
+
+  // A second right-click while open moves the panel to the new point.
+  $effect(() => {
+    if (open && at && panel) place();
+  });
 
   function items(): HTMLElement[] {
     return panel ? [...panel.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])')] : [];
@@ -120,6 +137,7 @@
     bind:this={panel}
     class="popover glass"
     class:above={pos.above}
+    class:at
     role={menu ? "menu" : "dialog"}
     aria-label={label}
     tabindex="-1"
@@ -145,6 +163,12 @@
   }
   .popover.above {
     transform-origin: bottom right;
+  }
+  .popover.at {
+    transform-origin: top left;
+  }
+  .popover.at.above {
+    transform-origin: bottom left;
   }
   .popover :global([role="menuitem"]) {
     display: flex;

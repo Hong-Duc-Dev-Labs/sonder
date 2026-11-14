@@ -1,6 +1,7 @@
 <script lang="ts">
   // The ⋯ button on a track row and its glass menu. "Add to playlist" swaps the menu for the
-  // list of playlists in place, with a way back.
+  // list of playlists in place, with a way back. `openAt` opens the same menu at a point, for
+  // a right-click on the row.
   import { tick } from "svelte";
   import { app } from "../lib/app.svelte";
   import { commands, type TrackItem } from "../lib/bindings";
@@ -19,6 +20,8 @@
     onremove?: () => void;
   } = $props();
   let open = $state(false);
+  /** Where a right-click opened the menu; null when it hangs off the ⋯ button. */
+  let at = $state<{ x: number; y: number } | null>(null);
   let picking = $state(false);
   let button: HTMLButtonElement | undefined = $state();
   let items: HTMLElement | undefined = $state();
@@ -26,6 +29,12 @@
   $effect(() => {
     if (!open) picking = false;
   });
+
+  export function openAt(x: number, y: number) {
+    at = { x, y };
+    picking = false;
+    open = true;
+  }
 
   function act(work: () => void) {
     open = false;
@@ -52,12 +61,15 @@
   aria-label={t("common.moreFor", { name: track.title })}
   aria-haspopup="menu"
   aria-expanded={open}
-  onclick={() => (open = !open)}
+  onclick={() => {
+    at = null;
+    open = !open;
+  }}
 >
   <Icon name="more" size={18} />
 </button>
 
-<Popover anchor={button} bind:open menu label={picking ? t("common.addToPlaylist") : t("menu.trackActions")}>
+<Popover anchor={button} {at} bind:open menu label={picking ? t("common.addToPlaylist") : t("menu.trackActions")}>
   <div class="items" bind:this={items}>
     {#if picking}
       <button role="menuitem" onclick={() => pick(false)}>

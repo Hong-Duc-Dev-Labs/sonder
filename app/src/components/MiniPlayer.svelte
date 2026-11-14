@@ -334,7 +334,7 @@
   .artist {
     flex: 1;
     min-width: 0;
-    font-family: Georgia, "Times New Roman", serif;
+    font-family: var(--font);
     font-size: 10px;
     letter-spacing: 0.14em;
     text-transform: uppercase;

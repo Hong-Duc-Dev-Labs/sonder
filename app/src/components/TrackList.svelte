@@ -3,11 +3,14 @@
   // (shown in place of the number on hover and focus, and always reachable by keyboard and
   // screen readers). The quality badge only shows where a track differs from the album.
   // With `onmove`, each row has a grip: drag it, or press Up/Down on it, to reorder.
+  // Dragging a row anywhere else carries the track to a playlist in the sidebar, and a
+  // right-click opens the row's ⋯ menu at the pointer.
   import { tick } from "svelte";
   import { app } from "../lib/app.svelte";
   import type { TrackItem } from "../lib/bindings";
   import { duration, rate } from "../lib/format";
   import { t } from "../lib/i18n.svelte";
+  import { trackDrag } from "../lib/trackDrag.svelte";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import MiniDisc from "./MiniDisc.svelte";
@@ -42,6 +45,18 @@
   });
 
   let rows: HTMLElement[] = $state([]);
+  let menus: RowMenu[] = $state([]);
+
+  /** A press on the row itself, not on one of its buttons, may start a drag to a playlist. */
+  function rowDown(e: PointerEvent, track: TrackItem) {
+    if ((e.target as HTMLElement).closest("button")) return;
+    trackDrag.press(e, track);
+  }
+
+  function rowMenu(e: MouseEvent, i: number) {
+    e.preventDefault();
+    menus[i]?.openAt(e.clientX, e.clientY);
+  }
   /** The row being dragged by its grip, where it would land, and how far it has moved. */
   let drag = $state<{ from: number; to: number; dy: number; height: number; startY: number } | null>(null);
   /** Each row's middle when the drag started, before any row moved aside. */
@@ -133,10 +148,16 @@
       class:mixed
       class:movable={onmove}
       class:dragging={drag?.from === i}
+      class:carried={trackDrag.active?.track.id === track.id}
       style:transform={drag ? `translateY(${drag.from === i ? drag.dy : shift(i)}px)` : undefined}
       role="listitem"
       aria-current={playing ? "true" : undefined}
       ondblclick={() => onplay(i)}
+      oncontextmenu={(e) => rowMenu(e, i)}
+      onpointerdown={(e) => rowDown(e, track)}
+      onpointermove={(e) => trackDrag.move(e)}
+      onpointerup={() => trackDrag.release()}
+      onpointercancel={() => trackDrag.cancel()}
     >
       {#if onmove}
         <button
@@ -185,7 +206,7 @@
         <span></span>
       {/if}
       <span class="dur">{duration(track.durationMs)}</span>
-      <RowMenu {track} showAlbum={mixed} onremove={onremove ? () => onremove(i) : undefined} />
+      <RowMenu bind:this={menus[i]} {track} showAlbum={mixed} onremove={onremove ? () => onremove(i) : undefined} />
     </div>
   {/each}
 </div>
@@ -196,7 +217,8 @@
     flex-direction: column;
     gap: 2px;
     padding: 6px;
-    border-radius: var(--r-lg);
+    /* Concentric with the rows inside: their radius plus the padding between them. */
+    border-radius: calc(var(--r-sm) + 6px);
   }
   .disc {
     display: flex;
@@ -251,6 +273,14 @@
     color: var(--ink-3);
     cursor: grab;
     touch-action: none;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-standard);
+  }
+  /* The grip only shows on the row in hand, so a resting list reads as plain tracks. */
+  .row:hover .grip,
+  .row:focus-within .grip,
+  .sorting .grip {
+    opacity: 1;
   }
   .grip:hover,
   .grip:focus-visible {
@@ -261,7 +291,10 @@
   }
   .row:hover,
   .row:focus-within {
-    background: var(--soft-hover);
+    background: var(--soft);
+  }
+  .row.carried {
+    opacity: 0.45;
   }
   .row.playing {
     background: var(--soft-active);
@@ -287,24 +320,48 @@
     border-radius: var(--r-xs);
     box-shadow: none;
   }
+  /* On hover the play icon takes the lead's place: over the number it stands alone, over a
+     cover or the spinning disc it sits on a dark scrim, so the art stays visible beneath. */
   .play {
     position: absolute;
-    inset: 2px;
+    inset: 0;
+    width: 40px;
+    height: 40px;
+    margin: auto;
     display: grid;
     place-items: center;
-    border-radius: 50%;
-    background: var(--ink);
-    color: #050506;
+    border-radius: var(--r-xs);
+    color: var(--ink);
     opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-standard);
+  }
+  .play :global(svg) {
     transform: scale(0.8);
-    transition:
-      opacity var(--dur-fast) var(--ease-standard),
-      transform var(--dur-med) var(--ease-spring);
+    transition: transform var(--dur-med) var(--ease-spring);
+  }
+  .mixed .play {
+    background: rgb(0 0 0 / 0.55);
+  }
+  .playing .play {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: rgb(0 0 0 / 0.55);
   }
   .row:hover .play,
   .play:focus-visible {
     opacity: 1;
+  }
+  .row:hover .play :global(svg),
+  .play:focus-visible :global(svg) {
     transform: none;
+  }
+  .no {
+    transition: opacity var(--dur-fast) var(--ease-standard);
+  }
+  .row:hover .no,
+  .row:has(.play:focus-visible) .no {
+    opacity: 0;
   }
   .main {
     display: flex;

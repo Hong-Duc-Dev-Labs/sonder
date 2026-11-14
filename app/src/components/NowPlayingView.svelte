@@ -296,7 +296,7 @@
     padding: 2px 8px;
     border-radius: 6px;
     box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.4);
-    font-family: var(--mono);
+    font-family: var(--font);
     font-size: 11px;
     font-weight: 700;
     color: var(--ink-2);
@@ -368,7 +368,7 @@
     margin: 0;
     text-align: center;
     font-size: 11.5px;
-    font-family: var(--mono);
+    font-family: var(--font);
     color: var(--ink-2);
   }
   .underruns {

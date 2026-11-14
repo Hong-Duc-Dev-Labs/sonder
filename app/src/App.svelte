@@ -6,6 +6,7 @@
   import { commands } from "./lib/bindings";
   import { t } from "./lib/i18n.svelte";
   import { reducedMotion } from "./lib/motion";
+  import { trackDrag } from "./lib/trackDrag.svelte";
   import { fadeQuick, pageIn, rise } from "./lib/transitions";
   import AlbumsView from "./components/AlbumsView.svelte";
   import AlbumView from "./components/AlbumView.svelte";
@@ -217,6 +218,9 @@
         <button
           class="nav playlist"
           class:active={openPlaylist === playlist.id}
+          class:drop-target={trackDrag.active}
+          class:drop-over={trackDrag.over === playlist.id}
+          data-drop-playlist={playlist.id}
           aria-current={openPlaylist === playlist.id ? "page" : undefined}
           title={playlist.name}
           onclick={() => app.go({ kind: "playlist", id: playlist.id })}
@@ -284,6 +288,21 @@
     {#key app.flight}
       <DiscFlight flight={app.flight} />
     {/key}
+  {/if}
+
+  {#if trackDrag.active}
+    {@const carried = trackDrag.active}
+    <div class="carry glass" aria-hidden="true" style:left="{carried.x + 14}px" style:top="{carried.y + 10}px">
+      <span class="carry-art"><Cover hash={carried.track.art} alt="" /></span>
+      <span class="carry-text">
+        <span class="carry-title">{carried.track.title}</span>
+        <span class="carry-hint"
+          >{trackDrag.over != null
+            ? (app.playlists.find((p) => p.id === trackDrag.over)?.name ?? "")
+            : t("tracks.dropOnPlaylist")}</span
+        >
+      </span>
+    </div>
   {/if}
 
   <!-- Errors are announced assertively, everything else politely. Hovering or focusing a
@@ -535,6 +554,51 @@
     flex: none;
     border-radius: 6px;
     overflow: hidden;
+  }
+  /* While a track is carried, the sidebar playlists outline themselves as places to drop it. */
+  .nav.playlist.drop-target {
+    box-shadow: inset 0 0 0 1px var(--hairline);
+  }
+  .nav.playlist.drop-over {
+    color: var(--ink);
+    background: var(--soft-active);
+    box-shadow: inset 0 0 0 2px var(--ink-2);
+  }
+  .carry {
+    position: fixed;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 280px;
+    padding: 6px 14px 6px 6px;
+    border-radius: var(--r-md);
+    pointer-events: none;
+    box-shadow: 0 12px 32px rgb(0 0 0 / 0.5);
+  }
+  .carry-art {
+    width: 36px;
+    flex: none;
+    border-radius: var(--r-xs);
+    overflow: hidden;
+  }
+  .carry-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .carry-title,
+  .carry-hint {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .carry-title {
+    font-weight: 600;
+  }
+  .carry-hint {
+    font-size: var(--fs-small);
+    color: var(--ink-2);
   }
   .scan {
     display: flex;

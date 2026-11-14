@@ -18,6 +18,7 @@
     type FilterVariantSetting,
     type GlassQuality,
     type ImpulseResponseInfo,
+    type LanguageSetting,
     type LevelingSetting,
     type PeqBandSetting,
     type PcmToDsd,
@@ -28,6 +29,7 @@
     type SrcTargetSetting,
   } from "../lib/bindings";
   import { rate } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import Icon from "./Icon.svelte";
   import { rangeFill } from "../lib/rangeFill";
 
@@ -38,15 +40,21 @@
   let showFailures = $state(false);
   let volumeDraft = $state(-10);
 
-  const coverStyles: { value: CoverStyle; label: string; hint: string }[] = [
-    { value: "vinyl", label: "Vinyl record", hint: "The cover spins as a record; drag the tonearm to seek" },
-    { value: "square", label: "Square cover", hint: "The flat album cover" },
-  ];
-  const glassLevels: { value: GlassQuality; label: string }[] = [
-    { value: "full", label: "Full" },
-    { value: "reduced", label: "Reduced" },
-    { value: "off", label: "Off" },
-  ];
+  let coverStyles = $derived<{ value: CoverStyle; label: string; hint: string }[]>([
+    { value: "vinyl", label: t("settings.look.vinyl"), hint: t("settings.look.vinylHint") },
+    { value: "square", label: t("settings.look.square"), hint: t("settings.look.squareHint") },
+  ]);
+  let glassLevels = $derived<{ value: GlassQuality; label: string }[]>([
+    { value: "full", label: t("settings.look.full") },
+    { value: "reduced", label: t("settings.look.reduced") },
+    { value: "off", label: t("common.off") },
+  ]);
+  /** Each language is named in itself, so it can be found whatever the interface shows now. */
+  let languages = $derived<{ value: LanguageSetting; label: string }[]>([
+    { value: "system", label: t("settings.lang.system") },
+    { value: "en", label: "English" },
+    { value: "vi", label: "Tiếng Việt" },
+  ]);
 
   $effect(() => {
     void app.libraryVersion;
@@ -81,11 +89,13 @@
     const s = app.scan;
     switch (s.phase) {
       case "walking":
-        return "Looking for music files…";
+        return t("settings.lib.walking");
       case "reading":
-        return s.total ? `Reading tags ${s.done} / ${s.total}` : "Reading tags…";
+        return s.total
+          ? t("settings.lib.readingProgress", { done: s.done, total: s.total })
+          : t("settings.lib.reading");
       case "writing":
-        return "Updating the library…";
+        return t("settings.lib.writing");
       default:
         return s.last;
     }
@@ -99,24 +109,26 @@
   });
   let checking = $state(false);
   /** What the last check from this page said, until the next one. */
-  let checkResult = $state<string | null>(null);
+  let checkResult = $state<"failed" | "newest" | null>(null);
 
   async function checkForUpdate() {
     checking = true;
     const found = await app.checkForUpdate();
     checking = false;
-    checkResult = found === undefined ? "The check failed" : found ? null : "This is the newest version";
+    checkResult = found === undefined ? "failed" : found ? null : "newest";
   }
 
   let updateStatus = $derived.by(() => {
     const p = app.updateProgress;
     if (p) {
       return p.total
-        ? `Downloading ${Math.min(100, Math.round((p.downloaded / p.total) * 100))} %`
-        : "Downloading the update…";
+        ? t("settings.update.downloadingPct", { pct: Math.min(100, Math.round((p.downloaded / p.total) * 100)) })
+        : t("settings.update.downloading");
     }
-    if (app.update) return `Version ${app.update.version} is available`;
-    return checkResult ?? "Updates come from the project's GitHub releases";
+    if (app.update) return t("settings.update.available", { version: app.update.version });
+    if (checkResult === "failed") return t("settings.update.checkFailed");
+    if (checkResult === "newest") return t("settings.update.newest");
+    return t("settings.update.source");
   });
 
   let bitPerfect = $derived(app.player.volumeDb == null);
@@ -129,25 +141,25 @@
     app.run(commands.playerSetVolume(db));
   }
 
-  const dsdModes: { value: DsdMode; label: string; hint: string }[] = [
-    { value: "dop", label: "DoP", hint: "Bit-perfect DSD over PCM; converted to PCM if the device does not take DoP" },
-    { value: "native", label: "Native", hint: "Native DSD where the driver offers it (Linux ALSA), else DoP, else PCM" },
-    { value: "pcm", label: "PCM", hint: "Always converted to PCM" },
-  ];
+  let dsdModes = $derived<{ value: DsdMode; label: string; hint: string }[]>([
+    { value: "dop", label: "DoP", hint: t("settings.dsd.dopHint") },
+    { value: "native", label: t("settings.dsd.native"), hint: t("settings.dsd.nativeHint") },
+    { value: "pcm", label: "PCM", hint: t("settings.dsd.pcmHint") },
+  ]);
   const dsdRates: { value: DsdPcmRate; label: string }[] = [
     { value: "hz176400", label: rate(176400) },
     { value: "hz352800", label: rate(352800) },
   ];
-  const pcmToDsdOptions: { value: PcmToDsd; label: string }[] = [
-    { value: "off", label: "Off" },
+  let pcmToDsdOptions = $derived<{ value: PcmToDsd; label: string }[]>([
+    { value: "off", label: t("common.off") },
     { value: "dsd64", label: "DSD64" },
     { value: "dsd128", label: "DSD128" },
     { value: "dsd256", label: "DSD256" },
-  ];
-  const sdmOrders: { value: SdmOrderSetting; label: string }[] = [
-    { value: "order5", label: "5th" },
-    { value: "order7", label: "7th" },
-  ];
+  ]);
+  let sdmOrders = $derived<{ value: SdmOrderSetting; label: string }[]>([
+    { value: "order5", label: t("settings.order5") },
+    { value: "order7", label: t("settings.order7") },
+  ]);
   let dsdMode = $derived<DsdMode>((selected && app.settings.dsdModes?.[selected.id]) || "dop");
 
   function setDsdMode(mode: DsdMode) {
@@ -156,35 +168,35 @@
   }
 
   function formatsSummary(d: Device): string {
-    if (!d.formats.length) return "Formats unknown (device busy, or exclusive mode disabled)";
+    if (!d.formats.length) return t("settings.formatsUnknown");
     const rates = [...new Set(d.formats.map((f) => f.rate))].sort((a, b) => a - b);
     const bits = Math.max(...d.formats.map((f) => f.bits));
-    return `Up to ${bits}-bit · ${rates.map(rate).join(", ")}`;
+    return t("settings.formatsUpTo", { bits: String(bits), rates: rates.map(rate).join(", ") });
   }
 
   // ----- DSP: PEQ, levelling, dither -----
 
-  const levelingModes: { value: LevelingSetting; label: string; hint: string }[] = [
-    { value: "off", label: "Off", hint: "No level changes" },
-    { value: "track", label: "Track", hint: "Every track to the target loudness" },
-    { value: "album", label: "Album", hint: "The album to the target, keeping tracks relative" },
-    { value: "auto", label: "Auto", hint: "Album while an album plays in order, track otherwise" },
-  ];
-  const biquadKinds: { value: BiquadKindSetting; label: string }[] = [
-    { value: "peak", label: "Peak" },
-    { value: "lowShelf", label: "Low shelf" },
-    { value: "highShelf", label: "High shelf" },
-    { value: "lowPass", label: "Low pass" },
-    { value: "highPass", label: "High pass" },
-    { value: "bandPass", label: "Band pass" },
-    { value: "notch", label: "Notch" },
-  ];
-  const srcTargets: { value: SrcTargetSetting; label: string }[] = [
-    { value: "off", label: "Off" },
-    { value: "maxDevice", label: "Device max" },
-    { value: "keepFamily", label: "Keep family" },
-    { value: "fixed", label: "Fixed" },
-  ];
+  let levelingModes = $derived<{ value: LevelingSetting; label: string; hint: string }[]>([
+    { value: "off", label: t("common.off"), hint: t("settings.level.offHint") },
+    { value: "track", label: t("settings.level.track"), hint: t("settings.level.trackHint") },
+    { value: "album", label: t("settings.level.album"), hint: t("settings.level.albumHint") },
+    { value: "auto", label: t("settings.level.auto"), hint: t("settings.level.autoHint") },
+  ]);
+  let biquadKinds = $derived<{ value: BiquadKindSetting; label: string }[]>([
+    { value: "peak", label: t("settings.biquad.peak") },
+    { value: "lowShelf", label: t("settings.biquad.lowShelf") },
+    { value: "highShelf", label: t("settings.biquad.highShelf") },
+    { value: "lowPass", label: t("settings.biquad.lowPass") },
+    { value: "highPass", label: t("settings.biquad.highPass") },
+    { value: "bandPass", label: t("settings.biquad.bandPass") },
+    { value: "notch", label: t("settings.biquad.notch") },
+  ]);
+  let srcTargets = $derived<{ value: SrcTargetSetting; label: string }[]>([
+    { value: "off", label: t("common.off") },
+    { value: "maxDevice", label: t("settings.src.maxDevice") },
+    { value: "keepFamily", label: t("settings.src.keepFamily") },
+    { value: "fixed", label: t("settings.src.fixed") },
+  ]);
   const fixedRates = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000, 705_600, 768_000];
 
   let peq = $derived<PeqSetting>(app.settings.peq ?? { preampDb: 0, bands: [] });
@@ -255,9 +267,9 @@
     if (Object.hasOwn(peqPresets, name)) {
       const kept = freePresetName(name);
       const replace = await app.ask({
-        title: "Preset already exists",
-        message: `${name} already exists. Replace it, or keep both by importing as ${kept}.`,
-        confirm: "Replace",
+        title: t("settings.peq.exists"),
+        message: t("settings.peq.existsMessage", { name, kept }),
+        confirm: t("settings.peq.replace"),
       });
       if (replace == null) name = kept;
     }
@@ -270,14 +282,13 @@
     if (!saved) return;
     const bands = imported.peq.bands?.length ?? 0;
     const warnings = imported.warnings ?? [];
-    const count = bands === 1 ? "1 band" : `${bands} bands`;
-    // One notice, as the plan asks, but a broken file can carry a hundred reasons.
+    const count = t("settings.peq.bands", { count: bands });
+    // One notice, but a broken file can carry a hundred reasons.
     const shown = warnings.slice(0, 3);
     const more = warnings.length - shown.length;
-    const skipped = warnings.length
-      ? ` — ${shown.join(" · ")}${more > 0 ? ` · and ${more} more` : ""}`
-      : "";
-    app.notify(warnings.length ? "warning" : "info", `Imported ${name}: ${count}${skipped}`);
+    const reasons = more > 0 ? [...shown, t("settings.peq.andMore", { count: more })] : shown;
+    const skipped = warnings.length ? ` — ${reasons.join(" · ")}` : "";
+    app.notify(warnings.length ? "warning" : "info", t("settings.peq.imported", { name, bands: count }) + skipped);
   }
 
   /** Writes the current EQ as Equalizer APO parametric text. */
@@ -285,7 +296,7 @@
     const name = app.settings.peqPreset ?? "Sonder";
     const saved = await app.run(commands.peqExport(peq, name));
     if (!saved) return;
-    app.notify("info", `Exported EQ to ${saved.split(/[\\/]/).pop()}`);
+    app.notify("info", t("settings.peq.exported", { file: saved.split(/[\\/]/).pop() ?? saved }));
   }
 
   // ----- DSP: convolution and crossfeed -----
@@ -294,11 +305,11 @@
   let crossfeed = $derived<CrossfeedSetting>(app.settings.crossfeed ?? {});
   let irInfo = $state<ImpulseResponseInfo | null>(null);
   let irError = $state<string | null>(null);
-  const crossfeedPresets: { value: CrossfeedPresetSetting; label: string; hint: string }[] = [
-    { value: "default", label: "Default", hint: "700 Hz, 4.5 dB: closest to speakers" },
+  let crossfeedPresets = $derived<{ value: CrossfeedPresetSetting; label: string; hint: string }[]>([
+    { value: "default", label: t("settings.xfeed.default"), hint: t("settings.xfeed.defaultHint") },
     { value: "chuMoy", label: "Chu Moy", hint: "700 Hz, 6 dB" },
-    { value: "janMeier", label: "Jan Meier", hint: "650 Hz, 9.5 dB: the lightest" },
-  ];
+    { value: "janMeier", label: "Jan Meier", hint: t("settings.xfeed.janMeierHint") },
+  ]);
 
   // Path last described; plain (not reactive), so saving any other setting does not re-read
   // the file, even while it is unreadable.
@@ -385,7 +396,7 @@
 
 <div class="page scroll">
   <header class="page-head">
-    <h1 tabindex="-1" data-view-heading>Settings</h1>
+    <h1 tabindex="-1" data-view-heading>{t("common.settings")}</h1>
   </header>
 
   <div class="cards">
@@ -394,13 +405,10 @@
       <div class="hero-text">
         <span class="state" class:ok={bitPerfect}>
           <span class="dot" aria-hidden="true"></span>
-          {bitPerfect ? "Bit-perfect" : `Software volume ${volumeDraft.toFixed(1)} dB`}
+          {bitPerfect ? t("common.bitPerfect") : t("settings.softwareVolumeState", { db: volumeDraft.toFixed(1) })}
         </span>
-        <h2 id="out-title">{selected?.name ?? "Output"}</h2>
-        <p class="dim">
-          Exclusive mode, each file at its own rate and bit depth. A file the device cannot take
-          as-is is skipped, never converted.
-        </p>
+        <h2 id="out-title">{selected?.name ?? t("settings.output")}</h2>
+        <p class="dim">{t("settings.outputIntro")}</p>
       </div>
       <svg class="hero-disc" viewBox="0 0 100 100" aria-hidden="true">
         <circle cx="50" cy="50" r="48" fill="none" stroke="currentColor" stroke-opacity=".18" />
@@ -412,8 +420,8 @@
         <label class="row">
           <span class="icon"><Icon name="volume" size={18} /></span>
           <span class="info">
-            <span class="name">Bit-perfect output</span>
-            <span class="dim small">No software volume; use your DAC or amplifier volume</span>
+            <span class="name">{t("settings.bitPerfectOutput")}</span>
+            <span class="dim small">{t("settings.bitPerfectHint")}</span>
           </span>
           <input
             type="checkbox"
@@ -432,7 +440,7 @@
               min="-60"
               max="0"
               step="0.5"
-              aria-label="Software volume"
+              aria-label={t("common.softwareVolume")}
               aria-valuetext="{volumeDraft.toFixed(1)} dB"
               bind:value={volumeDraft}
               use:rangeFill={volumeDraft}
@@ -446,20 +454,20 @@
 
     <section aria-labelledby="dev-title">
       <div class="group-head">
-        <h3 id="dev-title">Output device</h3>
-        <button class="icon-btn" aria-label="Refresh devices" onclick={loadDevices}><Icon name="refresh" size={18} /></button>
+        <h3 id="dev-title">{t("settings.outputDevice")}</h3>
+        <button class="icon-btn" aria-label={t("settings.refreshDevices")} onclick={loadDevices}><Icon name="refresh" size={18} /></button>
       </div>
       <div class="card soft" role="radiogroup" aria-labelledby="dev-title">
         {#if devices === null}
-          <p class="dim pad">Looking for devices…</p>
+          <p class="dim pad">{t("settings.lookingForDevices")}</p>
         {:else if !devices.length}
-          <p class="dim pad">No output devices found.</p>
+          <p class="dim pad">{t("settings.noDevices")}</p>
         {:else}
           {#each devices as d (d.id)}
             <label class="row choice" class:selected={d.selected}>
               <span class="icon"><Icon name="speaker" size={18} /></span>
               <span class="info">
-                <span class="name">{d.name}{d.isDefault ? " · system default" : ""}</span>
+                <span class="name">{d.name}{d.isDefault ? ` · ${t("settings.systemDefault")}` : ""}</span>
                 <span class="dim small">{formatsSummary(d)}</span>
               </span>
               <input class="sr" type="radio" name="device" checked={d.selected} onchange={() => selectDevice(d.id)} />
@@ -471,12 +479,12 @@
     </section>
 
     <section aria-labelledby="dsd-title">
-      <div class="group-head"><h3 id="dsd-title">DSD playback</h3></div>
+      <div class="group-head"><h3 id="dsd-title">{t("settings.dsd.title")}</h3></div>
       <div class="card soft">
         <div class="row">
           <span class="icon"><Icon name="speaker" size={18} /></span>
           <span class="info">
-            <span class="name" id="dsd-mode-label">DSD on {selected?.name ?? "this device"}</span>
+            <span class="name" id="dsd-mode-label">{t("settings.dsd.on", { device: selected?.name ?? t("settings.dsd.thisDevice") })}</span>
             <span class="dim small">{dsdModes.find((m) => m.value === dsdMode)?.hint}</span>
           </span>
           <div class="segmented" role="radiogroup" aria-labelledby="dsd-mode-label">
@@ -496,8 +504,8 @@
         <div class="row">
           <span class="icon"><Icon name="volume" size={18} /></span>
           <span class="info">
-            <span class="name" id="dsd-rate-label">PCM conversion rate</span>
-            <span class="dim small">Used when DSD is converted to PCM</span>
+            <span class="name" id="dsd-rate-label">{t("settings.dsd.pcmRate")}</span>
+            <span class="dim small">{t("settings.dsd.pcmRateHint")}</span>
           </span>
           <div class="segmented" role="radiogroup" aria-labelledby="dsd-rate-label">
             {#each dsdRates as r (r.value)}
@@ -515,12 +523,11 @@
         <div class="row">
           <span class="icon"><Icon name="signal" size={18} /></span>
           <span class="info">
-            <span class="name" id="pcm-dsd-label">PCM to DSD</span>
+            <span class="name" id="pcm-dsd-label">{t("settings.pcmToDsd")}</span>
             <span class="dim small">
-              Modulates PCM tracks before output. DSD is carried over DoP or native DSD when the
-              device takes it; 0 dBFS PCM becomes 50 % modulation, the SACD convention.
+              {t("settings.pcmToDsdHint")}
               {#if app.settings.pcmToDsd === "dsd256"}
-                DSD256 can use most of a CPU core; if playback drops out, choose DSD128.
+                {t("settings.pcmToDsdDsd256")}
               {/if}
             </span>
           </span>
@@ -541,8 +548,8 @@
           <div class="row">
             <span class="icon"><Icon name="signal" size={18} /></span>
             <span class="info">
-              <span class="name" id="sdm-order-label">Modulator order</span>
-              <span class="dim small">The 7th-order loop shapes harder; the 5th order is more forgiving.</span>
+              <span class="name" id="sdm-order-label">{t("settings.sdmOrder")}</span>
+              <span class="dim small">{t("settings.sdmOrderHint")}</span>
             </span>
             <div class="segmented" role="radiogroup" aria-labelledby="sdm-order-label">
               {#each sdmOrders as order (order.value)}
@@ -562,22 +569,19 @@
     </section>
 
     <section aria-labelledby="fade-title">
-      <div class="group-head"><h3 id="fade-title">Crossfade</h3></div>
+      <div class="group-head"><h3 id="fade-title">{t("settings.fade.title")}</h3></div>
       <div class="card soft">
         <div class="row">
           <span class="icon"><Icon name="next" size={18} /></span>
           <span class="info">
-            <span class="name">Crossfade between tracks</span>
-            <span class="dim small">
-              Equal-power fade from one entry into the next, skipped between consecutive tracks
-              of the same album. Off keeps every transition gapless.
-            </span>
+            <span class="name">{t("settings.fade.toggle")}</span>
+            <span class="dim small">{t("settings.fade.hint")}</span>
           </span>
           <input
             type="checkbox"
             role="switch"
             class="switch"
-            aria-label="Crossfade"
+            aria-label={t("settings.fade.title")}
             checked={crossfade.enabled ?? false}
             onchange={(e) => saveCrossfade({ enabled: e.currentTarget.checked })}
           />
@@ -585,8 +589,8 @@
         <div class="row">
           <span class="icon"><Icon name="refresh" size={18} /></span>
           <span class="info">
-            <span class="name">Fade length</span>
-            <span class="dim small">One to ten seconds; never more than half of a track.</span>
+            <span class="name">{t("settings.fade.length")}</span>
+            <span class="dim small">{t("settings.fade.lengthHint")}</span>
           </span>
           <input
             class="range"
@@ -594,8 +598,8 @@
             min="1"
             max="10"
             step="0.5"
-            aria-label="Crossfade length in seconds"
-            aria-valuetext="{fadeSeconds.toFixed(1)} seconds"
+            aria-label={t("settings.fade.lengthLabel")}
+            aria-valuetext={t("settings.fade.seconds", { n: fadeSeconds.toFixed(1) })}
             disabled={!(crossfade.enabled ?? false)}
             bind:value={fadeSeconds}
             use:rangeFill={fadeSeconds}
@@ -607,60 +611,60 @@
     </section>
 
     <section aria-labelledby="conv-title">
-      <div class="group-head"><h3 id="conv-title">Convolution</h3></div>
+      <div class="group-head"><h3 id="conv-title">{t("settings.conv.title")}</h3></div>
       <div class="card soft">
         <div class="row">
           <span class="icon"><Icon name="signal" size={18} /></span>
           <span class="info">
-            <span class="name">Impulse response</span>
+            <span class="name">{t("settings.conv.ir")}</span>
             <span class="dim small">
               {#if irInfo}
-                {irInfo.name} · {rate(irInfo.rate)} · {irInfo.channels} ch ·
-                {(irInfo.seconds ?? 0).toFixed(2)} s. Resampled to each track's rate.
+                {t("settings.conv.irInfo", {
+                  name: irInfo.name,
+                  rate: rate(irInfo.rate),
+                  channels: irInfo.channels,
+                  seconds: (irInfo.seconds ?? 0).toFixed(2),
+                })}
               {:else if irError}
                 {irError}
               {:else}
-                A WAV room-correction or headphone response, mono or one channel per output
-                channel, up to 2 s.
+                {t("settings.conv.irHint")}
               {/if}
             </span>
           </span>
-          <button class="btn small" onclick={pickImpulseResponse}>Choose…</button>
+          <button class="btn small" onclick={pickImpulseResponse}>{t("common.choose")}</button>
           <input
             type="checkbox"
             role="switch"
             class="switch"
-            aria-label="Convolution"
+            aria-label={t("settings.conv.title")}
             disabled={!convolution.path}
             checked={convolution.enabled ?? false}
             onchange={(e) => saveConvolution({ enabled: e.currentTarget.checked })}
           />
         </div>
         {#if irInfo && (irInfo.peakGainDb ?? 0) > 0.1}
-          <p class="note">
-            This response boosts up to +{(irInfo.peakGainDb ?? 0).toFixed(1)} dB, so loud tracks
-            can clip. Lower the EQ preamp (or the headroom when upsampling) by at least that much.
-          </p>
+          <p class="note">{t("settings.conv.boost", { db: (irInfo.peakGainDb ?? 0).toFixed(1) })}</p>
         {/if}
       </div>
     </section>
 
     <section aria-labelledby="peq-title">
-      <div class="group-head"><h3 id="peq-title">Parametric EQ</h3></div>
+      <div class="group-head"><h3 id="peq-title">{t("settings.peq.title")}</h3></div>
       <div class="card soft">
         <div class="row">
           <span class="icon"><Icon name="palette" size={18} /></span>
           <span class="info">
-            <span class="name">Preset</span>
-            <span class="dim small">Bands run in order behind the preamp. Saving stores the current bands.</span>
+            <span class="name">{t("settings.peq.preset")}</span>
+            <span class="dim small">{t("settings.peq.presetHint")}</span>
           </span>
           <select
             class="text"
-            aria-label="EQ preset"
+            aria-label={t("settings.peq.presetLabel")}
             value={app.settings.peqPreset ?? ""}
             onchange={(e) => applyPreset(e.currentTarget.value)}
           >
-            <option value="">Custom</option>
+            <option value="">{t("settings.peq.custom")}</option>
             {#each Object.keys(peqPresets) as name (name)}
               <option value={name}>{name}</option>
             {/each}
@@ -669,8 +673,8 @@
         <div class="row">
           <span class="icon"><Icon name="volume" size={18} /></span>
           <span class="info">
-            <span class="name">Preamp</span>
-            <span class="dim small">Negative headroom keeps boosted bands below full scale.</span>
+            <span class="name">{t("settings.peq.preamp")}</span>
+            <span class="dim small">{t("settings.peq.preampHint")}</span>
           </span>
           <input
             class="range"
@@ -678,7 +682,7 @@
             min="-60"
             max="12"
             step="0.5"
-            aria-label="EQ preamp"
+            aria-label={t("settings.peq.preampLabel")}
             aria-valuetext="{(peq.preampDb ?? 0).toFixed(1)} dB"
             value={peq.preampDb ?? 0}
             use:rangeFill={peq.preampDb ?? 0}
@@ -690,7 +694,7 @@
           <div class="band">
             <select
               class="text"
-              aria-label="Band {i + 1} type"
+              aria-label={t("settings.peq.bandType", { n: i + 1 })}
               value={band.kind ?? "peak"}
               onchange={(e) => setBand(i, { kind: e.currentTarget.value as BiquadKindSetting })}
             >
@@ -704,7 +708,7 @@
               min="10"
               max="24000"
               step="1"
-              aria-label="Band {i + 1} frequency in Hz"
+              aria-label={t("settings.peq.bandFreq", { n: i + 1 })}
               value={band.freqHz ?? 1000}
               onchange={(e) => setNumberField(e, (v) => setBand(i, { freqHz: v }))}
             />
@@ -714,7 +718,7 @@
               min="-24"
               max="24"
               step="0.5"
-              aria-label="Band {i + 1} gain in dB"
+              aria-label={t("settings.peq.bandGain", { n: i + 1 })}
               value={band.gainDb ?? 0}
               onchange={(e) => setNumberField(e, (v) => setBand(i, { gainDb: v }))}
             />
@@ -724,7 +728,7 @@
               min="0.1"
               max="20"
               step="0.1"
-              aria-label="Band {i + 1} Q"
+              aria-label={t("settings.peq.bandQ", { n: i + 1 })}
               value={band.q ?? 1}
               onchange={(e) => setNumberField(e, (v) => setBand(i, { q: v }))}
             />
@@ -736,41 +740,44 @@
                 checked={band.enabled ?? true}
                 onchange={(e) => setBand(i, { enabled: e.currentTarget.checked })}
               />
-              On
+              {t("common.on")}
             </label>
-            <button class="link" onclick={() => removeBand(i)}>Remove</button>
+            <button class="link" onclick={() => removeBand(i)}>{t("common.remove")}</button>
           </div>
         {/each}
         <div class="row actions">
-          <button class="btn small" onclick={addBand}><Icon name="add" size={16} /> Add band</button>
-          <input class="text" placeholder="Preset name" aria-label="New preset name" bind:value={presetName} />
-          <button class="btn small" disabled={!presetName.trim()} onclick={savePreset}>Save preset</button>
+          <button class="btn small" onclick={addBand}><Icon name="add" size={16} /> {t("settings.peq.addBand")}</button>
+          <input
+            class="text"
+            placeholder={t("settings.peq.presetName")}
+            aria-label={t("settings.peq.newPresetName")}
+            bind:value={presetName}
+          />
+          <button class="btn small" disabled={!presetName.trim()} onclick={savePreset}>{t("settings.peq.savePreset")}</button>
           {#if app.settings.peqPreset}
-            <button class="btn small" onclick={deletePreset}>Delete preset</button>
+            <button class="btn small" onclick={deletePreset}>{t("settings.peq.deletePreset")}</button>
           {/if}
-          <button class="btn small" onclick={importPeq}>Import…</button>
-          <button class="btn small" disabled={peqEmpty} onclick={exportPeq}>Export…</button>
+          <button class="btn small" onclick={importPeq}>{t("settings.peq.import")}</button>
+          <button class="btn small" disabled={peqEmpty} onclick={exportPeq}>{t("settings.peq.export")}</button>
         </div>
-        <p class="note">Import a ParametricEQ.txt from AutoEQ or Equalizer APO.</p>
+        <p class="note">{t("settings.peq.importNote")}</p>
       </div>
     </section>
 
     <section aria-labelledby="xfeed-title">
-      <div class="group-head"><h3 id="xfeed-title">Headphone crossfeed</h3></div>
+      <div class="group-head"><h3 id="xfeed-title">{t("settings.xfeed.title")}</h3></div>
       <div class="card soft">
         <div class="row">
           <span class="icon"><Icon name="speaker" size={18} /></span>
           <span class="info">
-            <span class="name">Crossfeed</span>
-            <span class="dim small">
-              Blends a little of each channel into the other, as speakers do, for stereo tracks.
-            </span>
+            <span class="name">{t("settings.xfeed.name")}</span>
+            <span class="dim small">{t("settings.xfeed.hint")}</span>
           </span>
           <input
             type="checkbox"
             role="switch"
             class="switch"
-            aria-label="Crossfeed"
+            aria-label={t("settings.xfeed.name")}
             checked={crossfeed.enabled ?? false}
             onchange={(e) => saveCrossfeed({ enabled: e.currentTarget.checked })}
           />
@@ -778,7 +785,7 @@
         <div class="row">
           <span class="icon"><Icon name="speaker" size={18} /></span>
           <span class="info">
-            <span class="name" id="xfeed-preset-label">Preset</span>
+            <span class="name" id="xfeed-preset-label">{t("settings.peq.preset")}</span>
             <span class="dim small">
               {crossfeedPresets.find((p) => p.value === (crossfeed.preset ?? "default"))?.hint}
             </span>
@@ -800,15 +807,15 @@
     </section>
 
     <section aria-labelledby="level-title">
-      <div class="group-head"><h3 id="level-title">Loudness levelling and dither</h3></div>
+      <div class="group-head"><h3 id="level-title">{t("settings.level.title")}</h3></div>
       <div class="card soft">
         <div class="row">
           <span class="icon"><Icon name="volume" size={18} /></span>
           <span class="info">
-            <span class="name" id="level-mode-label">Levelling</span>
+            <span class="name" id="level-mode-label">{t("settings.level.mode")}</span>
             <span class="dim small">
-              {levelingModes.find((m) => m.value === (app.settings.leveling ?? "off"))?.hint}
-              Boosts stop at the track peak.
+              {levelingModes.find((m) => m.value === (app.settings.leveling ?? "off"))?.hint}.
+              {t("settings.level.peakNote")}
             </span>
           </span>
           <div class="segmented" role="radiogroup" aria-labelledby="level-mode-label">
@@ -827,8 +834,8 @@
         <div class="row">
           <span class="icon"><Icon name="volume" size={18} /></span>
           <span class="info">
-            <span class="name">Target loudness</span>
-            <span class="dim small">Integrated loudness levelling aims for, in LUFS.</span>
+            <span class="name">{t("settings.level.target")}</span>
+            <span class="dim small">{t("settings.level.targetHint")}</span>
           </span>
           <input
             class="num"
@@ -836,7 +843,7 @@
             min="-30"
             max="-5"
             step="0.5"
-            aria-label="Levelling target in LUFS"
+            aria-label={t("settings.level.targetLabel")}
             value={app.settings.levelingTargetLufs ?? -18}
             onchange={setTargetLufs}
           />
@@ -845,10 +852,8 @@
         <div class="row">
           <span class="icon"><Icon name="disc" size={18} /></span>
           <span class="info">
-            <span class="name">Dither</span>
-            <span class="dim small">
-              TPDF dither when the device takes fewer bits than the processed signal.
-            </span>
+            <span class="name">{t("settings.level.dither")}</span>
+            <span class="dim small">{t("settings.level.ditherHint")}</span>
           </span>
           <input
             type="checkbox"
@@ -861,11 +866,10 @@
         <div class="row">
           <span class="icon"><Icon name="refresh" size={18} /></span>
           <span class="info">
-            <span class="name">Measure loudness</span>
+            <span class="name">{t("settings.level.measure")}</span>
             <span class="dim small">
-              Tracks without ReplayGain tags are decoded and measured (EBU R128) so levelling can
-              use them. This runs by itself after a scan or a folder change.
-              {#if app.loudness.pending != null}{app.loudness.pending} waiting.{/if}
+              {t("settings.level.measureHint")}
+              {#if app.loudness.pending != null}{t("settings.level.waiting", { count: app.loudness.pending })}{/if}
             </span>
           </span>
           <button
@@ -875,9 +879,9 @@
           >
             {app.loudness.running
               ? app.loudness.total
-                ? `Analysing ${app.loudness.done}/${app.loudness.total}…`
-                : "Analysing…"
-              : "Analyse"}
+                ? t("settings.level.analysingProgress", { done: app.loudness.done, total: app.loudness.total })
+                : t("settings.level.analysing")
+              : t("settings.level.analyse")}
           </button>
         </div>
         {#if app.loudness.last}
@@ -887,13 +891,13 @@
     </section>
 
     <section aria-labelledby="src-title">
-      <div class="group-head"><h3 id="src-title">Upsampling</h3></div>
+      <div class="group-head"><h3 id="src-title">{t("settings.src.title")}</h3></div>
       <div class="card soft">
         <div class="row">
           <span class="icon"><Icon name="disc" size={18} /></span>
           <span class="info">
-            <span class="name" id="src-target-label">Resample to</span>
-            <span class="dim small">Off keeps the source rate unless the device refuses it.</span>
+            <span class="name" id="src-target-label">{t("settings.src.resampleTo")}</span>
+            <span class="dim small">{t("settings.src.resampleHint")}</span>
           </span>
           <div class="segmented" role="radiogroup" aria-labelledby="src-target-label">
             {#each srcTargets as target (target.value)}
@@ -912,12 +916,12 @@
           <div class="row">
             <span class="icon"><Icon name="speaker" size={18} /></span>
             <span class="info">
-              <span class="name">Target rate</span>
-              <span class="dim small">Must be one the device accepts, or the fallback picks another.</span>
+              <span class="name">{t("settings.src.targetRate")}</span>
+              <span class="dim small">{t("settings.src.targetRateHint")}</span>
             </span>
             <select
               class="text"
-              aria-label="Fixed target rate"
+              aria-label={t("settings.src.fixedRateLabel")}
               value={src.fixedRate ?? 192000}
               onchange={(e) => saveSrc({ fixedRate: Number(e.currentTarget.value) })}
             >
@@ -930,11 +934,8 @@
         <div class="row">
           <span class="icon"><Icon name="folder" size={18} /></span>
           <span class="info">
-            <span class="name" id="filter-source-label">Filters</span>
-            <span class="dim small">
-              Sonder designs its own at runtime. Roon tables load from a folder you own and are never
-              bundled; a missing table falls back per ratio.
-            </span>
+            <span class="name" id="filter-source-label">{t("settings.src.filters")}</span>
+            <span class="dim small">{t("settings.src.filtersHint")}</span>
           </span>
           <div class="segmented" role="radiogroup" aria-labelledby="filter-source-label">
             {#each [{ value: "sonder", label: "Sonder" }, { value: "roon", label: "Roon" }] as source (source.value)}
@@ -953,20 +954,20 @@
           <div class="row">
             <span class="icon"><Icon name="folder" size={18} /></span>
             <span class="info">
-              <span class="path" title={src.roonFolder ?? ""}>{src.roonFolder ?? "No folder chosen"}</span>
-              <span class="dim small">Folder holding Roon's polyphase tables.</span>
+              <span class="path" title={src.roonFolder ?? ""}>{src.roonFolder ?? t("settings.src.noFolder")}</span>
+              <span class="dim small">{t("settings.src.roonFolderHint")}</span>
             </span>
-            <button class="btn small" onclick={pickRoonFolder}>Choose…</button>
+            <button class="btn small" onclick={pickRoonFolder}>{t("common.choose")}</button>
           </div>
         {/if}
         <div class="row">
           <span class="icon"><Icon name="disc" size={18} /></span>
           <span class="info">
-            <span class="name" id="phase-label">Phase</span>
-            <span class="dim small">Linear keeps transients symmetric; minimum trades that for latency.</span>
+            <span class="name" id="phase-label">{t("settings.src.phase")}</span>
+            <span class="dim small">{t("settings.src.phaseHint")}</span>
           </span>
           <div class="segmented" role="radiogroup" aria-labelledby="phase-label">
-            {#each [{ value: "linear", label: "Linear" }, { value: "minimum", label: "Minimum" }] as phase (phase.value)}
+            {#each [{ value: "linear", label: t("settings.src.linear") }, { value: "minimum", label: t("settings.src.minimum") }] as phase (phase.value)}
               <button
                 class="chip"
                 role="radio"
@@ -981,11 +982,11 @@
         <div class="row">
           <span class="icon"><Icon name="disc" size={18} /></span>
           <span class="info">
-            <span class="name" id="variant-label">Filter</span>
-            <span class="dim small">Precise has the steepest stopband; Smooth is shorter and lighter.</span>
+            <span class="name" id="variant-label">{t("settings.src.filter")}</span>
+            <span class="dim small">{t("settings.src.filterHint")}</span>
           </span>
           <div class="segmented" role="radiogroup" aria-labelledby="variant-label">
-            {#each [{ value: "precise", label: "Precise" }, { value: "smooth", label: "Smooth" }] as variant (variant.value)}
+            {#each [{ value: "precise", label: t("settings.src.precise") }, { value: "smooth", label: t("settings.src.smooth") }] as variant (variant.value)}
               <button
                 class="chip"
                 role="radio"
@@ -1000,8 +1001,8 @@
         <div class="row">
           <span class="icon"><Icon name="volume" size={18} /></span>
           <span class="info">
-            <span class="name">Headroom</span>
-            <span class="dim small">Inserted before resampling so interpolation overshoot cannot clip.</span>
+            <span class="name">{t("settings.src.headroom")}</span>
+            <span class="dim small">{t("settings.src.headroomHint")}</span>
           </span>
           <input
             class="num"
@@ -1009,7 +1010,7 @@
             min="-60"
             max="0"
             step="0.5"
-            aria-label="Headroom in dB"
+            aria-label={t("settings.src.headroomLabel")}
             value={src.headroomDb ?? -3}
             onchange={(e) =>
               setNumberField(e, (v) => saveSrc({ headroomDb: Number.isFinite(v) ? v : null }))}
@@ -1019,10 +1020,8 @@
         <div class="row">
           <span class="icon"><Icon name="refresh" size={18} /></span>
           <span class="info">
-            <span class="name">Automatic fallback</span>
-            <span class="dim small">
-              Resample when the device refuses the source rate, labelled not bit-perfect.
-            </span>
+            <span class="name">{t("settings.src.fallback")}</span>
+            <span class="dim small">{t("settings.src.fallbackHint")}</span>
           </span>
           <input
             type="checkbox"
@@ -1035,8 +1034,8 @@
         <div class="row">
           <span class="icon"><Icon name="refresh" size={18} /></span>
           <span class="info">
-            <span class="name">Lift rates below 44.1 kHz</span>
-            <span class="dim small">Bring 22.05/32 kHz material up into its own family.</span>
+            <span class="name">{t("settings.src.lift")}</span>
+            <span class="dim small">{t("settings.src.liftHint")}</span>
           </span>
           <input
             type="checkbox"
@@ -1050,29 +1049,29 @@
     </section>
 
     <section aria-labelledby="lib-title">
-      <div class="group-head"><h3 id="lib-title">Library folders</h3></div>
+      <div class="group-head"><h3 id="lib-title">{t("settings.lib.title")}</h3></div>
       <div class="card soft">
         {#each roots as root (root.path)}
           <div class="row">
             <span class="icon"><Icon name="folder" size={18} /></span>
             <span class="info">
               <span class="path" title={root.path}>{root.path}</span>
-              {#if root.followSymlinks}<span class="dim small">Follows symbolic links</span>{/if}
+              {#if root.followSymlinks}<span class="dim small">{t("settings.lib.followsLinks")}</span>{/if}
             </span>
-            <button class="btn small" onclick={() => app.run(commands.libraryRemoveRoot(root.path))}>Remove</button>
+            <button class="btn small" onclick={() => app.run(commands.libraryRemoveRoot(root.path))}>{t("common.remove")}</button>
           </div>
         {:else}
-          <p class="dim pad">No folders yet. Add one to start your library.</p>
+          <p class="dim pad">{t("settings.lib.empty")}</p>
         {/each}
         <div class="row actions">
-          <button class="btn primary small" disabled={adding} onclick={addRoot}><Icon name="add" size={16} /> Add folder…</button>
+          <button class="btn primary small" disabled={adding} onclick={addRoot}><Icon name="add" size={16} /> {t("settings.lib.addFolder")}</button>
           <label class="inline">
             <input type="checkbox" role="switch" class="switch" bind:checked={followSymlinks} />
-            Follow symbolic links
+            {t("settings.lib.followLinks")}
           </label>
           <span class="grow"></span>
           <button class="btn small" disabled={scanning || !roots.length} onclick={() => app.run(commands.libraryRescan())}>
-            <Icon name="refresh" size={16} /> Rescan
+            <Icon name="refresh" size={16} /> {t("settings.lib.rescan")}
           </button>
         </div>
         {#if scanText}
@@ -1089,7 +1088,7 @@
             <span class="dim small">{scanText}</span>
             {#if !scanning && app.scan.failures.length}
               <button class="link" onclick={() => (showFailures = !showFailures)}>
-                {showFailures ? "Hide" : "Show"} unreadable files
+                {showFailures ? t("settings.lib.hideFailures") : t("settings.lib.showFailures")}
               </button>
             {/if}
           </div>
@@ -1103,9 +1102,29 @@
     </section>
 
     <section aria-labelledby="look-title">
-      <div class="group-head"><h3 id="look-title">Appearance</h3></div>
+      <div class="group-head"><h3 id="look-title">{t("settings.look.title")}</h3></div>
       <div class="card soft">
-        <div class="tiles" role="radiogroup" aria-label="Now Playing cover">
+        <div class="row">
+          <span class="icon"><Icon name="globe" size={18} /></span>
+          <span class="info">
+            <span class="name" id="language-label">{t("settings.lang.name")}</span>
+            <span class="dim small">{t("settings.lang.hint")}</span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="language-label">
+            {#each languages as language (language.value)}
+              <button
+                class="chip"
+                role="radio"
+                lang={language.value === "system" ? undefined : language.value}
+                aria-checked={(app.settings.language ?? "system") === language.value}
+                onclick={() => app.saveSettings({ ...app.settings, language: language.value })}
+              >
+                {language.label}
+              </button>
+            {/each}
+          </div>
+        </div>
+        <div class="tiles" role="radiogroup" aria-label={t("settings.look.coverLabel")}>
           {#each coverStyles as style (style.value)}
             {@const on = (app.settings.coverStyle ?? "vinyl") === style.value}
             <label class="tile" class:selected={on}>
@@ -1125,8 +1144,8 @@
         <div class="row">
           <span class="icon"><Icon name="palette" size={18} /></span>
           <span class="info">
-            <span class="name" id="glass-label">Frosted glass</span>
-            <span class="dim small">Blur behind the floating panels. Lower it if scrolling stutters.</span>
+            <span class="name" id="glass-label">{t("settings.look.glass")}</span>
+            <span class="dim small">{t("settings.look.glassHint")}</span>
           </span>
           <div class="segmented" role="radiogroup" aria-labelledby="glass-label">
             {#each glassLevels as level (level.value)}
@@ -1145,16 +1164,13 @@
     </section>
 
     <section aria-labelledby="lyrics-title">
-      <div class="group-head"><h3 id="lyrics-title">Lyrics</h3></div>
+      <div class="group-head"><h3 id="lyrics-title">{t("common.lyrics")}</h3></div>
       <div class="card soft">
         <div class="row">
           <span class="icon"><Icon name="lyrics" size={18} /></span>
           <span class="info">
-            <span class="name" id="lyrics-online-label">Find lyrics online</span>
-            <span class="dim small">
-              Lyrics in the file or in a .lrc file beside it come first. Otherwise the title, artist, album and
-              length are sent to LRCLIB, BetterLyrics, LyricsPlus and Kugou. Results stay on this computer.
-            </span>
+            <span class="name" id="lyrics-online-label">{t("settings.lyrics.online")}</span>
+            <span class="dim small">{t("settings.lyrics.onlineHint")}</span>
           </span>
           <div class="segmented" role="radiogroup" aria-labelledby="lyrics-online-label">
             {#each [true, false] as on (on)}
@@ -1164,7 +1180,7 @@
                 aria-checked={(app.settings.lyricsOnline ?? true) === on}
                 onclick={() => app.saveSettings({ ...app.settings, lyricsOnline: on })}
               >
-                {on ? "On" : "Off"}
+                {on ? t("common.on") : t("common.off")}
               </button>
             {/each}
           </div>
@@ -1173,7 +1189,7 @@
     </section>
 
     <section aria-labelledby="update-title">
-      <div class="group-head"><h3 id="update-title">Updates</h3></div>
+      <div class="group-head"><h3 id="update-title">{t("settings.update.title")}</h3></div>
       <div class="card soft">
         <div class="row">
           <span class="icon"><Icon name="refresh" size={18} /></span>
@@ -1183,11 +1199,11 @@
           </span>
           {#if app.update}
             <button class="btn small" disabled={app.updateProgress != null} onclick={() => app.installUpdate()}>
-              Install {app.update.version} and restart
+              {t("settings.update.install", { version: app.update.version })}
             </button>
           {:else}
             <button class="btn small" disabled={checking} onclick={checkForUpdate}>
-              {checking ? "Checking…" : "Check now"}
+              {checking ? t("settings.update.checking") : t("settings.update.checkNow")}
             </button>
           {/if}
         </div>
@@ -1197,11 +1213,8 @@
         <div class="row">
           <span class="icon"><Icon name="settings" size={18} /></span>
           <span class="info">
-            <span class="name" id="update-check-label">Check on launch</span>
-            <span class="dim small">
-              Asks GitHub for the newest release when Sonder starts. Updates are signed and only install
-              when you choose to.
-            </span>
+            <span class="name" id="update-check-label">{t("settings.update.onLaunch")}</span>
+            <span class="dim small">{t("settings.update.onLaunchHint")}</span>
           </span>
           <div class="segmented" role="radiogroup" aria-labelledby="update-check-label">
             {#each [true, false] as on (on)}
@@ -1211,7 +1224,7 @@
                 aria-checked={(app.settings.updateCheck ?? true) === on}
                 onclick={() => app.saveSettings({ ...app.settings, updateCheck: on })}
               >
-                {on ? "On" : "Off"}
+                {on ? t("common.on") : t("common.off")}
               </button>
             {/each}
           </div>

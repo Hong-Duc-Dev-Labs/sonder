@@ -895,6 +895,49 @@ fn artist_tracks_list_own_albums_by_year_then_guest_spots() {
 }
 
 #[test]
+fn tracks_list_the_whole_library_by_title() {
+    let env = Env::new();
+    for (file, title, album) in [
+        ("A/02.flac", "beta", "Zeta"),
+        ("A/01.flac", "Alpha", "Zeta"),
+        ("B/01.flac", "Beta", "Alpha Album"),
+    ] {
+        flac(
+            &env.path(file),
+            44_100,
+            16,
+            2,
+            1,
+            &Meta {
+                title: Some(title),
+                artist: Some("Someone"),
+                album: Some(album),
+                ..Default::default()
+            },
+        );
+    }
+    let mut lib = env.open();
+    lib.add_root(&env.music, false).unwrap();
+    lib.scan().unwrap();
+
+    let tracks: Vec<(String, String)> = lib
+        .tracks()
+        .unwrap()
+        .into_iter()
+        .map(|t| (t.title, t.album))
+        .collect();
+    // Case-insensitive by title; equal titles by album.
+    assert_eq!(
+        tracks,
+        [
+            ("Alpha".to_string(), "Zeta".to_string()),
+            ("Beta".to_string(), "Alpha Album".to_string()),
+            ("beta".to_string(), "Zeta".to_string()),
+        ]
+    );
+}
+
+#[test]
 fn artists_carry_a_cover_from_their_own_albums_first() {
     let env = Env::new();
     build_tree(&env);

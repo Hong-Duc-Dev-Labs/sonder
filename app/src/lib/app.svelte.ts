@@ -14,6 +14,8 @@ import {
   type UpdateInfo,
 } from "./bindings";
 import { tick } from "svelte";
+import { applyLanguage, t } from "./i18n.svelte";
+import { plural } from "./format";
 import { reducedMotion } from "./motion";
 
 export type View =
@@ -22,6 +24,7 @@ export type View =
   | { kind: "album"; id: number }
   | { kind: "artists" }
   | { kind: "artist"; id: number }
+  | { kind: "songs" }
   | { kind: "playlists" }
   | { kind: "playlist"; id: number }
   | { kind: "search" }
@@ -412,7 +415,7 @@ export class AppState {
 
   /** Asks for a name and creates a playlist; returns it, or nothing when cancelled. */
   async createPlaylist(): Promise<Playlist | undefined> {
-    const name = await this.ask({ title: "New playlist", input: "", confirm: "Create" });
+    const name = await this.ask({ title: t("common.newPlaylist"), input: "", confirm: t("playlist.create") });
     if (!name) return undefined;
     const created = await this.run(commands.playlistCreate(name));
     if (created) await this.playlistsChanged();
@@ -423,7 +426,7 @@ export class AppState {
     const added = await this.run(commands.playlistAddTracks(playlist.id, trackIds));
     if (added == null) return;
     await this.playlistsChanged();
-    this.notify("info", added === 1 ? `Added to ${playlist.name}` : `${added} tracks added to ${playlist.name}`);
+    this.notify("info", t("playlist.added", { count: added, name: playlist.name }));
   }
 
   /** Runs a command, turning a rejection into a notice. */
@@ -454,9 +457,9 @@ export class AppState {
       events.scanFinishedEvent.listen((e) => {
         const r = e.payload;
         const last = r.error
-          ? `Scan failed: ${r.error}`
-          : `${r.added} added, ${r.updated} updated, ${r.removed} removed` +
-            (r.failureCount ? `, ${r.failureCount} unreadable` : "");
+          ? t("scan.failed", { error: r.error })
+          : t("scan.summary", { added: r.added, updated: r.updated, removed: r.removed }) +
+            (r.failureCount ? t("scan.unreadable", { count: r.failureCount }) : "");
         this.scan = { phase: "idle", done: 0, total: 0, last, failures: r.failures };
         if (r.error) this.notify("error", last);
       }),
@@ -465,7 +468,6 @@ export class AppState {
       }),
       events.loudnessFinishedEvent.listen((e) => {
         const r = e.payload;
-        const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
         const didWork = r.tracks || r.albums || r.failed;
         // The backend already raised a notice for a failed pass. Scans and folder changes
         // queue passes too: one that found nothing keeps the result the user last saw,
@@ -473,10 +475,10 @@ export class AppState {
         const last =
           r.error ??
           (didWork
-            ? `${plural(r.tracks, "track")} measured, ${plural(r.albums, "album")} updated` +
-              (r.failed ? `, ${r.failed} could not be read` : "")
+            ? t("loudness.summary", { tracks: plural(r.tracks, "track"), albums: plural(r.albums, "album") }) +
+              (r.failed ? t("loudness.unreadable", { count: r.failed }) : "")
             : this.loudnessAsked
-              ? "Nothing to measure"
+              ? t("loudness.nothing")
               : this.loudness.last);
         this.loudnessAsked = false;
         this.loudness = { running: false, done: 0, total: 0, pending: r.error ? this.loudness.pending : r.pending, last };
@@ -506,6 +508,7 @@ export class AppState {
     this.player = player;
     this.queue = queue;
     this.settings = settings;
+    applyLanguage(settings.language);
     if (scanning && this.scan.phase === "idle") this.scan = { ...this.scan, phase: "walking" };
     this.loudness = { ...this.loudness, running: this.loudness.running || analyzing, pending };
     // Not part of start-up: a failure only leaves the row menus without playlists.
@@ -514,7 +517,7 @@ export class AppState {
 
   private updateFound(found: UpdateInfo) {
     this.update = found;
-    this.notify("info", `Sonder ${found.version} is available. Install it from Settings → Updates.`);
+    this.notify("info", t("update.notice", { version: found.version }));
   }
 
   /** Asks GitHub for a newer release. Returns `undefined` when the check failed. */
@@ -543,7 +546,10 @@ export class AppState {
   /** Saves settings on the backend; the saved copy, or nothing when the save failed. */
   async saveSettings(next: Settings) {
     const saved = await this.run(commands.settingsSet(next));
-    if (saved) this.settings = saved;
+    if (saved) {
+      this.settings = saved;
+      applyLanguage(saved.language);
+    }
     return saved;
   }
 }

@@ -378,6 +378,20 @@ impl Library {
         Ok(tracks)
     }
 
+    /// Every track in the library by title, then artist and album, for the Songs page.
+    pub fn tracks(&self) -> Result<Vec<Track>, LibraryError> {
+        let sql = format!(
+            "{TRACK_SELECT} ORDER BY t.title COLLATE NOCASE, t.artist COLLATE NOCASE,
+             a.title COLLATE NOCASE, t.id"
+        );
+        let tracks = self
+            .conn
+            .prepare_cached(&sql)?
+            .query_map([], track_row)?
+            .collect::<Result<_, _>>()?;
+        Ok(tracks)
+    }
+
     /// Tracks whose title, album or artists contain every whitespace-separated term of
     /// `query` (case- and diacritic-insensitive), best matches first.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Track>, LibraryError> {

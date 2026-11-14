@@ -2,6 +2,7 @@
   import { app } from "../lib/app.svelte";
   import { commands, type Artist } from "../lib/bindings";
   import { plural } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import Icon from "./Icon.svelte";
   import RecordAvatar from "./RecordAvatar.svelte";
 
@@ -40,19 +41,19 @@
 <div class="page scroll">
   <header class="head">
     <div>
-      <h1 tabindex="-1" data-view-heading>Artists</h1>
+      <h1 tabindex="-1" data-view-heading>{t("common.artists")}</h1>
       {#if artists}<span class="dim small">{plural(artists.length, "artist")}</span>{/if}
     </div>
     <div class="field filter">
       <Icon name="search" size={18} />
-      <input placeholder="Filter artists" aria-label="Filter artists" bind:value={filter} />
+      <input placeholder={t("artists.filter")} aria-label={t("artists.filter")} bind:value={filter} />
     </div>
   </header>
 
   {#if artists && !artists.length}
-    <p class="dim">No artists yet. Add a music folder in Settings.</p>
+    <p class="dim">{t("artists.none")}</p>
   {:else if artists && !shown.length}
-    <p class="dim">No artist matches “{filter.trim()}”.</p>
+    <p class="dim">{t("artists.noMatch", { filter: filter.trim() })}</p>
   {/if}
 
   {#each groups as group (group.letter)}

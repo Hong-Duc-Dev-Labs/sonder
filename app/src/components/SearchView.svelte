@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from "../lib/app.svelte";
   import { commands, type TrackItem } from "../lib/bindings";
+  import { t } from "../lib/i18n.svelte";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import TrackList from "./TrackList.svelte";
@@ -48,7 +49,7 @@
 
 <div class="page scroll">
   <header class="page-head">
-    <h1 tabindex="-1" data-view-heading>Search</h1>
+    <h1 tabindex="-1" data-view-heading>{t("common.search")}</h1>
   </header>
 
   <div class="field search">
@@ -56,8 +57,8 @@
     <input
       bind:this={input}
       type="search"
-      placeholder="Tracks, albums, artists"
-      aria-label="Search the library"
+      placeholder={t("search.placeholder")}
+      aria-label={t("search.label")}
       bind:value={app.searchQuery}
     />
   </div>
@@ -65,13 +66,13 @@
   {#if !app.searchQuery.trim()}
     <div class="hint">
       <Icon name="search" size={36} />
-      <p>Search your library by track, album or artist.</p>
-      <p class="dim small">Press <kbd>Ctrl</kbd> <kbd>F</kbd> from anywhere.</p>
+      <p>{t("search.hint")}</p>
+      <p class="dim small">{t("search.shortcutBefore")} <kbd>Ctrl</kbd> <kbd>F</kbd> {t("search.shortcutAfter")}</p>
     </div>
   {:else if results.length}
     <div class:stale={pending}>
       {#if albums.length > 1}
-        <h2>Albums</h2>
+        <h2>{t("common.albums")}</h2>
         <div class="albums">
           {#each albums as t (t.albumId)}
             <button class="album" onclick={() => app.go({ kind: "album", id: t.albumId })}>
@@ -83,18 +84,18 @@
         </div>
       {/if}
       <div class="tracks-head">
-        <h2>Tracks</h2>
+        <h2>{t("search.tracks")}</h2>
         <div class="actions">
           <button class="btn small primary" onclick={() => app.run(commands.playerPlayTracks(ids, 0))}>
-            <Icon name="play" size={14} /> Play all
+            <Icon name="play" size={14} /> {t("common.playAll")}
           </button>
-          <button class="btn small" onclick={() => app.run(commands.playerEnqueueTracks(ids))}>Add all to queue</button>
+          <button class="btn small" onclick={() => app.run(commands.playerEnqueueTracks(ids))}>{t("search.addAll")}</button>
         </div>
       </div>
       <TrackList tracks={results} variant="search" onplay={(i) => app.run(commands.playerPlayTracks(ids, i))} />
     </div>
   {:else if !pending}
-    <p class="dim none">No matches for “{answered}”.</p>
+    <p class="dim none">{t("search.noMatch", { query: answered })}</p>
   {/if}
 </div>
 

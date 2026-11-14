@@ -106,6 +106,17 @@ pub enum LevelingSetting {
     Auto,
 }
 
+/// The interface language.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LanguageSetting {
+    /// Follow the operating system's preferred language (English when it is not offered).
+    #[default]
+    System,
+    En,
+    Vi,
+}
+
 /// Filter phase choice for Sonder-designed tables.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -197,6 +208,8 @@ pub struct Settings {
     pub cover_style: CoverStyle,
     /// How much frosted glass the UI draws.
     pub glass: GlassQuality,
+    /// The interface language.
+    pub language: LanguageSetting,
     /// Look up lyrics online (title, artist, album and length are sent) when a track has
     /// none of its own.
     pub lyrics_online: bool,
@@ -240,6 +253,7 @@ impl Default for Settings {
             album_sort: SortOrder::default(),
             cover_style: CoverStyle::default(),
             glass: GlassQuality::default(),
+            language: LanguageSetting::default(),
             lyrics_online: true,
             update_check: true,
             dsd_modes: BTreeMap::new(),
@@ -408,6 +422,7 @@ mod tests {
             album_sort: SortOrder::Added,
             cover_style: CoverStyle::Square,
             glass: GlassQuality::Off,
+            language: LanguageSetting::Vi,
             lyrics_online: false,
             dsd_modes: BTreeMap::from([("hw:1,0".to_string(), DsdMode::Native)]),
             dsd_pcm_rate: DsdPcmRate::Hz352800,

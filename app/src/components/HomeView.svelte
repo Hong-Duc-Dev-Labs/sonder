@@ -6,6 +6,7 @@
   import { commands, type Album, type Artist } from "../lib/bindings";
   import { duration, plural } from "../lib/format";
   import { greeting } from "../lib/greeting";
+  import { t } from "../lib/i18n.svelte";
   import AlbumCard from "./AlbumCard.svelte";
   import Cover from "./Cover.svelte";
   import FormatBadges from "./FormatBadges.svelte";
@@ -19,7 +20,8 @@
   /** Placeholder cards shown while the first shelf loads, so the page does not jump. */
   const SKELETONS = 7;
 
-  const heading = greeting(new Date().getHours());
+  const hour = new Date().getHours();
+  let heading = $derived(greeting(hour));
 
   let recent = $state<Album[]>([]);
   let albumTotal = $state<number | null>(null);
@@ -43,7 +45,9 @@
   let waiting = $derived(playingItem ? null : (app.queue[0] ?? null));
   let item = $derived(playingItem ?? waiting);
   let playing = $derived(app.player.state === "playing");
-  let kicker = $derived(playingItem ? (playing ? "Now playing" : "Paused") : "Up next in the queue");
+  let kicker = $derived(
+    playingItem ? (playing ? t("common.nowPlayingKicker") : t("home.paused")) : t("home.queueWaiting"),
+  );
   let empty = $derived(albumTotal === 0);
   /** The few queue entries after the hero's track, with their queue positions. */
   let upNext = $derived.by(() => {
@@ -75,33 +79,35 @@
 
   {#if item}
     <section class="hero soft" aria-label={kicker} style:--hero-wash={item.artColors[0] ?? "transparent"}>
-      <button class="hero-art" aria-label="Open Now Playing" onclick={() => app.go({ kind: "now" })}>
+      <button class="hero-art" aria-label={t("common.openNowPlaying")} onclick={() => app.go({ kind: "now" })}>
         <Cover hash={item.art} alt="" />
       </button>
       <div class="hero-text">
         <span class="kicker">{kicker}</span>
         <h2 title={item.title}>{item.title}</h2>
-        <span class="artist">{item.artist ?? "Unknown artist"}</span>
+        <span class="artist">{item.artist ?? t("common.unknownArtist")}</span>
         <button class="album link" onclick={() => app.go({ kind: "album", id: item.albumId })}>{item.album}</button>
         <div class="hero-actions">
           <button class="btn primary" onclick={playOrPause}>
             <PlayPauseIcon playing={!!playingItem && playing} size={18} />
-            {playingItem && playing ? "Pause" : "Play"}
+            {playingItem && playing ? t("common.pause") : t("common.play")}
           </button>
-          <button class="btn" onclick={() => app.go({ kind: "now" })}><Icon name="now" size={18} /> Now Playing</button>
+          <button class="btn" onclick={() => app.go({ kind: "now" })}><Icon name="now" size={18} /> {t("common.nowPlaying")}</button>
         </div>
         {#if playingItem}<div class="hero-badges"><FormatBadges /></div>{/if}
       </div>
       {#if upNext.length}
         <div class="hero-next">
           <div class="next-head">
-            <h3 class="kicker">Up next</h3>
-            <button class="chip" aria-expanded={app.queueOpen} onclick={() => app.toggleQueue()}>Queue</button>
+            <h3 class="kicker">{t("common.upNext")}</h3>
+            <button class="chip" aria-expanded={app.queueOpen} onclick={() => app.toggleQueue()}>{t("common.queue")}</button>
           </div>
           {#each upNext as { entry, index } (entry.entryId)}
             <button
               class="next-row"
-              aria-label="Play {entry.title}{entry.artist ? ` by ${entry.artist}` : ''}"
+              aria-label={entry.artist
+                ? t("common.playItemBy", { title: entry.title, artist: entry.artist })
+                : t("common.playItem", { title: entry.title })}
               onclick={() => app.run(commands.playerPlayIndex(index))}
             >
               <span class="next-art"><Cover hash={entry.art} alt="" /></span>
@@ -119,19 +125,19 @@
     <section class="hero soft empty-lib">
       <Icon name="folder" size={36} />
       <div>
-        <h2>Your library is empty</h2>
-        <p class="dim">Add a music folder and Sonder will find your albums.</p>
+        <h2>{t("common.libraryEmpty")}</h2>
+        <p class="dim">{t("home.addFolderHint")}</p>
       </div>
-      <button class="btn primary" onclick={() => app.go({ kind: "settings" })}>Add a music folder</button>
+      <button class="btn primary" onclick={() => app.go({ kind: "settings" })}>{t("home.addFolder")}</button>
     </section>
   {:else}
     <section class="hero soft idle">
       <Icon name="disc" size={36} />
       <div>
-        <h2>Nothing playing</h2>
-        <p class="dim">Pick an album and it will spin here.</p>
+        <h2>{t("common.nothingPlaying")}</h2>
+        <p class="dim">{t("home.pickAlbum")}</p>
       </div>
-      <button class="btn" onclick={() => app.go({ kind: "albums" })}>Browse albums</button>
+      <button class="btn" onclick={() => app.go({ kind: "albums" })}>{t("common.browseAlbums")}</button>
     </section>
   {/if}
 
@@ -140,15 +146,15 @@
       <button class="shortcut soft" onclick={() => app.go({ kind: "playlists" })}>
         <span class="badge-icon"><Icon name="playlist" size={22} /></span>
         <span class="info">
-          <span class="name">Playlists</span>
-          <span class="dim small">{app.playlists.length ? plural(app.playlists.length, "playlist") : "Make your first"}</span>
+          <span class="name">{t("common.playlists")}</span>
+          <span class="dim small">{app.playlists.length ? plural(app.playlists.length, "playlist") : t("home.firstPlaylist")}</span>
         </span>
         <Icon name="chevron" size={18} />
       </button>
       <button class="shortcut soft" onclick={() => app.go({ kind: "artists" })}>
         <span class="badge-icon"><Icon name="artists" size={22} /></span>
         <span class="info">
-          <span class="name">Artists</span>
+          <span class="name">{t("common.artists")}</span>
           <span class="dim small">{artists ? plural(artists.length, "artist") : "…"}</span>
         </span>
         <Icon name="chevron" size={18} />
@@ -165,7 +171,7 @@
         </div>
       </div>
     {:else if recent.length}
-      <Shelf title="Recently added" onSeeAll={seeRecent}>
+      <Shelf title={t("home.recentlyAdded")} onSeeAll={seeRecent}>
         {#each recent as album (album.id)}
           <AlbumCard {album} />
         {/each}
@@ -173,7 +179,7 @@
     {/if}
 
     {#if app.playlists.length}
-      <Shelf title="Playlists" onSeeAll={() => app.go({ kind: "playlists" })}>
+      <Shelf title={t("common.playlists")} onSeeAll={() => app.go({ kind: "playlists" })}>
         {#each app.playlists.slice(0, SHELF) as playlist (playlist.id)}
           <div class="tile">
             <button class="tile-btn" onclick={() => app.go({ kind: "playlist", id: playlist.id })}>
@@ -187,7 +193,7 @@
     {/if}
 
     {#if artists?.length}
-      <Shelf title="Artists" onSeeAll={() => app.go({ kind: "artists" })}>
+      <Shelf title={t("common.artists")} onSeeAll={() => app.go({ kind: "artists" })}>
         {#each artists.slice(0, SHELF) as artist (artist.id)}
           <div class="tile">
             <button class="tile-btn artist" onclick={() => app.go({ kind: "artist", id: artist.id })}>

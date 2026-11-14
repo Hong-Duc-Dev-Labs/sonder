@@ -2,6 +2,7 @@
   import { app } from "../lib/app.svelte";
   import { commands, type AlbumInfo } from "../lib/bindings";
   import { durationShort, isHiRes, plural, qualitySummary, shuffled } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import { fadeQuick } from "../lib/transitions";
   import BlurredArt from "./BlurredArt.svelte";
   import Cover from "./Cover.svelte";
@@ -48,7 +49,7 @@
 
 <div class="page-full scroll">
   {#if info === null}
-    <p class="missing dim">This album is no longer in the library.</p>
+    <p class="missing dim">{t("album.missing")}</p>
   {:else if header}
     {@const album = header}
     <section class="hero">
@@ -64,13 +65,13 @@
           </div>
         </div>
         <div class="meta">
-          <span class="kicker">Album</span>
+          <span class="kicker">{t("album.kicker")}</span>
           <h1 tabindex="-1" data-view-heading>{album.title}</h1>
           {#if album.artistId != null}
             {@const artistId = album.artistId}
             <button class="artist link" onclick={() => app.go({ kind: "artist", id: artistId })}>{album.artist}</button>
           {:else}
-            <span class="artist">{album.artist ?? "Unknown artist"}</span>
+            <span class="artist">{album.artist ?? t("common.unknownArtist")}</span>
           {/if}
           <div class="facts">
             <span>{[album.year, plural(album.trackCount, "track"), durationShort(album.durationMs), genre].filter(Boolean).join(" • ")}</span>
@@ -78,13 +79,13 @@
           </div>
           <div class="actions">
             <button class="btn primary" onclick={() => app.run(commands.playerPlayAlbum(album.id, 0))}>
-              <Icon name="play" size={18} /> Play
+              <Icon name="play" size={18} /> {t("common.play")}
             </button>
-            <button class="btn" disabled={!info} onclick={shuffle}><Icon name="shuffle" size={18} /> Shuffle</button>
-            <button class="icon-btn filled" aria-label="Play next" onclick={() => app.run(commands.playerPlayNextAlbum(album.id))}>
+            <button class="btn" disabled={!info} onclick={shuffle}><Icon name="shuffle" size={18} /> {t("common.shuffle")}</button>
+            <button class="icon-btn filled" aria-label={t("common.playNext")} onclick={() => app.run(commands.playerPlayNextAlbum(album.id))}>
               <Icon name="play-next" size={20} />
             </button>
-            <button class="icon-btn filled" aria-label="Add to queue" onclick={() => app.run(commands.playerEnqueueAlbum(album.id))}>
+            <button class="icon-btn filled" aria-label={t("common.addToQueue")} onclick={() => app.run(commands.playerEnqueueAlbum(album.id))}>
               <Icon name="queue-add" size={20} />
             </button>
           </div>

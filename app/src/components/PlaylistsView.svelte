@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from "../lib/app.svelte";
   import { durationShort, plural } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
 
@@ -23,14 +24,14 @@
 <div class="page scroll">
   <header class="head">
     <div>
-      <h1 tabindex="-1" data-view-heading>Playlists</h1>
+      <h1 tabindex="-1" data-view-heading>{t("common.playlists")}</h1>
       {#if loaded}<span class="dim small">{plural(app.playlists.length, "playlist")}</span>{/if}
     </div>
-    <button class="btn" onclick={create}><Icon name="add" size={18} /> New playlist</button>
+    <button class="btn" onclick={create}><Icon name="add" size={18} /> {t("common.newPlaylist")}</button>
   </header>
 
   {#if loaded && !app.playlists.length}
-    <p class="dim">No playlists yet. Create one here, or use “Add to playlist” in any track’s ⋯ menu.</p>
+    <p class="dim">{t("playlists.empty")}</p>
   {/if}
 
   <div class="list">

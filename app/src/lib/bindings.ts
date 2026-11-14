@@ -43,6 +43,8 @@ export const commands = {
 	/**  Removes one queue entry. Removing the playing entry moves on to the next one. */
 	queueRemove: (entryId: number) => __TAURI_INVOKE<null>("queue_remove", { entryId }),
 	libraryArtistTracks: (id: number) => __TAURI_INVOKE<TrackItem[]>("library_artist_tracks", { id }),
+	/**  Every track in the library, by title. */
+	libraryTracks: () => __TAURI_INVOKE<TrackItem[]>("library_tracks"),
 	queueItems: () => __TAURI_INVOKE<QueueItem[]>("queue_items"),
 	queueClear: () => __TAURI_INVOKE<null>("queue_clear"),
 	playerPlay: () => __TAURI_INVOKE<null>("player_play"),
@@ -275,6 +277,11 @@ export type ImpulseResponseInfo = {
 	peakGainDb: number | null,
 };
 
+/**  The interface language. */
+export type LanguageSetting = 
+/**  Follow the operating system's preferred language (English when it is not offered). */
+"system" | "en" | "vi";
+
 /**  Where levelling gets its gain. */
 export type LevelingSetting = "off" | "track" | "album" | "auto";
 
@@ -471,6 +478,8 @@ export type Settings = {
 	coverStyle?: CoverStyle,
 	/**  How much frosted glass the UI draws. */
 	glass?: GlassQuality,
+	/**  The interface language. */
+	language?: LanguageSetting,
 	/**
 	 *  Look up lyrics online (title, artist, album and length are sent) when a track has
 	 *  none of its own.

@@ -6,6 +6,7 @@
   import { app } from "../lib/app.svelte";
   import { commands } from "../lib/bindings";
   import { outputLabel, plural } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import { slideRecord } from "../lib/transitions";
   import Cover from "./Cover.svelte";
   import FormatBadges from "./FormatBadges.svelte";
@@ -44,7 +45,7 @@
 
 <div class="np">
   <header class="np-head">
-    <span class="h">Now Playing</span>
+    <span class="h">{t("common.nowPlaying")}</span>
     {#if item}<span class="dim">{item.album}</span>{/if}
   </header>
 
@@ -72,7 +73,7 @@
       {#if app.lyricsOpen}
         <div class="lyrics-slot" in:pageIn>
           {#if item}
-            <p class="mini-meta"><strong>{item.title}</strong> · {item.artist ?? "Unknown artist"}</p>
+            <p class="mini-meta"><strong>{item.title}</strong> · {item.artist ?? t("common.unknownArtist")}</p>
           {/if}
           <LyricsPanel />
         </div>
@@ -85,11 +86,11 @@
                 <h1 tabindex="-1" data-view-heading title={item.title}>{item.title}</h1>
                 {#if codec}<span class="codec">{codec}</span>{/if}
               </div>
-              <span class="artist">{item.artist ?? "Unknown artist"}</span>
+              <span class="artist">{item.artist ?? t("common.unknownArtist")}</span>
               <button class="album link" onclick={() => app.go({ kind: "album", id: item.albumId })}>{item.album}</button>
             {:else}
-              <h1 tabindex="-1" data-view-heading class="dim">Nothing playing</h1>
-              <span class="artist dim">Pick an album to start.</span>
+              <h1 tabindex="-1" data-view-heading class="dim">{t("common.nothingPlaying")}</h1>
+              <span class="artist dim">{t("np.pickAlbum")}</span>
             {/if}
           </div>
         {/key}
@@ -101,13 +102,13 @@
       <SeekBar />
 
       <div class="transport">
-        <button class="glyph" aria-label="Previous" onclick={() => app.run(commands.playerPrevious())}>
+        <button class="glyph" aria-label={t("common.previous")} onclick={() => app.run(commands.playerPrevious())}>
           <Icon name="prev" size={34} />
         </button>
-        <button class="glyph main" aria-label={playing ? "Pause" : "Play"} onclick={() => app.run(commands.playerToggle())}>
+        <button class="glyph main" aria-label={playing ? t("common.pause") : t("common.play")} onclick={() => app.run(commands.playerToggle())}>
           <PlayPauseIcon {playing} size={46} />
         </button>
-        <button class="glyph" aria-label="Next" onclick={() => app.run(commands.playerNext())}>
+        <button class="glyph" aria-label={t("common.next")} onclick={() => app.run(commands.playerNext())}>
           <Icon name="next" size={34} />
         </button>
       </div>
@@ -116,7 +117,7 @@
         <button
           class="icon-btn filled"
           class:on={app.queueOpen}
-          aria-label="Queue"
+          aria-label={t("common.queue")}
           aria-expanded={app.queueOpen}
           data-queue-toggle
           onclick={() => app.toggleQueue()}
@@ -126,36 +127,33 @@
         <button
           class="icon-btn filled"
           class:on={app.lyricsOpen}
-          aria-label="Lyrics"
+          aria-label={t("common.lyrics")}
           aria-pressed={app.lyricsOpen}
           onclick={() => app.toggleLyrics()}
         >
           <Icon name="lyrics" />
         </button>
-        <button class="icon-btn filled" aria-label="Go to album" disabled={!item} onclick={() => item && app.go({ kind: "album", id: item.albumId })}>
+        <button class="icon-btn filled" aria-label={t("common.goToAlbum")} disabled={!item} onclick={() => item && app.go({ kind: "album", id: item.albumId })}>
           <Icon name="albums" />
         </button>
         <button
           class="icon-btn filled"
           class:warn={!bitPerfect}
-          aria-label={bitPerfect ? "Bit-perfect output: open output settings" : "Software volume on: open output settings"}
+          aria-label={bitPerfect ? t("np.outputPerfect") : t("np.outputVolume")}
           onclick={() => app.go({ kind: "settings" })}
         >
           <Icon name="volume" />
         </button>
-        <button class="icon-btn filled" aria-label={vinyl ? "Show the square cover" : "Show the vinyl record"} onclick={toggleStyle}>
+        <button class="icon-btn filled" aria-label={vinyl ? t("np.showSquare") : t("np.showVinyl")} onclick={toggleStyle}>
           <Icon name={vinyl ? "albums" : "disc"} />
         </button>
       </div>
 
       {#if output && !app.lyricsOpen}
         <div class="path-row">
-          <p class="path">Device opened at {outputLabel(output)}</p>
+          <p class="path">{t("np.deviceOpened", { format: outputLabel(output) })}</p>
           {#if app.player.underruns}
-            <span
-              class="underruns"
-              title="The device ran out of audio this many times since it opened; a dropout may have been heard"
-            >
+            <span class="underruns" title={t("np.underrunsTitle")}>
               {plural(app.player.underruns, "underrun")}
             </span>
           {/if}
@@ -164,8 +162,8 @@
               class="path-toggle"
               class:on={app.signalPathOpen}
               aria-expanded={app.signalPathOpen}
-              aria-label="Signal path"
-              title="Signal path"
+              aria-label={t("common.signalPath")}
+              title={t("common.signalPath")}
               onclick={() => (app.signalPathOpen = !app.signalPathOpen)}
             >
               <Icon name="signal" size={16} />

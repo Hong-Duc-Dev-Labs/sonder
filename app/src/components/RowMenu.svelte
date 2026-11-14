@@ -4,6 +4,7 @@
   import { tick } from "svelte";
   import { app } from "../lib/app.svelte";
   import { commands, type TrackItem } from "../lib/bindings";
+  import { t } from "../lib/i18n.svelte";
   import Icon from "./Icon.svelte";
   import Popover from "./Popover.svelte";
 
@@ -48,7 +49,7 @@
 <button
   bind:this={button}
   class="more icon-btn"
-  aria-label="More for {track.title}"
+  aria-label={t("common.moreFor", { name: track.title })}
   aria-haspopup="menu"
   aria-expanded={open}
   onclick={() => (open = !open)}
@@ -56,15 +57,15 @@
   <Icon name="more" size={18} />
 </button>
 
-<Popover anchor={button} bind:open menu label={picking ? "Add to playlist" : "Track actions"}>
+<Popover anchor={button} bind:open menu label={picking ? t("common.addToPlaylist") : t("menu.trackActions")}>
   <div class="items" bind:this={items}>
     {#if picking}
       <button role="menuitem" onclick={() => pick(false)}>
-        <Icon name="back" size={18} /> Add to playlist
+        <Icon name="back" size={18} /> {t("common.addToPlaylist")}
       </button>
       <span class="sep" role="separator"></span>
       <button role="menuitem" onclick={addToNew}>
-        <Icon name="add" size={18} /> New playlist…
+        <Icon name="add" size={18} /> {t("menu.newPlaylist")}
       </button>
       <div class="list">
         {#each app.playlists as playlist (playlist.id)}
@@ -75,23 +76,23 @@
       </div>
     {:else}
       <button role="menuitem" onclick={() => act(() => app.run(commands.playerPlayNextTracks([track.id])))}>
-        <Icon name="play-next" size={18} /> Play next
+        <Icon name="play-next" size={18} /> {t("common.playNext")}
       </button>
       <button role="menuitem" onclick={() => act(() => app.run(commands.playerEnqueueTracks([track.id])))}>
-        <Icon name="queue-add" size={18} /> Add to queue
+        <Icon name="queue-add" size={18} /> {t("common.addToQueue")}
       </button>
       <button role="menuitem" aria-haspopup="menu" onclick={() => pick(true)}>
-        <Icon name="playlist" size={18} /> <span class="name">Add to playlist</span>
+        <Icon name="playlist" size={18} /> <span class="name">{t("common.addToPlaylist")}</span>
         <Icon name="chevron" size={16} />
       </button>
       {#if onremove}
         <button role="menuitem" onclick={() => act(onremove)}>
-          <Icon name="trash" size={18} /> Remove from playlist
+          <Icon name="trash" size={18} /> {t("menu.removeFromPlaylist")}
         </button>
       {/if}
       {#if showAlbum}
         <button role="menuitem" onclick={() => act(() => app.go({ kind: "album", id: track.albumId }))}>
-          <Icon name="albums" size={18} /> Go to album
+          <Icon name="albums" size={18} /> {t("common.goToAlbum")}
         </button>
       {/if}
     {/if}

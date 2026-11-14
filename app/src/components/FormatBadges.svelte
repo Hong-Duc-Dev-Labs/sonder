@@ -2,6 +2,7 @@
   // Source format → device format, and whether the path is bit-perfect.
   import { app } from "../lib/app.svelte";
   import { isBitPerfect, outputLabel, sourceLabel } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
 
   let snap = $derived(app.player);
   let perfect = $derived(isBitPerfect(snap));
@@ -9,17 +10,17 @@
 
 {#if snap.source}
   <div class="badges">
-    <span class="badge" title="Source file">Source {sourceLabel(snap.source)}</span>
+    <span class="badge" title={t("badges.sourceTitle")}>{t("badges.source", { format: sourceLabel(snap.source) })}</span>
     {#if snap.output}
       <span class="arrow">→</span>
-      <span class="badge accent" title="Format the device was opened with ({snap.output.label})">
-        Device {outputLabel(snap.output)}
+      <span class="badge accent" title={t("badges.deviceTitle", { label: snap.output.label })}>
+        {t("badges.device", { format: outputLabel(snap.output) })}
       </span>
     {/if}
     {#if perfect}
-      <span class="badge ok" title="The device receives the decoded samples unchanged">Bit-perfect</span>
+      <span class="badge ok" title={t("badges.bitPerfectTitle")}>{t("common.bitPerfect")}</span>
     {:else if snap.volumeDb != null && snap.output}
-      <span class="badge warn" title="Software volume changes the samples">Volume {snap.volumeDb.toFixed(1)} dB</span>
+      <span class="badge warn" title={t("badges.volumeTitle")}>{t("badges.volume", { db: snap.volumeDb.toFixed(1) })}</span>
     {/if}
   </div>
 {/if}

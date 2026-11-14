@@ -5,6 +5,7 @@
   import type { Album } from "../lib/bindings";
   import { app } from "../lib/app.svelte";
   import { commands } from "../lib/bindings";
+  import { t } from "../lib/i18n.svelte";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import RecordAvatar from "./RecordAvatar.svelte";
@@ -24,13 +25,17 @@
     <div class="art" style:view-transition-name={app.morphAlbumId === album.id ? "album-art" : undefined}>
       <Cover hash={album.art} alt="" />
     </div>
-    <button class="play" aria-label="Play {album.title}" onclick={() => app.run(commands.playerPlayAlbum(album.id, 0))}>
+    <button class="play" aria-label={t("common.playItem", { title: album.title })} onclick={() => app.run(commands.playerPlayAlbum(album.id, 0))}>
       <Icon name="play" size={22} />
     </button>
   </div>
-  <button class="open" onclick={open} aria-label="{album.title}{album.artist ? ` by ${album.artist}` : ''}">
+  <button
+    class="open"
+    onclick={open}
+    aria-label={album.artist ? t("common.itemBy", { title: album.title, artist: album.artist }) : album.title}
+  >
     <span class="title">{album.title}</span>
-    <span class="artist">{album.artist ?? "Unknown artist"}{album.year ? ` · ${album.year}` : ""}</span>
+    <span class="artist">{album.artist ?? t("common.unknownArtist")}{album.year ? ` · ${album.year}` : ""}</span>
   </button>
 </div>
 

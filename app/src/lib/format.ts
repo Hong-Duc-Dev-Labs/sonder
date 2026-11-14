@@ -1,4 +1,5 @@
 import type { OutputInfo, PlayerSnapshot, SourceInfo } from "./bindings";
+import { t } from "./i18n.svelte";
 
 export function duration(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms)) return "–:––";
@@ -37,8 +38,11 @@ export function isBitPerfect(snap: PlayerSnapshot): boolean {
   );
 }
 
-export function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
+export type Countable = "album" | "artist" | "playlist" | "track" | "underrun" | "appearance";
+
+/** "1 track", "3 tracks", in the interface language. */
+export function plural(n: number, noun: Countable): string {
+  return t(`count.${noun}`, { count: n });
 }
 
 /** A length for meta lines: "54 min", "1 h 12 min". */
@@ -46,7 +50,8 @@ export function durationShort(ms: number): string {
   const minutes = Math.max(1, Math.round(ms / 60_000));
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  return h ? `${h} h${m ? ` ${m} min` : ""}` : `${m} min`;
+  if (!h) return t("duration.minutes", { m });
+  return m ? t("duration.hoursMinutes", { h, m }) : t("duration.hours", { h });
 }
 
 type TrackFormat = { codec: string; bits: number | null; rate: number };
@@ -64,7 +69,7 @@ export function qualitySummary(tracks: TrackFormat[]): string | null {
   const labels = new Set(tracks.map(formatLabel));
   if (labels.size === 1) return [...labels][0];
   const best = [...tracks].sort((a, b) => (b.bits ?? 0) * b.rate - (a.bits ?? 0) * a.rate)[0];
-  return `Mixed · up to ${formatLabel(best).split(" ").pop()}`;
+  return t("format.mixed", { best: formatLabel(best).split(" ").pop() ?? "" });
 }
 
 export function isHiRes(t: TrackFormat): boolean {

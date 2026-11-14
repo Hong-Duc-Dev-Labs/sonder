@@ -5,29 +5,30 @@
   // receives the decoded samples unchanged, in words as well as colour.
   import type { SignalPathInfo } from "../lib/bindings";
   import { rate } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import Icon from "./Icon.svelte";
 
   let { path }: { path: SignalPathInfo } = $props();
 
   let outputMode = $derived(
-    path.mode === "dop" ? "DoP" : path.mode === "nativeDsd" ? "Native DSD" : "PCM",
+    path.mode === "dop" ? "DoP" : path.mode === "nativeDsd" ? t("path.nativeDsd") : "PCM",
   );
   let source = $derived(`${path.source.bits}-bit / ${rate(path.source.rate)} · ${path.source.channels} ch`);
   let output = $derived(`${outputMode} ${path.outputBits}-bit / ${rate(path.outputRate)} · ${path.outputChannels} ch`);
 </script>
 
-<section class="sp" aria-label="Signal path">
+<section class="sp" aria-label={t("common.signalPath")}>
   <header>
-    <h3>Signal path</h3>
+    <h3>{t("common.signalPath")}</h3>
     <span class="verdict" class:ok={path.bitPerfect} class:warn={!path.bitPerfect}>
       {#if path.bitPerfect}<Icon name="check" size={14} />{/if}
-      {path.bitPerfect ? "Bit-perfect" : "Processed"}
+      {path.bitPerfect ? t("common.bitPerfect") : t("path.processed")}
     </span>
   </header>
 
   <ol class="chain">
     <li class="node end">
-      <span class="name">Source</span>
+      <span class="name">{t("path.source")}</span>
       <span class="detail">{source}</span>
     </li>
     {#each path.stages as stage (stage.name + stage.detail)}
@@ -36,16 +37,16 @@
         <span class="detail">{stage.detail}</span>
       </li>
     {:else}
-      <li class="direct">No processing</li>
+      <li class="direct">{t("path.noProcessing")}</li>
     {/each}
     <li class="node end">
-      <span class="name">Output</span>
+      <span class="name">{t("path.output")}</span>
       <span class="detail">{output}</span>
     </li>
   </ol>
 
   {#if path.transition}
-    <p class="transition"><span class="name">Transition</span> {path.transition}</p>
+    <p class="transition"><span class="name">{t("path.transition")}</span> {path.transition}</p>
   {/if}
 </section>
 

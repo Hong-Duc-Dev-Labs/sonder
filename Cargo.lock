@@ -2625,6 +2625,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-5"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
+dependencies = [
+ "cfg-if",
+ "digest 0.11.3",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4339,6 +4349,7 @@ dependencies = [
  "sonder-lyrics",
  "sonder-metadata",
  "sonder-output",
+ "sonder-quality",
  "souvlaki",
  "specta",
  "specta-typescript",
@@ -4357,11 +4368,13 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
+ "serde_json",
  "sha2 0.11.1",
  "sonder-decode",
  "sonder-engine",
  "sonder-library",
  "sonder-output",
+ "sonder-quality",
 ]
 
 [[package]]
@@ -4450,6 +4463,23 @@ dependencies = [
  "thiserror 2.0.21",
  "wasapi",
  "windows",
+]
+
+[[package]]
+name = "sonder-quality"
+version = "0.1.1"
+dependencies = [
+ "hound",
+ "md-5",
+ "realfft",
+ "serde",
+ "serde_json",
+ "sonder-decode",
+ "sonder-dsp",
+ "sonder-verify",
+ "specta",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

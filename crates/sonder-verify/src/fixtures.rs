@@ -49,6 +49,17 @@ pub fn write_wav(path: &Path, rate: u32, bits: u16, samples: &[i32]) -> io::Resu
 
 /// Writes interleaved stereo integer samples (16 or 24 bits) as an uncompressed FLAC file.
 pub fn write_flac(path: &Path, rate: u32, bits: u32, samples: &[i32]) -> io::Result<()> {
+    write_flac_with_md5(path, rate, bits, samples, [0; 16])
+}
+
+/// [`write_flac`] with `md5` stored in STREAMINFO (all zeros means "not computed").
+pub fn write_flac_with_md5(
+    path: &Path,
+    rate: u32,
+    bits: u32,
+    samples: &[i32],
+    md5: [u8; 16],
+) -> io::Result<()> {
     assert!(matches!(bits, 16 | 24), "only 16- and 24-bit FLAC");
     assert!(
         samples.len().is_multiple_of(2),
@@ -63,7 +74,7 @@ pub fn write_flac(path: &Path, rate: u32, bits: u32, samples: &[i32]) -> io::Res
     let mut out = Vec::new();
     out.extend_from_slice(b"fLaC");
 
-    // STREAMINFO, the only metadata block. Frame sizes and MD5 are left as "unknown".
+    // STREAMINFO, the only metadata block. Frame sizes are left as "unknown".
     out.push(0x80);
     out.extend_from_slice(&34u32.to_be_bytes()[1..]);
     out.extend_from_slice(&(FLAC_BLOCK as u16).to_be_bytes());
@@ -74,7 +85,7 @@ pub fn write_flac(path: &Path, rate: u32, bits: u32, samples: &[i32]) -> io::Res
         | (u64::from(bits - 1) << 36)
         | frames as u64;
     out.extend_from_slice(&packed.to_be_bytes());
-    out.extend_from_slice(&[0; 16]);
+    out.extend_from_slice(&md5);
 
     let bytes = (bits / 8) as usize;
     for (index, block) in samples.chunks(FLAC_BLOCK * 2).enumerate() {

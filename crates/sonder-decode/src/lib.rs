@@ -67,7 +67,16 @@ pub enum SourceDecoder {
 impl SourceDecoder {
     /// Opens `path`, sniffing the container's magic before falling back to symphonia.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DecodeError> {
-        let path = path.as_ref();
+        Self::open_with(path.as_ref(), false)
+    }
+
+    /// Opens `path` like [`open`](Self::open), with PCM opened through
+    /// [`Decoder::open_verifying`]. DSD containers carry no checksum.
+    pub fn open_verifying(path: impl AsRef<Path>) -> Result<Self, DecodeError> {
+        Self::open_with(path.as_ref(), true)
+    }
+
+    fn open_with(path: &Path, verify: bool) -> Result<Self, DecodeError> {
         let mut magic = [0u8; 4];
         let head = {
             use std::io::Read;
@@ -78,7 +87,7 @@ impl SourceDecoder {
         };
         match head {
             Ok(m) if &m == b"DSD " || &m == b"FRM8" => Ok(Self::Dsd(DsdDecoder::open(path)?)),
-            _ => Ok(Self::Pcm(Decoder::open(path)?)),
+            _ => Ok(Self::Pcm(Decoder::open_with(path, verify)?)),
         }
     }
 
@@ -176,7 +185,17 @@ pub struct Decoder {
 impl Decoder {
     /// Opens `path` and selects its default audio track.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DecodeError> {
-        let path = path.as_ref();
+        Self::open_with(path.as_ref(), false)
+    }
+
+    /// Opens `path` like [`open`](Self::open) and asks the codec to check the decoded audio
+    /// against the checksum the file carries (FLAC's STREAMINFO MD5). Read the outcome with
+    /// [`verification`](Self::verification) after the last block, without seeking.
+    pub fn open_verifying(path: impl AsRef<Path>) -> Result<Self, DecodeError> {
+        Self::open_with(path.as_ref(), true)
+    }
+
+    fn open_with(path: &Path, verify: bool) -> Result<Self, DecodeError> {
         let file = File::open(path)?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
@@ -234,7 +253,7 @@ impl Decoder {
         }
 
         let decoder = symphonia::default::get_codecs()
-            .make_audio_decoder(&params, &AudioDecoderOptions::default())?;
+            .make_audio_decoder(&params, &AudioDecoderOptions::default().verify(verify))?;
 
         // One tick per frame is the common case; anything else is converted explicitly.
         let time_base = track_time_base.filter(|tb| tb.numer.get() != 1 || tb.denom.get() != rate);
@@ -335,6 +354,13 @@ impl Decoder {
         let frames = self.frames_from_ticks(offset.unsigned_abs());
         let frames = i64::try_from(frames).unwrap_or(i64::MAX);
         if offset < 0 { -frames } else { frames }
+    }
+
+    /// Whether the decoded audio matched the file's checksum: `None` when the decoder was not
+    /// opened with [`open_verifying`](Self::open_verifying), the format has no checksum, or the
+    /// file carries none. Meaningful only once the whole stream has been decoded from the start.
+    pub fn verification(&mut self) -> Option<bool> {
+        self.decoder.finalize().verify_ok
     }
 
     /// Number of corrupt packets skipped so far.

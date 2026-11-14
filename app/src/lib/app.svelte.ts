@@ -10,6 +10,7 @@ import {
   type Playlist,
   type QualityBadge,
   type QualityBatchEvent,
+  type QualityFile,
   type QualityVerdict,
   type QueueItem,
   type ScanPhase,
@@ -34,7 +35,11 @@ export type View =
   | { kind: "playlist"; id: number }
   | { kind: "search" }
   | { kind: "now" }
+  | { kind: "quality" }
   | { kind: "settings" };
+
+/** What the quality page is checking: a library track, or a file picked from disk. */
+export type QualityTarget = { kind: "track"; track: TrackItem } | { kind: "file"; file: QualityFile };
 
 /** Notices from Rust are warnings or errors; the UI adds plain confirmations ("info"). */
 export type Notice = { id: number; level: NoticeLevel | "info"; message: string };
@@ -222,8 +227,8 @@ export class AppState {
   lyricsVersion = $state(0);
   /** The track whose tags the metadata editor is showing, if any. */
   editing = $state<TrackItem | null>(null);
-  /** The track whose quality report is open, if any. */
-  qualityTrack = $state<TrackItem | null>(null);
+  /** What the quality page checks; it stays put while the user browses elsewhere. */
+  qualityTarget = $state<QualityTarget | null>(null);
   /**
    * Verdicts that arrived since the track lists loaded, by track id. Lists show these over
    * the badge their `TrackItem` was loaded with, so a check shows without a reload.
@@ -388,13 +393,21 @@ export class AppState {
     this.editing = null;
   }
 
-  /** Opens the quality report for `track`. */
+  /** Opens the quality page on `track`. */
   checkQuality(track: TrackItem) {
-    this.qualityTrack = track;
+    this.qualityTarget = { kind: "track", track };
+    this.go({ kind: "quality" });
   }
 
-  closeQuality() {
-    this.qualityTrack = null;
+  /**
+   * Asks for an audio file and makes it the quality page's target. A file that is in the
+   * library becomes that track (looked up in `tracks`), so its result is cached and badged.
+   */
+  async pickQualityFile(tracks: TrackItem[]) {
+    const file = await this.run(commands.qualityPickFile());
+    if (!file) return;
+    const track = file.trackId != null ? tracks.find((tr) => tr.id === file.trackId) : undefined;
+    this.qualityTarget = track ? { kind: "track", track } : { kind: "file", file };
   }
 
   /** The quality verdict to show for `track`: the newest known one, if any. */

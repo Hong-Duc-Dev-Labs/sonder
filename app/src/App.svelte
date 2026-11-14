@@ -27,7 +27,7 @@
   import SearchView from "./components/SearchView.svelte";
   import SettingsView from "./components/SettingsView.svelte";
   import SongsView from "./components/SongsView.svelte";
-  import QualityReportDialog from "./components/QualityReportDialog.svelte";
+  import QualityView from "./components/QualityView.svelte";
   import TrackEditDialog from "./components/TrackEditDialog.svelte";
   import TransportBar from "./components/TransportBar.svelte";
 
@@ -35,6 +35,7 @@
   let top = $derived<NavItem[]>([
     { view: { kind: "home" }, label: t("nav.home"), icon: "home" },
     { view: { kind: "search" }, label: t("common.search"), icon: "search", hint: "Ctrl F" },
+    { view: { kind: "quality" }, label: t("nav.quality"), icon: "verified" },
   ]);
   let library = $derived<NavItem[]>([
     { view: { kind: "albums" }, label: t("common.albums"), icon: "albums" },
@@ -166,6 +167,8 @@
               <SearchView />
             {:else if app.view.kind === "now"}
               <NowPlayingView />
+            {:else if app.view.kind === "quality"}
+              <QualityView />
             {:else if app.view.kind === "settings"}
               <SettingsView />
             {/if}
@@ -295,7 +298,6 @@
 
   <Dialog />
   <TrackEditDialog />
-  <QualityReportDialog />
 
   {#if app.flight}
     {#key app.flight}

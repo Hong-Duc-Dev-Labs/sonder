@@ -161,11 +161,21 @@ export const commands = {
 	appQuit: () => __TAURI_INVOKE<void>("app_quit"),
 	/**
 	 *  Checks one track (full report with spectrogram) and caches the result. Progress arrives as
-	 *  `QualityProgressEvent`; `quality_cancel` stops it.
+	 *  `QualityProgressEvent`; `quality_cancel_check` stops it.
 	 */
 	qualityCheckTrack: (trackId: number) => __TAURI_INVOKE<QualityReport>("quality_check_track", { trackId }),
 	/**  The cached report for a track (no spectrogram), if it was checked and has not changed. */
 	qualityCached: (trackId: number) => __TAURI_INVOKE<QualityReport | null>("quality_cached", { trackId }),
+	/**
+	 *  Opens a file dialog for an audio file to check, in the library or not. `None` when the
+	 *  dialog was dismissed.
+	 */
+	qualityPickFile: () => __TAURI_INVOKE<QualityFile | null>("quality_pick_file"),
+	/**
+	 *  Checks the file last chosen with `quality_pick_file` (full report, not cached). Progress
+	 *  arrives as `QualityProgressEvent` with track id 0; `quality_cancel_check` stops it.
+	 */
+	qualityCheckFile: () => __TAURI_INVOKE<QualityReport>("quality_check_file"),
 	/**
 	 *  Queues tracks for checking one at a time. Tracks with a valid cached result are not
 	 *  re-analysed. Progress arrives as `QualityBatchEvent`, results as `QualityCheckedEvent`.
@@ -605,8 +615,21 @@ export type QualityEvidenceStatus = "pass" | "warn" | "fail" |
 /**  The check could not run on this file. Not a pass. */
 "notMeasured";
 
+/**  A file chosen from disk for a quality check. */
+export type QualityFile = {
+	path: string,
+	/**  The file name, shown as the title. */
+	name: string,
+	/**
+	 *  The library track stored at this path, when the file is in the library: the UI then
+	 *  checks it as that track, so its result is cached and badged.
+	 */
+	trackId: number | null,
+};
+
 /**  How far one check has got (single checks and the batch's current track). */
 export type QualityProgressEvent = {
+	/**  The library track, or 0 for a file picked from disk. */
 	trackId: number,
 	/**  Decoded share of the track, 0–1. */
 	fraction: number | null,

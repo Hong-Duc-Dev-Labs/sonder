@@ -3,7 +3,7 @@
   // it is drawn a batch at a time as the end of what is shown scrolls into view.
   import { app } from "../lib/app.svelte";
   import { commands, type TrackItem } from "../lib/bindings";
-  import { plural, shuffled } from "../lib/format";
+  import { fold, plural, shuffled } from "../lib/format";
   import { t } from "../lib/i18n.svelte";
   import Icon from "./Icon.svelte";
   import TrackList from "./TrackList.svelte";
@@ -23,11 +23,6 @@
       if (r) tracks = r;
     });
   });
-
-  /** Lower case without diacritics, so "viet" finds "Việt". */
-  function fold(text: string): string {
-    return text.normalize("NFD").replace(/\p{M}/gu, "").replace(/đ/gi, "d").toLocaleLowerCase();
-  }
 
   /** Each track's searchable text, folded once per load rather than on every keystroke. */
   let haystacks = $derived(

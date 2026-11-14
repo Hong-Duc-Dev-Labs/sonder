@@ -77,6 +77,12 @@ cargo run -p sonder-cli -- play ~/Music/album --verify-hash
   current EQ in the same format (`Preamp:` then `Filter N:` lines) for Equalizer APO; importing
   that file gives the same EQ back. Types read: `PK`/`PEQ`, `LSC`/`LS`, `HSC`/`HS`, `LP`/`LPQ`,
   `HP`/`HPQ`, `BP`, `NO`; `BW Oct` is converted to Q and a shelf or pass without Q uses 0.707.
+  **Find headphone…** searches the [AutoEQ](https://github.com/jaakkopasanen/AutoEq) project
+  (about 8,800 corrections) by headphone name and lists each match with who measured it,
+  oratory1990 and crinacle first; picking one downloads its `ParametricEQ.txt` and imports it
+  as above. The search runs on this computer: Sonder downloads AutoEQ's index from GitHub on the
+  first search, keeps it for a week (and uses the old copy while offline), and fetches only the
+  correction you pick.
 - **Crossfeed** — bs2b headphone crossfeed for stereo tracks, after the EQ, with libbs2b's
   presets: Default (700 Hz, 4.5 dB), Chu Moy (700 Hz, 6 dB) and Jan Meier (650 Hz, 9.5 dB).
   Centred sounds keep their level in the bass and dip 1–1.75 dB above the cut-off, as in bs2b.
@@ -241,6 +247,7 @@ crates/sonder-engine   player thread, gapless queue, DSP chain order, signal pat
 crates/sonder-library  SQLite library, scanner, art cache, loudness analysis, playlists
 crates/sonder-lyrics   LRC/TTML and online lyrics with a disk cache
 crates/sonder-metadata track info and covers from iTunes, Deezer and MusicBrainz
+crates/sonder-autoeq   AutoEQ headphone corrections: index download, local search, EQ fetch
 crates/sonder-quality  lossless quality check: spectral cutoff, lossy fingerprints, real bit depth
 crates/sonder-cli      device listing, bit-perfect playback harness, library scanner, quality check
 crates/sonder-verify   acceptance/verification suite

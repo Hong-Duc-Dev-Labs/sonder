@@ -195,12 +195,52 @@ impl PeqImport {
         }
         let text = String::from_utf8(bytes)
             .map_err(|_| AppError(format!("{} is not UTF-8 text", path.display())))?;
-        let import = sonder_dsp::Peq::from_apo_text(&text)?;
+        Self::parse(preset_name(path), &text)
+    }
+
+    /// Parses Equalizer APO parametric `text` into a preset called `name`.
+    pub fn parse(name: String, text: &str) -> AppResult<Self> {
+        let import = sonder_dsp::Peq::from_apo_text(text)?;
         Ok(Self {
-            name: preset_name(path),
+            name,
             peq: import.peq.into(),
             warnings: import.warnings,
         })
+    }
+}
+
+/// One AutoEQ result: a headphone as one source measured it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoEqResult {
+    pub name: String,
+    /// Who measured it (oratory1990, crinacle, Rtings…).
+    pub source: String,
+    /// The measurement rig, when the source used several.
+    pub rig: Option<String>,
+    /// Folder of the result in the AutoEQ repository; passed back to `autoeq_import`.
+    pub path: String,
+}
+
+impl From<sonder_autoeq::Entry> for AutoEqResult {
+    fn from(e: sonder_autoeq::Entry) -> Self {
+        Self {
+            name: e.name,
+            source: e.source,
+            rig: e.rig,
+            path: e.path,
+        }
+    }
+}
+
+impl From<AutoEqResult> for sonder_autoeq::Entry {
+    fn from(r: AutoEqResult) -> Self {
+        Self {
+            name: r.name,
+            source: r.source,
+            rig: r.rig,
+            path: r.path,
+        }
     }
 }
 
@@ -984,6 +1024,15 @@ mod tests {
         let result = PeqImport::read(path);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
         result
+    }
+
+    #[test]
+    fn autoeq_text_becomes_a_preset_named_after_the_headphone() {
+        let import = PeqImport::parse("Sennheiser HD 600".into(), AUTOEQ).unwrap();
+        assert_eq!(import.name, "Sennheiser HD 600");
+        assert_eq!(import.peq.preamp_db, -6.2);
+        assert_eq!(import.peq.bands.len(), 1);
+        assert!(PeqImport::parse("x".into(), "<html>not found</html>").is_err());
     }
 
     #[test]

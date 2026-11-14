@@ -83,6 +83,8 @@ fn bindings() -> Builder<tauri::Wry> {
             commands::impulse_response_info,
             commands::peq_import,
             commands::peq_export,
+            commands::autoeq_search,
+            commands::autoeq_import,
             commands::library_analyze_loudness,
             commands::library_loudness_pending,
             commands::library_is_analyzing,

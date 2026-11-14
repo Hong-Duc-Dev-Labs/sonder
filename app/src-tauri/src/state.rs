@@ -21,6 +21,8 @@ pub struct AppPaths {
     pub db: PathBuf,
     pub art: PathBuf,
     pub settings: PathBuf,
+    /// The downloaded AutoEQ headphone index.
+    pub autoeq: PathBuf,
     /// Cached online lyrics lookups.
     pub lyrics: PathBuf,
 }
@@ -34,6 +36,7 @@ impl AppPaths {
             art: dirs.data_dir().join("art"),
             settings: dirs.config_dir().join("settings.toml"),
             lyrics: dirs.data_dir().join("lyrics"),
+            autoeq: dirs.data_dir().join("autoeq"),
         })
     }
 }
@@ -122,6 +125,8 @@ pub struct AppState {
     pub scan: ScanControl,
     /// Quality checks: the batch queue and cancel flags.
     pub quality: crate::quality::QualityControl,
+    /// AutoEQ headphone search; the index loads on the first search.
+    pub autoeq: Arc<sonder_autoeq::AutoEq>,
 }
 
 impl AppState {
@@ -131,6 +136,10 @@ impl AppState {
         let settings = store.load();
         let mut library = Library::open(&paths.db, &paths.art)?;
         crate::quality::forget_outdated(&mut library);
+        let autoeq = Arc::new(sonder_autoeq::AutoEq::new(
+            &paths.autoeq,
+            crate::commands::USER_AGENT,
+        ));
         let loudness = Arc::new(Mutex::new(Library::open(&paths.db, &paths.art)?));
 
         let mut devices = DeviceList::new(backend());
@@ -170,6 +179,7 @@ impl AppState {
                 watcher: Mutex::new(None),
                 scan: ScanControl::default(),
                 quality: crate::quality::QualityControl::default(),
+                autoeq,
             },
             events,
         ))

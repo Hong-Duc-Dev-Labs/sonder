@@ -14,8 +14,8 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
 
 use crate::dto::{
-    Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, CoverImage, Device,
-    FoundLyrics, ImpulseResponseInfo, LookupQuery, Lyrics, MetadataCandidate, PeqImport,
+    Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, AutoEqResult, CoverImage,
+    Device, FoundLyrics, ImpulseResponseInfo, LookupQuery, Lyrics, MetadataCandidate, PeqImport,
     PlayerSnapshot, Playlist, PlaylistInfo, QueueItem, RepeatMode, RootFolder, SortOrder,
     TrackEdit, TrackItem, TrackTagsInfo, export_file_name,
 };
@@ -28,14 +28,18 @@ const SEARCH_LIMIT: usize = 200;
 static LYRICS_ONLINE: LazyLock<sonder_lyrics::Online> =
     LazyLock::new(|| sonder_lyrics::Online::new(concat!("Sonder/", env!("CARGO_PKG_VERSION"))));
 
-/// MusicBrainz asks clients to name themselves and a way to reach their authors.
-static METADATA_ONLINE: LazyLock<sonder_metadata::Online> = LazyLock::new(|| {
-    sonder_metadata::Online::new(concat!(
-        "Sonder/",
-        env!("CARGO_PKG_VERSION"),
-        " ( https://github.com/Hong-Duc-Dev-Labs/sonder )"
-    ))
-});
+/// How Sonder names itself and a way to reach its authors, as MusicBrainz asks clients to.
+pub const USER_AGENT: &str = concat!(
+    "Sonder/",
+    env!("CARGO_PKG_VERSION"),
+    " ( https://github.com/Hong-Duc-Dev-Labs/sonder )"
+);
+
+static METADATA_ONLINE: LazyLock<sonder_metadata::Online> =
+    LazyLock::new(|| sonder_metadata::Online::new(USER_AGENT));
+
+/// AutoEQ results listed for one search.
+const AUTOEQ_LIMIT: usize = 50;
 const MAX_PAGE: u32 = 1000;
 
 // ----- library -----
@@ -847,6 +851,38 @@ pub async fn peq_import(app: AppHandle) -> AppResult<Option<PeqImport>> {
     let path = picked.into_path().map_err(AppError::from)?;
     let import = tauri::async_runtime::spawn_blocking(move || PeqImport::read(&path)).await??;
     Ok(Some(import))
+}
+
+/// Headphones in AutoEQ matching `query`, best first. The first search downloads AutoEQ's index
+/// (kept on disk for a week); the query itself is matched locally and never sent anywhere.
+#[tauri::command]
+#[specta::specta]
+pub async fn autoeq_search(
+    state: State<'_, AppState>,
+    query: String,
+) -> AppResult<Vec<AutoEqResult>> {
+    let found = tauri::async_runtime::spawn_blocking({
+        let query = query.trim().to_owned();
+        let autoeq = state.autoeq.clone();
+        move || autoeq.search(&query, AUTOEQ_LIMIT)
+    })
+    .await??;
+    Ok(found.into_iter().map(AutoEqResult::from).collect())
+}
+
+/// Downloads the AutoEQ parametric EQ of `result` and returns it as an import named after the
+/// headphone. Nothing is saved here.
+#[tauri::command]
+#[specta::specta]
+pub async fn autoeq_import(
+    state: State<'_, AppState>,
+    result: AutoEqResult,
+) -> AppResult<PeqImport> {
+    let autoeq = state.autoeq.clone();
+    let name = result.name.clone();
+    let text = tauri::async_runtime::spawn_blocking(move || autoeq.parametric_eq(&result.into()))
+        .await??;
+    PeqImport::parse(name, &text)
 }
 
 /// Saves `peq` as Equalizer APO parametric text, defaulting to `<name> ParametricEQ.txt`, and

@@ -14,6 +14,7 @@
   let filter = $state("");
   let limit = $state(BATCH);
   let sentinel: HTMLDivElement | undefined = $state();
+  let scroller: HTMLDivElement | undefined = $state();
 
   $effect(() => {
     app.pageWash = null;
@@ -48,21 +49,23 @@
     limit = BATCH;
   });
 
-  // Draw the next batch when the end of the list comes near.
+  // Draw the next batch when the end of the list comes within 800 px. The page scrolls inside
+  // its own container, which clips the sentinel before a viewport margin would apply, so the
+  // container is the root.
   $effect(() => {
-    if (!sentinel) return;
+    if (!sentinel || !scroller) return;
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) limit += BATCH;
       },
-      { rootMargin: "800px 0px" },
+      { root: scroller, rootMargin: "800px 0px" },
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
   });
 </script>
 
-<div class="page scroll">
+<div class="page scroll" bind:this={scroller}>
   <header class="head">
     <div>
       <h1 tabindex="-1" data-view-heading>{t("common.songs")}</h1>

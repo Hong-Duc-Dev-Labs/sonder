@@ -7,9 +7,24 @@ use std::thread::JoinHandle;
 use crate::error::OutputError;
 use crate::format::DeviceFormat;
 
+/// Where the input of a stream is, in the low two bits of [`StreamShared::input`]; the rest
+/// counts how often the producer took an end back, so the render thread can tell an end it
+/// saw from a later one.
+const INPUT_OPEN: u64 = 0;
+const INPUT_ENDING: u64 = 1;
+const INPUT_EXHAUSTED: u64 = 2;
+const INPUT_FLAG: u64 = 3;
+
+/// Whether an input state read from [`StreamShared::input`] has ended.
+pub(crate) fn input_ended(state: u64) -> bool {
+    state & INPUT_FLAG != INPUT_OPEN
+}
+
 #[derive(Default)]
 pub(crate) struct StreamShared {
-    pub(crate) end_of_input: AtomicBool,
+    /// Input state: open, ending (the producer has pushed its last sample) or exhausted (the
+    /// render thread played everything after an end and stops). See [`INPUT_FLAG`].
+    pub(crate) input: AtomicU64,
     pub(crate) stop: AtomicBool,
     pub(crate) paused: AtomicBool,
     /// Flush generation requested by the producer; the render thread discards everything
@@ -19,6 +34,61 @@ pub(crate) struct StreamShared {
     pub(crate) underruns: AtomicU64,
     pub(crate) frames_written: AtomicU64,
     pub(crate) frames_discarded: AtomicU64,
+}
+
+impl StreamShared {
+    /// The input state, for [`input_ended`](Self::input_ended) and
+    /// [`exhaust_input`](Self::exhaust_input). Acquire: every sample pushed before an end is
+    /// visible once the end is.
+    pub(crate) fn input(&self) -> u64 {
+        self.input.load(Ordering::Acquire)
+    }
+
+    /// The producer has ended its input (it may still take the end back).
+    pub(crate) fn input_ended(&self) -> bool {
+        input_ended(self.input())
+    }
+
+    /// Producer side: no more samples follow the ones already pushed.
+    pub(crate) fn end_input(&self) {
+        let _ = self
+            .input
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |s| {
+                (s & INPUT_FLAG == INPUT_OPEN).then_some(s | INPUT_ENDING)
+            });
+    }
+
+    /// Producer side: takes an end back so more samples can follow. `false` once the render
+    /// thread has acted on the end: the stream is finishing and the samples would be lost.
+    pub(crate) fn resume_input(&self) -> bool {
+        self.input
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |s| {
+                match s & INPUT_FLAG {
+                    INPUT_ENDING => Some(((s >> 2) + 1) << 2),
+                    _ => None,
+                }
+            })
+            .map_or_else(|s| s & INPUT_FLAG == INPUT_OPEN, |_| true)
+    }
+
+    /// Render side: commits to the end read as `seen`, with the queue found empty after it.
+    /// `false` when the producer took that end back meanwhile, even if it has ended again
+    /// since: samples may have arrived after the queue was read.
+    pub(crate) fn exhaust_input(&self, seen: u64) -> bool {
+        match seen & INPUT_FLAG {
+            INPUT_EXHAUSTED => true,
+            INPUT_ENDING => self
+                .input
+                .compare_exchange(
+                    seen,
+                    (seen & !INPUT_FLAG) | INPUT_EXHAUSTED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok(),
+            _ => false,
+        }
+    }
 }
 
 /// Cheap, cloneable view of a running (or about to run) stream.

@@ -86,8 +86,6 @@ const AHEAD_FRAMES: usize = 154_350;
 /// A track after it, longer than the ring, so the decoder is still feeding the stream when
 /// the edit lands rather than done with the whole queue.
 const TAIL_FRAMES: usize = 220_500;
-/// A playing track that lasts over 3 s on [`slow`] with the default ring.
-const LONG_FRAMES: usize = 220_500;
 
 /// The slow device behind a ring longer than [`AHEAD_FRAMES`]: a queue edit after the
 /// playing entry always meets audio already decoded from the old order.
@@ -884,9 +882,10 @@ fn inserting_after_the_playing_entry_plays_it_next_gaplessly() {
 
 #[test]
 fn inserting_after_a_fully_decoded_queue_continues_the_stream() {
-    let a = wav("ins-end-a.wav", 44_100, 16, LONG_FRAMES, 52);
+    // The ring holds all of `a`: the decoder has finished the queue before the insert lands.
+    let a = wav("ins-end-a.wav", 44_100, 16, AHEAD_FRAMES, 52);
     let b = wav("ins-end-b.wav", 44_100, 16, 10_000, 53);
-    let (player, events, control) = start(slow());
+    let (player, events, control) = start_decoded_ahead();
     player.enqueue(vec![a.clone()]);
     player.play();
     wait_playing(&events, 0);
@@ -896,6 +895,22 @@ fn inserting_after_a_fully_decoded_queue_continues_the_stream() {
     assert_eq!(control.sessions().len(), 1);
     assert_eq!(control.played_bytes(), concat(&[&a, &b]));
     assert_eq!(changes(&seen), [(1, "ins-end-b.wav".into())]);
+}
+
+#[test]
+fn seeking_in_a_fully_decoded_last_track_keeps_the_stream() {
+    // The ring holds all of `a`: its input has ended when the seek lands.
+    let a = wav("seek-ended-a.wav", 44_100, 16, AHEAD_FRAMES, 56);
+    let (player, events, control) = start_decoded_ahead();
+    player.enqueue(vec![a.clone()]);
+    player.play();
+    wait_playing(&events, 0);
+    player.seek(Duration::from_secs(2));
+    wait_end(&events);
+
+    assert_eq!(control.sessions().len(), 1, "the ended input is taken back");
+    let all = concat(&[&a]);
+    assert!(control.played_bytes().ends_with(&all[2 * 44_100 * 4..]));
 }
 
 #[test]

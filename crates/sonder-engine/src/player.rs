@@ -1885,10 +1885,7 @@ impl Engine {
         if let Some(out) = &mut self.out {
             // Only flushes discard frames, and only this thread asks for one.
             let discarded = out.handle.frames_discarded();
-            let flushed = out
-                .producer
-                .as_mut()
-                .is_some_and(|p| p.flush(FLUSH_TIMEOUT));
+            let flushed = flush_ring(out);
             if flushed {
                 if from_heard
                     && let Some(now) = now_at(
@@ -2490,10 +2487,7 @@ impl Engine {
             self.reset_decoding();
             self.hold = None;
             if let Some(out) = &mut self.out {
-                let flushed = out
-                    .producer
-                    .as_mut()
-                    .is_some_and(|p| p.flush(FLUSH_TIMEOUT));
+                let flushed = flush_ring(out);
                 if flushed {
                     out.segments.clear();
                 } else {
@@ -2805,7 +2799,15 @@ impl Engine {
                             out.producer = None;
                             return true;
                         }
-                        Some(_) => {}
+                        Some(out) => {
+                            let producer = out.producer.as_mut().expect("checked above");
+                            if !producer.reopen() {
+                                // The device already played everything: this stream is
+                                // finishing, and the next one opens when it has.
+                                out.producer = None;
+                                return true;
+                            }
+                        }
                         None => {
                             let pos = Pos::frames(segment.offset, segment.source.rate);
                             if !self.open_output(spec, segment.index, pos, segment.source) {
@@ -2848,7 +2850,11 @@ impl Engine {
                     self.feed.pop_front();
                     match &mut self.out {
                         Some(out) => {
-                            out.producer = None;
+                            // Finished, not dropped: an entry added before the device has
+                            // played the rest can still follow in the same stream.
+                            if let Some(producer) = &mut out.producer {
+                                producer.finish();
+                            }
                             self.ending = true;
                         }
                         None => self.finish_queue(),
@@ -3143,6 +3149,15 @@ impl Engine {
             self.restart(hold.index, hold.pos);
         }
     }
+}
+
+/// Empties the ring so the next push is heard next. An ended input is taken back first, as
+/// new audio follows. `false` when the stream cannot take more (it is finishing or gone) and
+/// has to be reopened.
+fn flush_ring(out: &mut Output) -> bool {
+    out.producer
+        .as_mut()
+        .is_some_and(|p| p.reopen() && p.flush(FLUSH_TIMEOUT))
 }
 
 /// What a stream with these counters is playing.

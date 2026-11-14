@@ -88,6 +88,24 @@ impl SampleProducer {
         n - rest.len()
     }
 
+    /// Marks the end of input: the render thread plays what is queued and then the stream
+    /// finishes, unless [`reopen`](Self::reopen) takes the end back first.
+    pub fn finish(&mut self) {
+        self.handle.0.end_input();
+    }
+
+    /// Whether [`finish`](Self::finish) was called and not taken back.
+    pub fn is_finished(&self) -> bool {
+        self.handle.0.input_ended()
+    }
+
+    /// Takes back a [`finish`](Self::finish), so more samples can follow without a gap.
+    /// `true` when the input is open again (or never ended); `false` once the render thread
+    /// has played everything and is finishing the stream, which then has to be reopened.
+    pub fn reopen(&mut self) -> bool {
+        self.handle.0.resume_input()
+    }
+
     /// Discards everything queued but not yet played, so the next push is heard next.
     ///
     /// Blocks until the render thread acknowledges, which takes about one device period.
@@ -111,6 +129,6 @@ impl Drop for SampleProducer {
     /// Dropping the producer marks the end of input, so a decoder that finishes, fails or
     /// panics never leaves the render thread waiting.
     fn drop(&mut self) {
-        self.handle.0.end_of_input.store(true, Ordering::Release);
+        self.handle.0.end_input();
     }
 }

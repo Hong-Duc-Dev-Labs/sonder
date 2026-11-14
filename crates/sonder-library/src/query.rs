@@ -56,6 +56,15 @@ pub struct Track {
     pub art: Option<String>,
     /// That cover's dominant vivid colours as `#rrggbb`, most dominant first (may be empty).
     pub art_colors: Vec<String>,
+    /// The cached quality check, when the file has not changed since it ran.
+    pub quality: Option<TrackQuality>,
+}
+
+/// Verdict and confidence words of a quality check, as `sonder-quality` names them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackQuality {
+    pub verdict: String,
+    pub confidence: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,7 +110,7 @@ macro_rules! track_columns {
         "t.id, t.path, t.title, t.artist, t.album_artist, t.album_id, a.title, t.track_no,
            t.disc_no, t.year, t.genre, t.codec, t.rate, t.bits, t.channels, t.duration_ms,
            t.rg_track_gain, t.rg_track_peak, t.rg_album_gain, t.rg_album_peak, art.hash,
-           art.colors"
+           art.colors, q.verdict, q.confidence"
     };
 }
 
@@ -110,14 +119,15 @@ macro_rules! track_from {
     () => {
         "FROM tracks t
     JOIN albums a ON a.id = t.album_id
-    LEFT JOIN art ON art.id = coalesce(t.art_id, a.art_id)"
+    LEFT JOIN art ON art.id = coalesce(t.art_id, a.art_id)
+    LEFT JOIN quality_checks q ON q.path = t.path AND q.mtime = t.mtime AND q.size = t.size"
     };
 }
 
 pub(crate) const TRACK_COLUMNS: &str = track_columns!();
 pub(crate) const TRACK_FROM: &str = track_from!();
 /// Number of columns in [`TRACK_COLUMNS`].
-pub(crate) const TRACK_COLUMN_COUNT: usize = 22;
+pub(crate) const TRACK_COLUMN_COUNT: usize = 24;
 
 const TRACK_SELECT: &str = concat!("SELECT ", track_columns!(), " ", track_from!());
 
@@ -204,6 +214,16 @@ pub(crate) fn track_row(row: &Row) -> rusqlite::Result<Track> {
         },
         art: row.get(20)?,
         art_colors: colors(row.get(21)?),
+        quality: match (
+            row.get::<_, Option<String>>(22)?,
+            row.get::<_, Option<String>>(23)?,
+        ) {
+            (Some(verdict), Some(confidence)) => Some(TrackQuality {
+                verdict,
+                confidence,
+            }),
+            _ => None,
+        },
     })
 }
 

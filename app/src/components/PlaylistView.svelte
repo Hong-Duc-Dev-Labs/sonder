@@ -165,6 +165,16 @@
             <Icon name="more" size={20} />
           </button>
           <Popover anchor={menuButton} bind:open={menuOpen} menu label={t("playlist.actions")}>
+            <button
+              role="menuitem"
+              disabled={!ids.length}
+              onclick={() => {
+                menuOpen = false;
+                void app.checkQualityBatch(ids);
+              }}
+            >
+              <Icon name="spectrum" size={18} /> {t("quality.checkPlaylist")}
+            </button>
             <button role="menuitem" onclick={rename}><Icon name="edit" size={18} /> {t("playlist.rename")}</button>
             <button role="menuitem" onclick={deletePlaylist}><Icon name="trash" size={18} /> {t("playlist.delete")}</button>
           </Popover>

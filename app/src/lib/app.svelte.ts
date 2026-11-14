@@ -8,6 +8,9 @@ import {
   type NoticeLevel,
   type PlayerSnapshot,
   type Playlist,
+  type QualityBadge,
+  type QualityBatchEvent,
+  type QualityVerdict,
   type QueueItem,
   type ScanPhase,
   type Settings,
@@ -18,6 +21,7 @@ import { tick } from "svelte";
 import { applyLanguage, t } from "./i18n.svelte";
 import { plural } from "./format";
 import { reducedMotion } from "./motion";
+import { isFlagged } from "./quality";
 
 export type View =
   | { kind: "home" }
@@ -218,6 +222,17 @@ export class AppState {
   lyricsVersion = $state(0);
   /** The track whose tags the metadata editor is showing, if any. */
   editing = $state<TrackItem | null>(null);
+  /** The track whose quality report is open, if any. */
+  qualityTrack = $state<TrackItem | null>(null);
+  /**
+   * Verdicts that arrived since the track lists loaded, by track id. Lists show these over
+   * the badge their `TrackItem` was loaded with, so a check shows without a reload.
+   */
+  qualityBadges = $state<Record<number, QualityBadge>>({});
+  /** The running batch quality check; `null` when none runs. */
+  qualityBatch = $state<QualityBatchEvent | null>(null);
+  /** Verdicts of the running batch, for its closing summary. */
+  private batchVerdicts: QualityVerdict[] = [];
   /** A newer release on GitHub, once a check has found one. */
   update = $state<UpdateInfo | null>(null);
   /** Download progress while an update installs; `null` otherwise. */
@@ -373,6 +388,50 @@ export class AppState {
     this.editing = null;
   }
 
+  /** Opens the quality report for `track`. */
+  checkQuality(track: TrackItem) {
+    this.qualityTrack = track;
+  }
+
+  closeQuality() {
+    this.qualityTrack = null;
+  }
+
+  /** The quality verdict to show for `track`: the newest known one, if any. */
+  qualityOf(track: TrackItem): QualityBadge | null {
+    return this.qualityBadges[track.id] ?? track.quality;
+  }
+
+  /** Queues tracks for a batch quality check; its events update `qualityBatch`. */
+  async checkQualityBatch(trackIds: number[]) {
+    if (!trackIds.length) return;
+    await this.run(commands.qualityCheckBatch(trackIds));
+  }
+
+  cancelQualityBatch() {
+    void this.run(commands.qualityCancelBatch());
+  }
+
+  private qualityBatchChanged(next: QualityBatchEvent) {
+    if (next.running) {
+      if (!this.qualityBatch) this.batchVerdicts = [];
+      this.qualityBatch = next;
+      return;
+    }
+    const flagged = this.batchVerdicts.filter(isFlagged).length;
+    this.batchVerdicts = [];
+    this.qualityBatch = null;
+    if (next.cancelled) {
+      this.notify("info", t("quality.batchCancelled", { done: next.done, total: next.total }));
+    } else if (next.total) {
+      this.notify(
+        "info",
+        t("quality.batchDone", { count: next.done, flagged }) +
+          (next.failed ? t("quality.batchFailed", { count: next.failed }) : ""),
+      );
+    }
+  }
+
   private startNoticeTimer(id: number, ms: number) {
     const handle = window.setTimeout(() => this.dismiss(id), ms);
     this.noticeTimers.set(id, { left: ms, started: performance.now(), handle });
@@ -498,6 +557,12 @@ export class AppState {
         this.loudnessAsked = false;
         this.loudness = { running: false, done: 0, total: 0, pending: r.error ? this.loudness.pending : r.pending, last };
       }),
+      events.qualityCheckedEvent.listen((e) => {
+        const { trackId, verdict, confidence } = e.payload;
+        this.qualityBadges[trackId] = { verdict, confidence };
+        if (this.qualityBatch) this.batchVerdicts.push(verdict);
+      }),
+      events.qualityBatchEvent.listen((e) => this.qualityBatchChanged(e.payload)),
       events.updateAvailableEvent.listen((e) => this.updateFound(e.payload.update)),
       events.updateProgressEvent.listen((e) => {
         if (this.updateProgress) this.updateProgress = e.payload;
@@ -528,6 +593,13 @@ export class AppState {
     this.loudness = { ...this.loudness, running: this.loudness.running || analyzing, pending };
     // Not part of start-up: a failure only leaves the row menus without playlists.
     void this.refreshPlaylists();
+    // A batch may still run from before the window reloaded.
+    void commands
+      .qualityBatchStatus()
+      .then((status) => {
+        if (status.running && !this.qualityBatch) this.qualityBatch = status;
+      })
+      .catch(() => {});
   }
 
   private updateFound(found: UpdateInfo) {

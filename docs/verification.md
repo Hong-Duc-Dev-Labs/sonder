@@ -93,6 +93,28 @@ DSP measurements recorded by the suite (values from the run in CI/host, 2026-11-
 - SDM: decoded tone within 0.04 of the expected 0.35 amplitude at all four rate/order pairs,
   second harmonic below −60 dB.
 
+## Quality check
+
+`cargo test -p sonder-quality` checks every verdict on synthesized files (random-phase noise
+shaped in the frequency domain, no real encoder): full-band noise → Genuine/High; brick walls at
+16, 19.5 and 20 kHz → Transcoded, and with holes plus folded stereo → Transcoded/High; a wall at
+21.1 kHz → Suspect/Low; 16-bit samples padded to 24 → Fake bit depth; 96 kHz walled at 22 kHz →
+Fake hi-res; −80 dBFS or 2 s → Inconclusive; FLAC MD5 pass, missing and corrupted; a DSF file
+through the DSD→PCM path. `cargo test -p sonder-library --test quality` covers the cache.
+
+Real files, release build, 2026-11-14, same laptop as above (`sonder-cli check`):
+
+- 10 tracks of a 24/96 piano album: all Genuine/High, 1.1–2.8 s per 3–6 min track.
+- 120 random files from a personal library (FLAC and ALAC, 16/24-bit, 44.1–96 kHz): 70
+  Genuine/High, 49 Genuine/Medium (content fading out gently below 21.5 kHz, edge moving), 1
+  Suspect/Low (hard, fixed wall at 21.4 kHz). No reference verdicts exist for these files, so
+  this shows the spread and the false-alarm rate on material believed genuine, not accuracy.
+- An earlier build flagged sparse-treble piano and hi-res ultrasonic noise as "holes"; holes are
+  now only counted in frames whose top edge sits in lossy territory (≤ 20.5 kHz).
+
+Not yet run: real MP3/AAC → FLAC transcodes at 128/192/256/320 kbps (needs an external encoder
+and files the user owns), to confirm the thresholds outside synthetic signals.
+
 ## Real-device run: TP35, 2026-11-13
 
 Device `[2] Speakers (TP35)`, WASAPI exclusive, PCM 44.1–384 kHz at 16, 24 (packed) and 32

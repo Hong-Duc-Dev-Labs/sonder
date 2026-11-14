@@ -149,6 +149,24 @@ export const commands = {
 	windowShowMain: () => __TAURI_INVOKE<void>("window_show_main"),
 	/**  Quits Sonder (the mini player's close button). */
 	appQuit: () => __TAURI_INVOKE<void>("app_quit"),
+	/**
+	 *  Checks one track (full report with spectrogram) and caches the result. Progress arrives as
+	 *  `QualityProgressEvent`; `quality_cancel` stops it.
+	 */
+	qualityCheckTrack: (trackId: number) => __TAURI_INVOKE<QualityReport>("quality_check_track", { trackId }),
+	/**  The cached report for a track (no spectrogram), if it was checked and has not changed. */
+	qualityCached: (trackId: number) => __TAURI_INVOKE<QualityReport | null>("quality_cached", { trackId }),
+	/**
+	 *  Queues tracks for checking one at a time. Tracks with a valid cached result are not
+	 *  re-analysed. Progress arrives as `QualityBatchEvent`, results as `QualityCheckedEvent`.
+	 */
+	qualityCheckBatch: (trackIds: number[]) => __TAURI_INVOKE<null>("quality_check_batch", { trackIds }),
+	/**  Stops the single check in progress (the report being closed). A batch keeps running. */
+	qualityCancelCheck: () => __TAURI_INVOKE<null>("quality_cancel_check"),
+	/**  Stops the batch; the track being analysed ends unsaved and the rest of the queue is dropped. */
+	qualityCancelBatch: () => __TAURI_INVOKE<null>("quality_cancel_batch"),
+	/**  Where the batch stands, for a view that opens while it runs. */
+	qualityBatchStatus: () => __TAURI_INVOKE<QualityBatchEvent>("quality_batch_status"),
 };
 
 /** Events */
@@ -159,6 +177,9 @@ export const events = {
 	loudnessProgressEvent: makeEvent<LoudnessProgressEvent, LoudnessProgressEvent>("loudness-progress-event"),
 	noticeEvent: makeEvent<NoticeEvent, NoticeEvent>("notice-event"),
 	playerStateEvent: makeEvent<PlayerStateEvent, PlayerStateEvent>("player-state-event"),
+	qualityBatchEvent: makeEvent<QualityBatchEvent, QualityBatchEvent>("quality-batch-event"),
+	qualityCheckedEvent: makeEvent<QualityCheckedEvent, QualityCheckedEvent>("quality-checked-event"),
+	qualityProgressEvent: makeEvent<QualityProgressEvent, QualityProgressEvent>("quality-progress-event"),
 	queueChangedEvent: makeEvent<QueueChangedEvent, QueueChangedEvent>("queue-changed-event"),
 	scanFinishedEvent: makeEvent<ScanFinishedEvent, ScanFinishedEvent>("scan-finished-event"),
 	scanProgressEvent: makeEvent<ScanProgressEvent, ScanProgressEvent>("scan-progress-event"),
@@ -501,6 +522,134 @@ export type PlaylistInfo = {
 	missing: number,
 };
 
+/**  A track's cached quality verdict, for the badge in track lists. */
+export type QualityBadge = {
+	verdict: QualityVerdict,
+	confidence: QualityConfidence,
+};
+
+/**  The batch's state: sent when it starts, after every track, and when it ends. */
+export type QualityBatchEvent = {
+	running: boolean,
+	currentTrackId: number | null,
+	done: number,
+	failed: number,
+	total: number,
+	/**  The batch ended because the user cancelled it. */
+	cancelled: boolean,
+};
+
+/**  A track's check finished and its result was saved. */
+export type QualityCheckedEvent = {
+	trackId: number,
+	verdict: QualityVerdict,
+	confidence: QualityConfidence,
+};
+
+export type QualityConfidence = "low" | "medium" | "high";
+
+export type QualityCriterion = 
+/**  Highest frequency with content (Hz). */
+"cutoff" | 
+/**  Drop across the cutoff (dB). */
+"slope" | 
+/**  Interquartile range of the per-frame cutoff (Hz). */
+"stability" | 
+/**  Share of loud frames with a hole above 12 kHz (0–1). */
+"holes" | 
+/**  How much more the side channel collapses above 14 kHz than at 2–8 kHz (dB). */
+"stereoField" | 
+/**  Left/right cutoff difference (Hz). */
+"channelSymmetry" | 
+/**  Bits the samples actually use. */
+"bitDepth" | 
+/**  RMS level of the quietest 5 % of the track (dBFS), for reading only. */
+"quietLevel" | 
+/**  Level above 24 kHz relative to 2–8 kHz (dB). */
+"hiRes" | 
+/**  Drop from 17–19.5 kHz to 22.5–24 kHz in a DSD file (dB). */
+"dsdSource" | 
+/**  FLAC MD5 signature check. */
+"md5";
+
+export type QualityEvidence = {
+	id: QualityCriterion,
+	status: QualityEvidenceStatus,
+	value: number | null,
+};
+
+export type QualityEvidenceStatus = "pass" | "warn" | "fail" | 
+/**  A measurement shown for reading, not judged. */
+"info" | 
+/**  The check could not run on this file. Not a pass. */
+"notMeasured";
+
+/**  How far one check has got (single checks and the batch's current track). */
+export type QualityProgressEvent = {
+	trackId: number,
+	/**  Decoded share of the track, 0–1. */
+	fraction: number | null,
+};
+
+export type QualityReport = {
+	analyzerVersion: number,
+	source: QualitySource,
+	durationSecs: number | null,
+	verdict: QualityVerdict,
+	confidence: QualityConfidence,
+	evidence: QualityEvidence[],
+	/**  Average spectrum, log-spaced from 20 Hz to `spectrum_top_hz`. */
+	spectrum: QualitySpectrumPoint[],
+	spectrumTopHz: number | null,
+	cutoffHz: number | null,
+	/**  Median cutoff of each spectrogram column (Hz; 0 where no loud frame fell). */
+	cutoffTrack: (number | null)[],
+	spectrogram: QualitySpectrogram | null,
+};
+
+export type QualitySource = {
+	/**  PCM sample rate, or the DSD bit rate per channel. */
+	rate: number,
+	/**  Declared bits per sample; 1 for DSD. */
+	bits: number,
+	channels: number,
+	dsd: boolean,
+};
+
+/**
+ *  Time × frequency map. `db` is row-major, row 0 the lowest frequency; each byte maps
+ *  0..=255 onto −120..0 dB relative to the map's loudest cell.
+ */
+export type QualitySpectrogram = {
+	cols: number,
+	rows: number,
+	topHz: number | null,
+	db: number[],
+};
+
+export type QualitySpectrumPoint = {
+	hz: number | null,
+	/**  Relative to the loudest point of the average spectrum. */
+	db: number | null,
+};
+
+export type QualityVerdict = 
+/**  Content reaches beyond every lossy codec and nothing else looks wrong. */
+"genuine" | 
+/**
+ *  Something is off (a wall just above lossy territory, little treble, a CD-rate DSD
+ *  source), but not enough to call it a transcode.
+ */
+"suspect" | 
+/**  The fingerprint of an MP3/AAC source re-wrapped as lossless. */
+"transcoded" | 
+/**  Declared 88.2 kHz or more, but nothing above 20–24 kHz: upsampled. */
+"fakeHiRes" | 
+/**  Declared 24-bit (or more) but the samples carry 16 bits or fewer. */
+"fakeBitDepth" | 
+/**  Too short, too quiet or too little treble to judge. Not a pass. */
+"inconclusive";
+
 export type QueueChangedEvent = QueueItem[];
 
 /**  One entry of the play queue. */
@@ -703,6 +852,8 @@ export type TrackItem = {
 	durationMs: number,
 	art: string | null,
 	artColors: string[],
+	/**  The cached quality check, when the file has not changed since it ran. */
+	quality: QualityBadge | null,
 };
 
 /**

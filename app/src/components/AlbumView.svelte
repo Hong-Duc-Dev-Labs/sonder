@@ -88,6 +88,15 @@
             <button class="icon-btn filled" aria-label={t("common.addToQueue")} onclick={() => app.run(commands.playerEnqueueAlbum(album.id))}>
               <Icon name="queue-add" size={20} />
             </button>
+            <button
+              class="icon-btn filled"
+              aria-label={t("quality.checkAlbum")}
+              title={t("quality.checkAlbum")}
+              disabled={!info}
+              onclick={() => info && app.checkQualityBatch(info.tracks.map((tr) => tr.id))}
+            >
+              <Icon name="spectrum" size={20} />
+            </button>
           </div>
         </div>
       </div>

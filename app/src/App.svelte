@@ -27,6 +27,7 @@
   import SearchView from "./components/SearchView.svelte";
   import SettingsView from "./components/SettingsView.svelte";
   import SongsView from "./components/SongsView.svelte";
+  import QualityReportDialog from "./components/QualityReportDialog.svelte";
   import TrackEditDialog from "./components/TrackEditDialog.svelte";
   import TransportBar from "./components/TransportBar.svelte";
 
@@ -266,6 +267,17 @@
         >
       </button>
     {/if}
+    {#if app.qualityBatch}
+      {@const batch = app.qualityBatch}
+      {@const progress = t("quality.batchProgress", { done: batch.done, total: batch.total })}
+      <div class="scan quality-batch" title={progress} aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span class="label">{progress}</span>
+        <button class="icon-btn cancel label" aria-label={t("quality.cancel")} onclick={() => app.cancelQualityBatch()}>
+          <Icon name="close" size={14} />
+        </button>
+      </div>
+    {/if}
     {@render navButton({ view: { kind: "settings" }, label: t("common.settings"), icon: "settings" })}
   </nav>
 
@@ -283,6 +295,7 @@
 
   <Dialog />
   <TrackEditDialog />
+  <QualityReportDialog />
 
   {#if app.flight}
     {#key app.flight}
@@ -610,6 +623,11 @@
     font-size: var(--fs-small);
     color: var(--ink-2);
     margin-bottom: 4px;
+  }
+  .quality-batch .cancel {
+    margin-left: auto;
+    width: 26px;
+    height: 26px;
   }
   .spinner {
     width: 14px;

@@ -82,6 +82,15 @@
       <button class="btn" disabled={!ids.length} onclick={() => app.run(commands.playerPlayTracks(shuffled(ids), 0))}>
         <Icon name="shuffle" size={18} /> {t("common.shuffle")}
       </button>
+      <button
+        class="icon-btn filled"
+        aria-label={t("quality.checkAll")}
+        title={t("quality.checkAll")}
+        disabled={!tracks?.length}
+        onclick={() => tracks && app.checkQualityBatch(tracks.map((tr) => tr.id))}
+      >
+        <Icon name="spectrum" size={20} />
+      </button>
     </div>
   </header>
 

@@ -392,6 +392,16 @@ pub struct TrackItem {
     pub duration_ms: u64,
     pub art: Option<String>,
     pub art_colors: Vec<String>,
+    /// The cached quality check, when the file has not changed since it ran.
+    pub quality: Option<QualityBadge>,
+}
+
+/// A track's cached quality verdict, for the badge in track lists.
+#[derive(Debug, Clone, Copy, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityBadge {
+    pub verdict: sonder_quality::Verdict,
+    pub confidence: sonder_quality::Confidence,
 }
 
 impl From<Track> for TrackItem {
@@ -415,6 +425,12 @@ impl From<Track> for TrackItem {
             duration_ms: t.audio.duration_ms,
             art: t.art,
             art_colors: t.art_colors,
+            quality: t.quality.and_then(|q| {
+                Some(QualityBadge {
+                    verdict: sonder_quality::Verdict::parse(&q.verdict)?,
+                    confidence: sonder_quality::Confidence::parse(&q.confidence)?,
+                })
+            }),
         }
     }
 }

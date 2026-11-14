@@ -21,6 +21,7 @@ mod art;
 mod group;
 mod loudness;
 mod playlist;
+mod quality;
 mod query;
 mod scan;
 mod schema;
@@ -37,7 +38,10 @@ pub use loudness::{
     TrackLoudness,
 };
 pub use playlist::{PlaylistDetail, PlaylistItem, PlaylistSummary};
-pub use query::{AlbumDetail, AlbumSort, AlbumSummary, ArtistDetail, ArtistSummary, Track};
+pub use quality::{QualityResult, QualitySubject};
+pub use query::{
+    AlbumDetail, AlbumSort, AlbumSummary, ArtistDetail, ArtistSummary, Track, TrackQuality,
+};
 pub use scan::{ScanFailure, ScanProgress, ScanReport};
 pub use schema::SCHEMA_VERSION;
 pub use tags::{

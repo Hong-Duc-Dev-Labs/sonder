@@ -8,7 +8,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::format::DeviceFormat;
 use crate::render::Renderer;
@@ -287,6 +287,9 @@ impl OutputBackend for NullBackend {
     }
 }
 
+/// How many periods late the render thread may fall before it gives up catching up.
+const MAX_BACKLOG_PERIODS: u32 = 32;
+
 fn render(
     mut renderer: Renderer,
     control: &NullControl,
@@ -294,6 +297,7 @@ fn render(
     period: Duration,
 ) -> Result<StreamReport, OutputError> {
     let handle = renderer.handle().clone();
+    let mut deadline = Instant::now();
     let result = loop {
         if handle.is_stopping() {
             break Ok(());
@@ -323,7 +327,17 @@ fn render(
         if fill.input_exhausted {
             break Ok(());
         }
-        thread::sleep(period);
+        // Pace against a clock, as hardware does: a wake-up that comes late renders the periods
+        // it missed instead of slowing the device. Otherwise coarse timers on a loaded machine
+        // stretch every period and the device plays several times slower than configured.
+        deadline += period;
+        let now = Instant::now();
+        match deadline.checked_duration_since(now) {
+            Some(wait) => thread::sleep(wait),
+            // Like a bounded hardware buffer, drop a backlog too long to catch up on.
+            None if now - deadline > period * MAX_BACKLOG_PERIODS => deadline = now,
+            None => {}
+        }
     };
     // Release a producer that may be blocked on a full queue.
     handle.stop();

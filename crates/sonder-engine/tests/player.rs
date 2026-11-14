@@ -2593,7 +2593,10 @@ fn spawn_clamps_the_crossfade_length() {
         enabled: true,
         seconds: 100.0,
     };
-    let (player, events, _) = start_with(config, NullBackend::new());
+    // 44 s of audio at the default 512 frames per sleep is ~3 800 sleeps, which a loaded
+    // runner with coarse timers stretches past `TIMEOUT`; large periods keep it to ~240.
+    let fast = NullBackend::new().with_period(8_192, Duration::from_millis(1));
+    let (player, events, _) = start_with(config, fast);
     player.enqueue(vec![a, b]);
     player.play();
     let seen = wait_end(&events);

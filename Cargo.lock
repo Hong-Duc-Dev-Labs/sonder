@@ -4342,6 +4342,7 @@ dependencies = [
  "directories",
  "serde",
  "serde_json",
+ "sonder-autoeq",
  "sonder-decode",
  "sonder-dsp",
  "sonder-engine",
@@ -4360,6 +4361,15 @@ dependencies = [
  "tauri-specta",
  "thiserror 2.0.21",
  "toml 1.2.1+spec-1.1.0",
+]
+
+[[package]]
+name = "sonder-autoeq"
+version = "0.1.1"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.21",
+ "ureq",
 ]
 
 [[package]]

@@ -16,6 +16,7 @@ sonder-dsp = { path = "crates/sonder-dsp" }
 sonder-library = { path = "crates/sonder-library" }
 sonder-lyrics = { path = "crates/sonder-lyrics" }
 sonder-metadata = { path = "crates/sonder-metadata" }
+sonder-autoeq = { path = "crates/sonder-autoeq" }
 sonder-quality = { path = "crates/sonder-quality" }
 sonder-verify = { path = "crates/sonder-verify" }
 anyhow = "1.0.104"

@@ -94,6 +94,11 @@ cargo run -p sonder-cli -- play ~/Music/album --verify-hash
   verifies its minisign signature against the public key built into the app, installs it and
   restarts. Nothing is downloaded or installed without that click, and a check sends no library
   data.
+- **Language** — `Settings → Appearance → Language`: English, Tiếng Việt, or System (the
+  first of the OS's preferred languages Sonder has, else English). The interface switches at
+  once; messages that come from the audio engine or the OS (device errors, signal-path stage
+  names) stay in English. Catalogs live in `app/src/lib/locales/`; `vi.ts` is typed against
+  `en.ts`, so a missing or extra key fails `pnpm check`.
 
 The Now Playing view shows the signal path stage by stage (the icon next to the device line).
 

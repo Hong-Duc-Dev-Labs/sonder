@@ -19,7 +19,9 @@
 
 mod art;
 mod group;
+mod history;
 mod loudness;
+mod m3u;
 mod playlist;
 mod quality;
 mod query;
@@ -33,11 +35,15 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 pub use art::{ArtCache, ArtImage, MAX_COVER_COLORS, THUMB_SIZES, cover_colors};
+pub use history::{
+    ListeningStats, RecentPlay, StatsBucket, StatsPeriod, TopAlbum, TopArtist, TopTrack,
+};
 pub use loudness::{
     Loudness, LoudnessMeter, LoudnessProgress, LoudnessReport, REPLAYGAIN_REFERENCE_LUFS,
     TrackLoudness,
 };
-pub use playlist::{PlaylistDetail, PlaylistItem, PlaylistSummary};
+pub use m3u::{M3uImport, format_m3u, parse_m3u};
+pub use playlist::{PlaylistDetail, PlaylistEntry, PlaylistItem, PlaylistSummary};
 pub use quality::{QualityResult, QualitySubject};
 pub use query::{
     AlbumDetail, AlbumSort, AlbumSummary, ArtistDetail, ArtistSummary, Track, TrackQuality,

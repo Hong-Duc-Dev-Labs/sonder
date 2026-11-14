@@ -214,6 +214,8 @@ export class AppState {
   playlistsVersion = $state(0);
   /** The question the modal dialog is showing, if any. */
   dialog = $state<DialogRequest | null>(null);
+  /** Bumped when the editor saved new lyrics into a file; the lyrics panel reloads. */
+  lyricsVersion = $state(0);
   /** The track whose tags the metadata editor is showing, if any. */
   editing = $state<TrackItem | null>(null);
   /** A newer release on GitHub, once a check has found one. */

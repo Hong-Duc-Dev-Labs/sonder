@@ -4,6 +4,8 @@
 use std::io::Read;
 use std::path::Path;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -417,6 +419,15 @@ impl From<Track> for TrackItem {
     }
 }
 
+/// What the metadata editor shows for a track: the tags in its file and the cover embedded
+/// there. A cover the library found beside the file (`folder.jpg`) is not part of it.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackTagsInfo {
+    pub tags: TrackEdit,
+    pub cover: Option<CoverImage>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackEdit {
@@ -428,6 +439,43 @@ pub struct TrackEdit {
     pub disc_no: Option<u32>,
     pub year: Option<i32>,
     pub genre: String,
+    /// The file's lyrics (plain or LRC text). When saving, `null` keeps the file's lyrics as
+    /// they are and blank text removes them.
+    pub lyrics: Option<String>,
+    /// What Save does to the embedded cover; reading always gives `keep`.
+    pub cover: CoverChange,
+}
+
+/// A change to the cover embedded in a file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CoverChange {
+    Keep,
+    /// Removes every embedded picture.
+    Remove,
+    /// Makes this JPEG or PNG (base64) the front cover.
+    Set {
+        data: String,
+    },
+}
+
+/// An image for the UI to show: a JPEG or PNG, base64-encoded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverImage {
+    pub mime: String,
+    pub data: String,
+}
+
+impl CoverImage {
+    /// `None` when the bytes are not a JPEG or PNG.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let mime = sonder_library::cover_mime(bytes)?;
+        Some(CoverImage {
+            mime: mime.to_string(),
+            data: BASE64.encode(bytes),
+        })
+    }
 }
 
 impl From<sonder_library::TrackTags> for TrackEdit {
@@ -441,13 +489,26 @@ impl From<sonder_library::TrackTags> for TrackEdit {
             disc_no: tags.disc_no,
             year: tags.year,
             genre: tags.genre.unwrap_or_default(),
+            lyrics: tags.lyrics,
+            cover: CoverChange::Keep,
         }
     }
 }
 
-impl From<TrackEdit> for sonder_library::TagEdit {
-    fn from(edit: TrackEdit) -> Self {
-        sonder_library::TagEdit {
+impl TryFrom<TrackEdit> for sonder_library::TagEdit {
+    type Error = AppError;
+
+    fn try_from(edit: TrackEdit) -> AppResult<Self> {
+        let cover = match edit.cover {
+            CoverChange::Keep => sonder_library::CoverEdit::Keep,
+            CoverChange::Remove => sonder_library::CoverEdit::Remove,
+            CoverChange::Set { data } => sonder_library::CoverEdit::Set(
+                BASE64
+                    .decode(data.as_bytes())
+                    .map_err(|e| AppError(format!("the cover image is not readable: {e}")))?,
+            ),
+        };
+        Ok(sonder_library::TagEdit {
             title: edit.title,
             artists: edit.artists,
             album: edit.album,
@@ -456,6 +517,83 @@ impl From<TrackEdit> for sonder_library::TagEdit {
             disc_no: edit.disc_no,
             year: edit.year,
             genre: edit.genre,
+            lyrics: edit.lyrics,
+            cover,
+        })
+    }
+}
+
+/// What the editor asks online catalogues and lyrics services with: the fields as typed.
+#[derive(Debug, Clone, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LookupQuery {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+}
+
+/// One online catalogue's idea of the track, for the editor to fill its fields from.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataCandidate {
+    /// "iTunes", "Deezer" or "MusicBrainz".
+    pub source: String,
+    pub title: String,
+    pub artists: Vec<String>,
+    pub album: String,
+    pub album_artists: Vec<String>,
+    pub track_no: Option<u32>,
+    pub disc_no: Option<u32>,
+    pub year: Option<i32>,
+    pub genre: String,
+    pub duration_ms: Option<u64>,
+    /// Its length is the track's, give or take a few seconds: most likely the same recording.
+    pub length_matches: bool,
+    /// For `cover_download`.
+    pub cover_url: Option<String>,
+    pub thumb_url: Option<String>,
+}
+
+impl MetadataCandidate {
+    pub fn new(c: sonder_metadata::Candidate, duration_ms: u64) -> Self {
+        MetadataCandidate {
+            length_matches: c.matches_length(duration_ms),
+            source: c.source,
+            title: c.title,
+            artists: c.artists,
+            album: c.album.unwrap_or_default(),
+            album_artists: c.album_artists,
+            track_no: c.track_no,
+            disc_no: c.disc_no,
+            year: c.year,
+            genre: c.genre.unwrap_or_default(),
+            duration_ms: c.duration_ms,
+            cover_url: c.cover_url,
+            thumb_url: c.thumb_url,
+        }
+    }
+}
+
+/// Lyrics found online for the editor, as the text Save would store in the file.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundLyrics {
+    /// The service's name.
+    pub source: String,
+    /// The text is LRC, with a time on every line.
+    pub synced: bool,
+    /// The service says the track has no vocals; the text is empty.
+    pub instrumental: bool,
+    pub text: String,
+}
+
+impl From<sonder_lyrics::Lyrics> for FoundLyrics {
+    fn from(l: sonder_lyrics::Lyrics) -> Self {
+        FoundLyrics {
+            text: sonder_lyrics::lrc::format(&l),
+            source: l.source,
+            synced: l.synced,
+            instrumental: l.instrumental,
         }
     }
 }

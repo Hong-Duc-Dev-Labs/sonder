@@ -19,6 +19,7 @@ sonder-engine.workspace = true
 sonder-dsp.workspace = true
 sonder-library.workspace = true
 sonder-lyrics.workspace = true
+sonder-metadata.workspace = true
 sonder-output.workspace = true
 crossbeam-channel.workspace = true
 thiserror.workspace = true
@@ -30,6 +31,7 @@ specta = { version = "=2.0.0-rc.28", features = ["derive"] }
 specta-typescript = "0.0.15"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+base64 = "0.22.1"
 toml = "1.2.1"
 directories = "6.0.0"
 souvlaki = { version = "0.9.3", default-features = false, features = ["use_zbus"] }

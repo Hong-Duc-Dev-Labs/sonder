@@ -28,6 +28,7 @@
   $effect(() => {
     const id = trackId;
     const on = online;
+    void app.lyricsVersion;
     lyrics = null;
     active = -1;
     if (id == null) {

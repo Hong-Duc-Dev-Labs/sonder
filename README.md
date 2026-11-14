@@ -124,12 +124,15 @@ it at the same path again.
 ## Editing metadata
 
 Any track's ⋯ menu → **Edit metadata** shows the tags stored in the file itself — title,
-artists, album, album artists, track and disc number, year and genre — and **Save** writes them
+artists, album, album artists, track and disc number, year, genre, the embedded cover and the
+lyrics — and **Save** writes them
 back into that file, then re-indexes the track in place (its album follows the new tags). FLAC,
 ALAC (M4A), WAV and AIFF are written through lofty; DSF and DFF get their ID3v2 tag replaced in
 the container, and a tag a DFF file carries after its form (as sacd_extract writes one) is
-rewritten where it is. Cover art, lyrics, ReplayGain, comments and every other tag are left
-untouched. Several artists are typed separated by semicolons and stored as separate values, so
+rewritten where it is. ReplayGain, comments and every other tag are left untouched; the cover
+and lyrics change only when you change them. A new cover (JPEG or PNG) becomes the front cover
+and other pictures stay; removing the cover removes every embedded picture. Lyrics are stored as
+typed — plain text, or LRC with `[mm:ss.xx]` times, which the lyrics panel then follows. Several artists are typed separated by semicolons and stored as separate values, so
 each one is its own artist in the library and in other players. Every tag the file carries gets
 the edit (a WAV's RIFF INFO next to its ID3v2 tag, for example), so a cleared field stays
 cleared. The file is rebuilt through a temporary file beside it that keeps the original's
@@ -137,6 +140,14 @@ permissions, so a failed write leaves the original as it was, and a read-only fi
 reports the error. The editor shows what the file holds: a track number the library guesses
 from the file name is not offered for saving. A tag edit keeps the loudness already measured for that audio; a
 track whose album changed gets its new album's value on the next analysis pass.
+
+Nothing in the editor goes online on its own. **Find info online** sends the title, artist and
+album as typed to iTunes, Deezer and MusicBrainz at once and lists what they know, the ones
+whose length matches the track first; picking one fills in the fields it knows and downloads
+its cover (from the catalogues' own image servers and Cover Art Archive only). **Find lyrics
+online** asks the same services as the lyrics panel (LRCLIB, BetterLyrics, LyricsPlus, Kugou)
+with the typed fields, even when online lyrics are off in Settings, and puts the answer in the
+lyrics box. Either way nothing is written until **Save**.
 
 ## Verification
 
@@ -194,6 +205,7 @@ crates/sonder-dsp      FIR core, resamplers, PEQ, levelling, volume, dither, DSD
 crates/sonder-engine   player thread, gapless queue, DSP chain order, signal path, DoP packing
 crates/sonder-library  SQLite library, scanner, art cache, loudness analysis, playlists
 crates/sonder-lyrics   LRC/TTML and online lyrics with a disk cache
+crates/sonder-metadata track info and covers from iTunes, Deezer and MusicBrainz
 crates/sonder-cli      device listing, bit-perfect playback harness, library scanner
 crates/sonder-verify   acceptance/verification suite
 app                    Svelte UI + Tauri shell

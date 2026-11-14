@@ -140,7 +140,7 @@ key means installed copies can no longer be updated, so keep a backup of it.
    macOS and Linux installers, signs them with the `TAURI_SIGNING_PRIVATE_KEY` and
    `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repository secrets and attaches them with `latest.json`
    to a draft release. Before publishing the draft, open its `latest.json` and confirm it lists
-   every platform (the build jobs update it one after another). The in-app release notes are
+   every platform (the build jobs run in parallel and can overwrite each other's entries). The in-app release notes are
    copied into `latest.json` at build time, so editing the draft's text does not change them.
 3. Without the workflow, build on each OS with the key in the environment, then write the
    manifest; on a second OS pass the first manifest with `--merge` so one file lists both.

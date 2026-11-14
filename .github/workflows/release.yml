@@ -59,7 +59,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.1
-          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      # Run inside the repo so the targets land on the toolchain rust-toolchain.toml pins,
+      # which is the one cargo uses here.
+      - name: Add both Mac targets for the universal build
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - uses: tauri-apps/tauri-action@v0
         env:

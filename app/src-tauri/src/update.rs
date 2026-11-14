@@ -110,7 +110,7 @@ fn keep_for_retry(
     app: &AppHandle,
     update: Update,
     step: &str,
-    err: tauri_plugin_updater::Error,
+    err: impl std::fmt::Display,
 ) -> AppError {
     *lock(&app.state::<PendingUpdate>().0) = Some(update);
     AppError(format!("cannot {step} the update: {err}"))
@@ -193,9 +193,10 @@ pub async fn update_install(app: AppHandle) -> AppResult<()> {
     // installer has started, and the installer restarts Sonder.
     app.state::<AppState>().player.stop();
     let installing = update.clone();
-    let installed = tauri::async_runtime::spawn_blocking(move || installing.install(bytes)).await?;
-    if let Err(err) = installed {
-        return Err(keep_for_retry(&app, update, "install", err));
+    match tauri::async_runtime::spawn_blocking(move || installing.install(bytes)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => return Err(keep_for_retry(&app, update, "install", err)),
+        Err(err) => return Err(keep_for_retry(&app, update, "install", err)),
     }
     app.restart()
 }

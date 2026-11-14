@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { evidenceValue, frequencyTicks, heat, isFlagged, logX, reasonKey, statusTone, verdictTone } from "./quality";
+import {
+  evidenceValue,
+  frequencyTicks,
+  heat,
+  isFlagged,
+  linearTicks,
+  logX,
+  reasonKey,
+  statusTone,
+  tally,
+  verdictTone,
+} from "./quality";
 
 describe("verdict presentation", () => {
   it("flags only verdicts that point at a problem", () => {
@@ -37,6 +48,18 @@ describe("evidenceValue", () => {
   });
 });
 
+describe("tally", () => {
+  it("counts rows per status, unmeasured ones apart from passes", () => {
+    const counts = tally([
+      { id: "cutoff", status: "pass", value: 46_800 },
+      { id: "slope", status: "warn", value: 40 },
+      { id: "md5", status: "notMeasured", value: null },
+      { id: "holes", status: "notMeasured", value: null },
+    ]);
+    expect(counts).toEqual({ pass: 1, warn: 1, fail: 0, info: 0, notMeasured: 2 });
+  });
+});
+
 describe("chart scales", () => {
   it("places frequencies on a log axis", () => {
     expect(logX(20, 20, 20_000)).toBe(0);
@@ -49,6 +72,13 @@ describe("chart scales", () => {
     expect(frequencyTicks(22_050)).toEqual([100, 1000, 5000, 10_000, 16_000, 20_000]);
     expect(frequencyTicks(48_000)).toContain(24_000);
     expect(frequencyTicks(48_000)).not.toContain(48_000);
+  });
+
+  it("spaces linear ticks evenly and keeps them inside the axis", () => {
+    expect(linearTicks(48_000)).toEqual([4000, 8000, 12_000, 16_000, 20_000, 24_000, 28_000, 32_000, 36_000, 40_000, 44_000]);
+    expect(linearTicks(22_050)).toEqual([2000, 4000, 6000, 8000, 10_000, 12_000, 14_000, 16_000, 18_000, 20_000]);
+    expect(linearTicks(88_200).length).toBeLessThanOrEqual(12);
+    expect(linearTicks(88_200).at(-1)!).toBeLessThan(88_200);
   });
 
   it("ramps from black to pale yellow", () => {

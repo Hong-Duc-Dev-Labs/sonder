@@ -91,6 +91,21 @@ export function frequencyTicks(maxHz: number): number[] {
   return candidates.filter((hz) => hz <= maxHz * 0.98);
 }
 
+/** Evenly spaced ticks for a linear axis up to `maxHz`, at most twelve of them. */
+export function linearTicks(maxHz: number): number[] {
+  const step = [1000, 2000, 4000, 8000, 16_000, 32_000].find((s) => maxHz / s <= 12) ?? 64_000;
+  const ticks: number[] = [];
+  for (let hz = step; hz < maxHz * 0.98; hz += step) ticks.push(hz);
+  return ticks;
+}
+
+/** How many evidence rows fall under each status. */
+export function tally(evidence: QualityEvidence[]): Record<QualityEvidenceStatus, number> {
+  const counts: Record<QualityEvidenceStatus, number> = { pass: 0, warn: 0, fail: 0, info: 0, notMeasured: 0 };
+  for (const e of evidence) counts[e.status]++;
+  return counts;
+}
+
 export function tickLabel(hz: number): string {
   return hz >= 1000 ? `${hz / 1000}k` : `${hz}`;
 }

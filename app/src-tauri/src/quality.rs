@@ -1,17 +1,20 @@
-//! Lossless quality checks: one track on request (with its spectrogram), or a batch run one
-//! track at a time on a worker thread. Results are cached in the library as a summary (verdict
-//! and evidence, no charts); the UI reads them as track badges and reopens reports from them.
+//! Lossless quality checks: one track on request (with its spectrogram), a file picked from
+//! disk that is not in the library, or a batch run one track at a time on a worker thread.
+//! Library results are cached as a summary (verdict and evidence, no charts); the UI reads them
+//! as track badges and reopens reports from them. A picked file's result is never stored.
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use sonder_library::{Library, QualityResult, QualitySubject};
+use sonder_library::{AUDIO_EXTENSIONS, Library, QualityResult, QualitySubject};
 use sonder_quality::{ANALYZER_VERSION, Confidence, Options, QualityError, Report, Verdict};
 use specta::Type;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
 
 use crate::dto::{AppError, AppResult};
@@ -21,6 +24,10 @@ use crate::state::{AppState, lock};
 /// Progress events are sent at most this often per check.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
+/// The `track_id` progress events carry while a picked file (not a library track) is checked.
+/// Library track ids start at 1.
+pub const PICKED_FILE_ID: i64 = 0;
+
 /// The batch queue and the cancel flags.
 #[derive(Default)]
 pub struct QualityControl {
@@ -28,6 +35,9 @@ pub struct QualityControl {
     running: AtomicBool,
     cancel_batch: Arc<AtomicBool>,
     cancel_single: Arc<AtomicBool>,
+    /// The file last chosen with `quality_pick_file`. The UI checks it by asking for "the
+    /// picked file", so the webview never names a path for the backend to read.
+    picked: Mutex<Option<PathBuf>>,
 }
 
 #[derive(Default)]
@@ -43,9 +53,22 @@ struct Batch {
 #[derive(Debug, Clone, Serialize, Type, Event)]
 #[serde(rename_all = "camelCase")]
 pub struct QualityProgressEvent {
+    /// The library track, or 0 for a file picked from disk.
     pub track_id: i64,
     /// Decoded share of the track, 0–1.
     pub fraction: f32,
+}
+
+/// A file chosen from disk for a quality check.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityFile {
+    pub path: String,
+    /// The file name, shown as the title.
+    pub name: String,
+    /// The library track stored at this path, when the file is in the library: the UI then
+    /// checks it as that track, so its result is cached and badged.
+    pub track_id: Option<i64>,
 }
 
 /// A track's check finished and its result was saved.
@@ -91,6 +114,49 @@ pub fn forget_outdated(library: &mut Library) {
     }
 }
 
+/// Asks for an audio file and remembers it as the one `check_picked` analyses.
+pub fn pick_file(app: &AppHandle) -> AppResult<Option<QualityFile>> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("Audio", AUDIO_EXTENSIONS)
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(AppError::from)?;
+    let state = app.state::<AppState>();
+    let track_id = lock(&state.library).track_id_at(&path)?;
+    let name = path
+        .file_name()
+        .map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy())
+        .into_owned();
+    let file = QualityFile {
+        path: path.to_string_lossy().into_owned(),
+        name,
+        track_id,
+    };
+    *lock(&state.quality.picked) = Some(path);
+    Ok(Some(file))
+}
+
+/// Checks the picked file with its spectrogram. Nothing is saved: the file may not be in the
+/// library, and a library track picked this way is checked through `check_track` instead.
+pub async fn check_picked(app: &AppHandle) -> AppResult<Report> {
+    let state = app.state::<AppState>();
+    let path = lock(&state.quality.picked)
+        .clone()
+        .ok_or_else(|| AppError("no file was chosen".into()))?;
+    let cancel = state.quality.cancel_single.clone();
+    cancel.store(false, Ordering::SeqCst);
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let options = Options { spectrogram: true };
+        analyze(&app, &path, PICKED_FILE_ID, &options, &cancel)
+    })
+    .await?
+}
+
 /// Checks one track with its spectrogram and saves the result.
 pub async fn check_track(app: &AppHandle, track_id: i64) -> AppResult<Report> {
     let state = app.state::<AppState>();
@@ -102,7 +168,7 @@ pub async fn check_track(app: &AppHandle, track_id: i64) -> AppResult<Report> {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let options = Options { spectrogram: true };
-        let report = analyze(&app, &subject, &options, &cancel)?;
+        let report = analyze(&app, &subject.path, subject.track_id, &options, &cancel)?;
         let state = app.state::<AppState>();
         save(&app, &mut lock(&state.library), &subject, &report)?;
         Ok(report)
@@ -249,7 +315,7 @@ fn check_one(
         Ok(Some(subject)) => subject,
         _ => return Err(QualityFailure::Other),
     };
-    let report = analyze(app, &subject, options, cancel).map_err(|e| {
+    let report = analyze(app, &subject.path, subject.track_id, options, cancel).map_err(|e| {
         if cancel.load(Ordering::SeqCst) {
             QualityFailure::Cancelled
         } else {
@@ -266,13 +332,13 @@ fn check_one(
 
 fn analyze(
     app: &AppHandle,
-    subject: &QualitySubject,
+    path: &Path,
+    track_id: i64,
     options: &Options,
     cancel: &AtomicBool,
 ) -> AppResult<Report> {
     let mut last = Instant::now();
-    let track_id = subject.track_id;
-    sonder_quality::analyze(&subject.path, options, cancel, |fraction| {
+    sonder_quality::analyze(path, options, cancel, |fraction| {
         if last.elapsed() >= PROGRESS_INTERVAL {
             last = Instant::now();
             let _ = QualityProgressEvent { track_id, fraction }.emit(app);
@@ -280,7 +346,7 @@ fn analyze(
     })
     .map_err(|e| match e {
         QualityError::Cancelled => AppError("cancelled".into()),
-        e => AppError(format!("{}: {e}", subject.path.display())),
+        e => AppError(format!("{}: {e}", path.display())),
     })
 }
 
@@ -318,11 +384,27 @@ fn save(
 }
 
 /// Checks one track (full report with spectrogram) and caches the result. Progress arrives as
-/// `QualityProgressEvent`; `quality_cancel` stops it.
+/// `QualityProgressEvent`; `quality_cancel_check` stops it.
 #[tauri::command]
 #[specta::specta]
 pub async fn quality_check_track(app: AppHandle, track_id: i64) -> AppResult<Report> {
     check_track(&app, track_id).await
+}
+
+/// Opens a file dialog for an audio file to check, in the library or not. `None` when the
+/// dialog was dismissed.
+#[tauri::command]
+#[specta::specta]
+pub async fn quality_pick_file(app: AppHandle) -> AppResult<Option<QualityFile>> {
+    pick_file(&app)
+}
+
+/// Checks the file last chosen with `quality_pick_file` (full report, not cached). Progress
+/// arrives as `QualityProgressEvent` with track id 0; `quality_cancel_check` stops it.
+#[tauri::command]
+#[specta::specta]
+pub async fn quality_check_file(app: AppHandle) -> AppResult<Report> {
+    check_picked(&app).await
 }
 
 /// The cached report for a track (no spectrogram), if it was checked and has not changed.

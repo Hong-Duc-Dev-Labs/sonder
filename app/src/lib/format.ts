@@ -10,6 +10,11 @@ export function duration(ms: number | null | undefined): string {
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
 }
 
+/** Lower case without diacritics, so "viet" finds "Việt". */
+export function fold(text: string): string {
+  return text.normalize("NFD").replace(/\p{M}/gu, "").replace(/đ/gi, "d").toLocaleLowerCase();
+}
+
 export function rate(hz: number): string {
   const khz = hz / 1000;
   return `${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`;

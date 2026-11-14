@@ -99,6 +99,8 @@ fn bindings() -> Builder<tauri::Wry> {
             mini::app_quit,
             quality::quality_check_track,
             quality::quality_cached,
+            quality::quality_pick_file,
+            quality::quality_check_file,
             quality::quality_check_batch,
             quality::quality_cancel_check,
             quality::quality_cancel_batch,

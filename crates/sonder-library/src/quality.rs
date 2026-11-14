@@ -6,7 +6,7 @@
 //! longer matches and reads as unchecked. Results from an older analyzer are removed with
 //! [`Library::remove_quality_before`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{OptionalExtension, params};
 
@@ -47,6 +47,19 @@ impl Library {
                     })
                 },
             )
+            .optional()?)
+    }
+
+    /// The library track stored at `path`, if the file is in the library.
+    pub fn track_id_at(&self, path: &Path) -> Result<Option<i64>, LibraryError> {
+        let Some(key) = path.to_str() else {
+            return Ok(None);
+        };
+        Ok(self
+            .conn
+            .query_row("SELECT id FROM tracks WHERE path = ?1", [key], |row| {
+                row.get(0)
+            })
             .optional()?)
     }
 

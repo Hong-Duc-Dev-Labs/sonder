@@ -185,8 +185,11 @@ lyrics box. Either way nothing is written until **Save**.
 
 ## Quality check
 
-A track's ⋯ menu → **Check quality** decodes the whole file and says whether it is the
-lossless file it claims to be: **Genuine lossless**, **Suspect**, **Transcoded from lossy**,
+The **Quality check** page in the sidebar checks any song: pick one from its searchable list of
+the library, press **Check what's playing**, or **Choose a file…** to check any audio file on disk
+(a file outside the library is checked but its result is not saved). A track's ⋯ menu →
+**Check quality**, or a track's quality badge, opens the same page on that track. A check decodes
+the whole file and says whether it is the lossless file it claims to be: **Genuine lossless**, **Suspect**, **Transcoded from lossy**,
 **Fake hi-res (upsampled)**, **Fake bit depth** or **Inconclusive** (too short, too quiet or too
 little treble; not a pass), each with a confidence. The report lists the evidence behind it,
 row by row:
@@ -203,7 +206,8 @@ row by row:
   suspect, never fake (analog transfers can look the same).
 - **FLAC MD5** — proves the file decodes to what was encoded; it says nothing about the source.
 
-It also shows the average spectrum with the detected cutoff and a spectrum-over-time map. A whole
+It also shows the average spectrum (linear kHz axis) with the detected cutoff, the measured format
+figures, and a spectrum-over-time map. A whole
 album (the spectrum button on its page), a playlist (its ⋯ menu) or every song (the Songs page)
 can be checked as a batch, one track at a time, with progress and Cancel in the sidebar; a
 track whose cached result is still valid is not decoded again. Results are stored in the library

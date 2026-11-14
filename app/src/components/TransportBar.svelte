@@ -489,6 +489,7 @@
     width: 40px;
     font-size: var(--fs-label);
     color: var(--ink-2);
+    font-family: var(--font-figures);
     font-variant-numeric: tabular-nums;
     text-align: center;
   }

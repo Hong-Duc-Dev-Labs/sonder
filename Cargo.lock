@@ -4325,7 +4325,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossbeam-channel",
  "directories",
@@ -4351,7 +4351,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -4364,7 +4364,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-decode"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hound",
  "symphonia",
@@ -4374,7 +4374,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-dsp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "criterion",
  "hound",
@@ -4387,7 +4387,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossbeam-channel",
  "hound",
@@ -4398,7 +4398,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-library"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossbeam-channel",
  "hound",
@@ -4416,7 +4416,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-lyrics"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -4428,7 +4428,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-output"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alsa",
  "libc",
@@ -4443,7 +4443,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-verify"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossbeam-channel",
  "hound",

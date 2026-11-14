@@ -473,7 +473,7 @@
   }
   .arc .time {
     fill: var(--ink);
-    font-family: var(--font);
+    font-family: var(--font-figures);
     font-size: 30px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;

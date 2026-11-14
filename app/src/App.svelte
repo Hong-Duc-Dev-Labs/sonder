@@ -181,7 +181,7 @@
         <circle cx="12" cy="12" r="3.6" fill="currentColor" />
         <circle cx="12" cy="12" r="1" fill="#0b0b0d" />
       </svg>
-      <span class="label">Sonder</span>
+      <span class="label wordmark">Sonder</span>
       {#if !app.narrow}
         <button
           class="icon-btn fold"
@@ -410,6 +410,11 @@
     font-size: 20px;
     font-weight: 800;
     letter-spacing: -0.03em;
+  }
+  .wordmark {
+    font-family: var(--font-signature);
+    font-weight: 400;
+    letter-spacing: 0;
   }
   .mark {
     width: 28px;

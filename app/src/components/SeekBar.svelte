@@ -153,6 +153,7 @@
     margin-top: 6px;
     font-size: 13px;
     color: var(--ink-2);
+    font-family: var(--font-figures);
     font-variant-numeric: tabular-nums;
   }
 </style>

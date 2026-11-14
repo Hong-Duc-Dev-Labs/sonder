@@ -219,10 +219,12 @@
     font-size: var(--fs-small);
   }
   h1 {
+    font-family: var(--font-signature);
     font-size: var(--fs-display);
-    font-weight: 800;
-    letter-spacing: -0.035em;
-    line-height: 1.05;
+    /* the script face has one weight; anything heavier would be synthesized */
+    font-weight: 400;
+    /* room for the stacked Vietnamese marks above the script's tall ascenders */
+    line-height: 1.3;
   }
 
   /* The record on the platter, its cover's colour washed into the card. */
@@ -324,6 +326,7 @@
   }
   .next-time {
     font-size: var(--fs-small);
+    font-family: var(--font-figures);
     font-variant-numeric: tabular-nums;
     color: var(--ink-2);
   }

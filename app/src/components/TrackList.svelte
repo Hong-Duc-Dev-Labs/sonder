@@ -274,6 +274,7 @@
   }
   .no {
     color: var(--ink-3);
+    font-family: var(--font-figures);
     font-variant-numeric: tabular-nums;
   }
   .spin {
@@ -329,6 +330,7 @@
   .dur {
     text-align: right;
     color: var(--ink-2);
+    font-family: var(--font-figures);
     font-variant-numeric: tabular-nums;
   }
   .row :global(.more) {

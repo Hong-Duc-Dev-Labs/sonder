@@ -1479,6 +1479,7 @@
   .value {
     min-width: 64px;
     justify-content: center;
+    font-family: var(--font-figures);
     font-variant-numeric: tabular-nums;
   }
   /* rows in one card read as one list, split by hairlines that start after the icon */

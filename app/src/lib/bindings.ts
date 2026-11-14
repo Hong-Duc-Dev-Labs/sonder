@@ -117,6 +117,16 @@ export const commands = {
 	 */
 	peqExport: (peq: PeqSetting, name: string) => __TAURI_INVOKE<string | null>("peq_export", { peq, name }),
 	/**
+	 *  Headphones in AutoEQ matching `query`, best first. The first search downloads AutoEQ's index
+	 *  (kept on disk for a week); the query itself is matched locally and never sent anywhere.
+	 */
+	autoeqSearch: (query: string) => __TAURI_INVOKE<AutoEqResult[]>("autoeq_search", { query }),
+	/**
+	 *  Downloads the AutoEQ parametric EQ of `result` and returns it as an import named after the
+	 *  headphone. Nothing is saved here.
+	 */
+	autoeqImport: (result: AutoEqResult) => __TAURI_INVOKE<PeqImport>("autoeq_import", { result }),
+	/**
 	 *  Starts measuring every track that has no ReplayGain tags, or queues a pass behind the one
 	 *  running. Progress and the result arrive as `LoudnessProgressEvent` and
 	 *  `LoudnessFinishedEvent`.
@@ -230,6 +240,17 @@ export type ArtistInfo = {
 	artist: Artist,
 	albums: Album[],
 	appearsOn: Album[],
+};
+
+/**  One AutoEQ result: a headphone as one source measured it. */
+export type AutoEqResult = {
+	name: string,
+	/**  Who measured it (oratory1990, crinacle, Rtings…). */
+	source: string,
+	/**  The measurement rig, when the source used several. */
+	rig: string | null,
+	/**  Folder of the result in the AutoEQ repository; passed back to `autoeq_import`. */
+	path: string,
 };
 
 /**  The RBJ filter shapes the EQ offers. */

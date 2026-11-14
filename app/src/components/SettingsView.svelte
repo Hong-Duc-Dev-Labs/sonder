@@ -4,6 +4,7 @@
   import {
     commands,
     events,
+    type AutoEqResult,
     type BiquadKindSetting,
     type ConvolutionSetting,
     type CoverStyle,
@@ -22,6 +23,7 @@
     type LevelingSetting,
     type PeqBandSetting,
     type PcmToDsd,
+    type PeqImport,
     type PeqSetting,
     type RootFolder,
     type SdmOrderSetting,
@@ -262,7 +264,58 @@
   /** Reads an Equalizer APO parametric file, saves it as a preset and applies it. */
   async function importPeq() {
     const imported = await app.run(commands.peqImport());
-    if (!imported) return;
+    if (imported) await applyImport(imported);
+  }
+
+  let autoEqOpen = $state(false);
+  let autoEqQuery = $state("");
+  let autoEqResults = $state<AutoEqResult[] | null>(null);
+  let autoEqSearching = $state(false);
+  let autoEqError = $state<string | null>(null);
+  /** The result being downloaded, by path. */
+  let autoEqLoading = $state<string | null>(null);
+  let autoEqTimer = 0;
+  /** Bumped on every search, so an older answer is dropped. */
+  let autoEqSearches = 0;
+
+  /** Searches AutoEQ shortly after typing stops. */
+  function autoEqInput() {
+    window.clearTimeout(autoEqTimer);
+    autoEqTimer = window.setTimeout(() => void autoEqSearch(), 250);
+  }
+
+  async function autoEqSearch() {
+    const query = autoEqQuery.trim();
+    const run = ++autoEqSearches;
+    if (!query) {
+      autoEqResults = null;
+      autoEqError = null;
+      return;
+    }
+    autoEqSearching = true;
+    try {
+      const found = await commands.autoeqSearch(query);
+      if (run === autoEqSearches) {
+        autoEqResults = found;
+        autoEqError = null;
+      }
+    } catch (err) {
+      if (run === autoEqSearches) autoEqError = typeof err === "string" ? err : String(err);
+    } finally {
+      if (run === autoEqSearches) autoEqSearching = false;
+    }
+  }
+
+  /** Downloads a headphone's AutoEQ correction, saves it as a preset and applies it. */
+  async function useAutoEq(result: AutoEqResult) {
+    autoEqLoading = result.path;
+    const imported = await app.run(commands.autoeqImport(result));
+    autoEqLoading = null;
+    if (imported) await applyImport(imported);
+  }
+
+  /** Saves an imported EQ as a preset (asking before replacing one) and applies it. */
+  async function applyImport(imported: PeqImport) {
     let name = imported.name;
     if (Object.hasOwn(peqPresets, name)) {
       const kept = freePresetName(name);
@@ -759,7 +812,51 @@
           {/if}
           <button class="btn small" onclick={importPeq}>{t("settings.peq.import")}</button>
           <button class="btn small" disabled={peqEmpty} onclick={exportPeq}>{t("settings.peq.export")}</button>
+          <button class="btn small" aria-expanded={autoEqOpen} onclick={() => (autoEqOpen = !autoEqOpen)}>
+            <Icon name="search" size={16} /> {t("settings.peq.autoEq")}
+          </button>
         </div>
+        {#if autoEqOpen}
+          <div class="autoeq">
+            <input
+              class="text"
+              type="search"
+              placeholder={t("settings.peq.autoEqPlaceholder")}
+              aria-label={t("settings.peq.autoEqPlaceholder")}
+              bind:value={autoEqQuery}
+              oninput={autoEqInput}
+            />
+            <p class="note" aria-live="polite">
+              {#if autoEqError}
+                <span class="error">{autoEqError}</span>
+              {:else if autoEqSearching}
+                {t("settings.peq.autoEqSearching")}
+              {:else if autoEqResults && !autoEqResults.length}
+                {t("settings.peq.autoEqNone", { query: autoEqQuery.trim() })}
+              {:else}
+                {t("settings.peq.autoEqNote")}
+              {/if}
+            </p>
+            {#if autoEqResults?.length}
+              <ul class="autoeq-results">
+                {#each autoEqResults as result (result.path)}
+                  <li>
+                    <button disabled={autoEqLoading != null} onclick={() => useAutoEq(result)}>
+                      <span class="autoeq-name">{result.name}</span>
+                      <span class="dim">
+                        {autoEqLoading === result.path
+                          ? t("settings.peq.autoEqLoading")
+                          : result.rig
+                            ? t("settings.peq.autoEqByOn", { source: result.source, rig: result.rig })
+                            : t("settings.peq.autoEqBy", { source: result.source })}
+                      </span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
         <p class="note">{t("settings.peq.importNote")}</p>
       </div>
     </section>
@@ -1667,6 +1764,58 @@
     white-space: pre-wrap;
     max-height: 12em;
     overflow-y: auto;
+  }
+  .autoeq {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0 14px 10px;
+  }
+  .autoeq .note {
+    padding: 0;
+  }
+  .autoeq .error {
+    color: var(--error);
+  }
+  .autoeq-results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 280px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+  .autoeq-results button {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border: none;
+    border-radius: var(--r-sm);
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .autoeq-results button:hover:not(:disabled),
+  .autoeq-results button:focus-visible {
+    background: var(--soft-hover);
+  }
+  .autoeq-results button:disabled {
+    cursor: progress;
+  }
+  .autoeq-name {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .autoeq-results .dim {
+    font-size: var(--fs-small);
+    white-space: nowrap;
   }
   @media (max-width: 720px) {
     .band {

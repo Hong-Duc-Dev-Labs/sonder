@@ -15,9 +15,9 @@ use tauri_specta::Event;
 
 use crate::dto::{
     Album, AlbumInfo, AlbumPage, AppError, AppResult, Artist, ArtistInfo, AutoEqResult, CoverImage,
-    Device, FoundLyrics, ImpulseResponseInfo, LookupQuery, Lyrics, MetadataCandidate, PeqImport,
-    PlayerSnapshot, Playlist, PlaylistInfo, QueueItem, RepeatMode, RootFolder, SortOrder,
-    TrackEdit, TrackItem, TrackTagsInfo, export_file_name,
+    Device, FoundLyrics, ImpulseResponseInfo, LookupQuery, Lyrics, M3uImported, MetadataCandidate,
+    PeqImport, PlayerSnapshot, Playlist, PlaylistInfo, QueueItem, RepeatMode, RootFolder,
+    SortOrder, TrackEdit, TrackItem, TrackTagsInfo, export_file_name, safe_file_stem,
 };
 use crate::events::{LibraryChangedEvent, QueueChangedEvent};
 use crate::settings::{PeqSetting, Settings};
@@ -257,6 +257,102 @@ pub async fn playlist_move_entry(
 ) -> AppResult<()> {
     lock(&state.library).move_in_playlist(id, from, to)?;
     Ok(())
+}
+
+/// Largest playlist file read: a 100,000-entry M3U is a few MB.
+const MAX_M3U_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Picks an M3U/M3U8 file and creates a playlist from it, named after the file. Entries whose
+/// file is not in the library are kept (they show as "not in library"); web streams are
+/// skipped. `None` when the dialog was cancelled.
+#[tauri::command]
+#[specta::specta]
+pub async fn playlist_import_m3u(app: AppHandle) -> AppResult<Option<M3uImported>> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("M3U playlist", &["m3u8", "m3u"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(AppError::from)?;
+    let read = path.clone();
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(&read)
+            .and_then(|f| f.take(MAX_M3U_BYTES + 1).read_to_end(&mut bytes))
+            .map_err(|e| AppError(format!("cannot read {}: {e}", read.display())))?;
+        if bytes.len() as u64 > MAX_M3U_BYTES {
+            return Err(AppError(format!(
+                "{} is too large for a playlist",
+                read.display()
+            )));
+        }
+        Ok(bytes)
+    })
+    .await??;
+    let base = path.parent().unwrap_or(std::path::Path::new(""));
+    let parsed = sonder_library::parse_m3u(&bytes, base);
+    if parsed.paths.is_empty() {
+        return Err(AppError(format!(
+            "{} lists no local files",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        )));
+    }
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Imported playlist".into());
+    let state = app.state::<AppState>();
+    let mut library = lock(&state.library);
+    let created = library.create_playlist(&name)?;
+    let added = library.add_paths_to_playlist(created.id, &parsed.paths)?;
+    let detail = library
+        .playlist(created.id)?
+        .ok_or_else(|| AppError("the new playlist disappeared".into()))?;
+    Ok(Some(M3uImported {
+        missing: detail.missing,
+        playlist: detail.playlist.into(),
+        added: u32::try_from(added).unwrap_or(u32::MAX),
+        skipped: u32::try_from(parsed.skipped.len()).unwrap_or(u32::MAX),
+    }))
+}
+
+/// Saves a playlist as an extended M3U8 file (absolute paths, `#EXTINF` for tracks in the
+/// library) and returns the saved path; `None` when the dialog was cancelled.
+#[tauri::command]
+#[specta::specta]
+pub async fn playlist_export_m3u(app: AppHandle, id: i64) -> AppResult<Option<String>> {
+    let (name, text) = {
+        let state = app.state::<AppState>();
+        let library = lock(&state.library);
+        let summary = library
+            .playlist(id)?
+            .ok_or(sonder_library::LibraryError::PlaylistNotFound(id))?
+            .playlist;
+        let entries = library.playlist_entries(id)?.unwrap_or_default();
+        (summary.name, sonder_library::format_m3u(&entries))
+    };
+    let Some(target) = app
+        .dialog()
+        .file()
+        .add_filter("M3U8 playlist", &["m3u8"])
+        .set_file_name(format!("{}.m3u8", safe_file_stem(&name)))
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = target.into_path().map_err(AppError::from)?;
+    let saved = path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::write(&path, text)
+            .map_err(|e| AppError(format!("cannot write {}: {e}", path.display())))
+    })
+    .await??;
+    Ok(Some(saved.to_string_lossy().into_owned()))
 }
 
 // ----- queue and transport -----

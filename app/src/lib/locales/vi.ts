@@ -272,6 +272,50 @@ export const vi: Record<MessageKey, Message> = {
   "quality.reason.md5.fail": "Âm thanh giải mã không khớp checksum đã lưu: file bị hỏng.",
   "quality.reason.md5.other": "File không có chữ ký MD5.",
 
+  // thống kê nghe nhạc
+  "stats.title": "Thống kê",
+  "stats.local": "Lấy từ lịch sử nghe trên máy này. Không có gì được gửi đi.",
+  "stats.period": "Khoảng thời gian",
+  "stats.period.week": "7 ngày",
+  "stats.period.month": "30 ngày",
+  "stats.period.year": "12 tháng",
+  "stats.period.all": "Toàn bộ",
+  "stats.listened": "Thời gian nghe",
+  "stats.playsTitle": "Lượt nghe",
+  "stats.tracks": "Số bài khác nhau",
+  "stats.chart": "Thời gian nghe",
+  "stats.empty":
+    "Chưa nghe gì trong khoảng này. Một bài được tính khi đã phát 30 giây, hoặc nửa bài với bài ngắn.",
+  "stats.topTracks": "Bài nghe nhiều nhất",
+  "stats.topArtists": "Nghệ sĩ nghe nhiều nhất",
+  "stats.topAlbums": "Album nghe nhiều nhất",
+  "stats.recent": "Nghe gần đây",
+  "stats.plays": { one: "{count} lượt", other: "{count} lượt" },
+  "stats.clear": "Xoá lịch sử",
+  "stats.clearTitle": "Xoá lịch sử nghe?",
+  "stats.clearMessage": "Mọi lượt nghe đã ghi sẽ bị xoá. Nhạc và danh sách phát không bị ảnh hưởng.",
+  "stats.cleared": { one: "Đã xoá {count} lượt nghe", other: "Đã xoá {count} lượt nghe" },
+
+  // hẹn giờ tắt
+  "sleep.title": "Hẹn giờ tắt",
+  "sleep.left": "Hẹn giờ tắt: còn {m} phút",
+  "sleep.atEndOfTrack": "Hẹn giờ tắt: dừng khi hết bài này",
+  "sleep.minutes": "{m} phút",
+  "sleep.endOfTrack": "Hết bài này",
+  "sleep.off": "Tắt hẹn giờ",
+  "sleep.fired": "Hẹn giờ tắt: đã tạm dừng phát nhạc",
+
+  // danh sách phát M3U
+  "m3u.import": "Nhập M3U…",
+  "m3u.export": "Xuất M3U…",
+  "m3u.imported": {
+    one: "Đã nhập {name} với {count} mục",
+    other: "Đã nhập {name} với {count} mục",
+  },
+  "m3u.missing": { one: "{count} mục chưa có trong thư viện", other: "{count} mục chưa có trong thư viện" },
+  "m3u.skipped": { one: "bỏ qua {count} luồng web", other: "bỏ qua {count} luồng web" },
+  "m3u.exported": "Đã lưu danh sách phát thành {file}",
+
   "tags.editTitle": "Sửa thông tin bài hát",
   "tags.title": "Tên bài hát",
   "tags.artists": "Nghệ sĩ",

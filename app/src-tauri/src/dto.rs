@@ -260,8 +260,14 @@ const MAX_NAME_CHARS: usize = 100;
 /// Windows forbids in a file name replaced. A name the shell rejects makes the dialog report
 /// nothing at all (`rfd` folds the error into "no file chosen"), so `Export…` would look dead.
 pub fn export_file_name(preset: &str) -> String {
-    let mut base = String::with_capacity(preset.len());
-    for c in preset.trim().chars().take(MAX_NAME_CHARS) {
+    format!("{}{APO_FILE_SUFFIX}.txt", safe_file_stem(preset))
+}
+
+/// `name` as a file name stem every OS accepts: forbidden characters replaced, trailing dots
+/// and spaces dropped, at most [`MAX_NAME_CHARS`] characters, "Sonder" when nothing is left.
+pub fn safe_file_stem(name: &str) -> String {
+    let mut base = String::with_capacity(name.len());
+    for c in name.trim().chars().take(MAX_NAME_CHARS) {
         base.push(match c {
             '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
             c if c.is_control() => '-',
@@ -269,8 +275,20 @@ pub fn export_file_name(preset: &str) -> String {
         });
     }
     let base = base.trim_end_matches(['.', ' ']);
-    let base = if base.is_empty() { "Sonder" } else { base };
-    format!("{base}{APO_FILE_SUFFIX}.txt")
+    if base.is_empty() { "Sonder" } else { base }.to_owned()
+}
+
+/// What an M3U import created.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct M3uImported {
+    pub playlist: Playlist,
+    /// Entries added, missing ones included.
+    pub added: u32,
+    /// Added entries whose file is not in the library (yet).
+    pub missing: u32,
+    /// Web streams and other entries that are not local files.
+    pub skipped: u32,
 }
 
 /// The preset name a file implies: `Sennheiser HD 600 ParametricEQ.txt` → `Sennheiser HD 600`.

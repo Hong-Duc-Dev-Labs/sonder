@@ -15,6 +15,7 @@
   import MiniDisc from "./MiniDisc.svelte";
   import PlayPauseIcon from "./PlayPauseIcon.svelte";
   import Popover from "./Popover.svelte";
+  import SleepTimerButton from "./SleepTimerButton.svelte";
   import { keySeeker } from "../lib/seek";
   import { rangeFill } from "../lib/rangeFill";
 
@@ -215,6 +216,7 @@
     </div>
 
     <div class="right">
+      <SleepTimerButton />
       <button
         data-lyrics-toggle
         class="icon-btn"

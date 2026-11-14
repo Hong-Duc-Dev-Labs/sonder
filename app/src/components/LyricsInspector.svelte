@@ -2,6 +2,7 @@
   // Lyrics in the inspector column, for every page but Now Playing (which shows them in place
   // of its title). Escape closes it and returns focus to the lyrics button that opened it.
   import { app } from "../lib/app.svelte";
+  import { t } from "../lib/i18n.svelte";
   import Icon from "./Icon.svelte";
   import LyricsPanel from "./LyricsPanel.svelte";
 
@@ -13,17 +14,16 @@
 </script>
 
 <!-- svelte:window in App.svelte closes it on Escape, so focus outside the panel is covered. -->
-<aside class="panel glass" aria-label="Lyrics">
+<aside class="panel glass" aria-label={t("common.lyrics")}>
   <div class="head">
     <div class="titles">
-      <h2>Lyrics</h2>
+      <h2>{t("common.lyrics")}</h2>
       {#if item}
-        <span class="sub" title="{item.title} · {item.artist ?? 'Unknown artist'}">
-          {item.title} · {item.artist ?? "Unknown artist"}
-        </span>
+        {@const line = `${item.title} · ${item.artist ?? t("common.unknownArtist")}`}
+        <span class="sub" title={line}>{line}</span>
       {/if}
     </div>
-    <button class="icon-btn" aria-label="Close lyrics" onclick={close}><Icon name="close" size={18} /></button>
+    <button class="icon-btn" aria-label={t("lyrics.close")} onclick={close}><Icon name="close" size={18} /></button>
   </div>
   <div class="body">
     <LyricsPanel />

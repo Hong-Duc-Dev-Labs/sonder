@@ -9,6 +9,7 @@
   import { commands } from "../lib/bindings";
   import { playbackMs } from "../lib/clock.svelte";
   import { duration as formatTime } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import { Spring, onFrame, reducedMotion } from "../lib/motion";
   import {
     END_ANGLE,
@@ -369,11 +370,14 @@
         class:enabled={canSeek}
         role="slider"
         tabindex={canSeek ? 0 : -1}
-        aria-label="Seek (tonearm)"
+        aria-label={t("tonearm.seek")}
         aria-valuemin={0}
         aria-valuemax={Math.round(totalMs / 1000)}
         aria-valuenow={Math.round((dragging ? scrubMs : ariaMs) / 1000)}
-        aria-valuetext="{formatTime(dragging ? scrubMs : ariaMs)} of {formatTime(totalMs)}"
+        aria-valuetext={t("common.seekValue", {
+          elapsed: formatTime(dragging ? scrubMs : ariaMs),
+          total: formatTime(totalMs),
+        })}
         aria-disabled={!canSeek}
         onpointerdown={onPointerDown}
         onpointermove={onPointerMove}

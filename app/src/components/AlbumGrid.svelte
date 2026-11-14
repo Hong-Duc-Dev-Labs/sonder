@@ -4,6 +4,7 @@
   import { untrack } from "svelte";
   import { app } from "../lib/app.svelte";
   import { commands, type Album, type SortOrder } from "../lib/bindings";
+  import { t } from "../lib/i18n.svelte";
   import AlbumCard from "./AlbumCard.svelte";
 
   let { sort, total = $bindable(null) }: { sort: SortOrder; total?: number | null } = $props();
@@ -78,9 +79,9 @@
 >
   {#if total === 0}
     <div class="empty">
-      <h2>Your library is empty</h2>
-      <p class="dim">Add a music folder in Settings to start.</p>
-      <button class="btn primary" onclick={() => app.go({ kind: "settings" })}>Open Settings</button>
+      <h2>{t("common.libraryEmpty")}</h2>
+      <p class="dim">{t("albums.emptyHint")}</p>
+      <button class="btn primary" onclick={() => app.go({ kind: "settings" })}>{t("albums.openSettings")}</button>
     </div>
   {:else}
     <div class="spacer" bind:clientWidth={width} style:height="{rows * rowHeight}px">

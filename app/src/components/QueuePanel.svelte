@@ -6,7 +6,8 @@
   import { onMount } from "svelte";
   import { app } from "../lib/app.svelte";
   import { commands, type QueueItem } from "../lib/bindings";
-  import { duration } from "../lib/format";
+  import { duration, plural } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import MiniDisc from "./MiniDisc.svelte";
@@ -32,7 +33,9 @@
   <div class="row {kind}" aria-current={kind === "now" ? "true" : undefined}>
     <button
       class="play"
-      aria-label="Play {item.title}{item.artist ? ` by ${item.artist}` : ''}"
+      aria-label={item.artist
+        ? t("common.playItemBy", { title: item.title, artist: item.artist })
+        : t("common.playItem", { title: item.title })}
       onclick={() => app.run(commands.playerPlayIndex(index))}
     >
       <span class="thumb">
@@ -48,42 +51,42 @@
       </span>
       <span class="d">{duration(item.durationMs)}</span>
     </button>
-    <button class="remove icon-btn" aria-label="Remove {item.title} from the queue" onclick={() => app.run(commands.queueRemove(item.entryId))}>
+    <button class="remove icon-btn" aria-label={t("queue.removeItem", { title: item.title })} onclick={() => app.run(commands.queueRemove(item.entryId))}>
       <Icon name="close" size={16} />
     </button>
   </div>
 {/snippet}
 
 <!-- svelte:window in App.svelte closes it on Escape, so focus outside the panel is covered. -->
-<aside class="panel glass" bind:this={panel} aria-label="Queue">
+<aside class="panel glass" bind:this={panel} aria-label={t("common.queue")}>
   <div class="head">
     <div>
-      <h2>Queue</h2>
+      <h2>{t("common.queue")}</h2>
       <span class="sub">
-        {app.queue.length} {app.queue.length === 1 ? "track" : "tracks"}{remainingMs ? ` · ${duration(remainingMs)} left` : ""}
+        {plural(app.queue.length, "track")}{remainingMs ? ` · ${t("queue.left", { time: duration(remainingMs) })}` : ""}
       </span>
     </div>
     <div class="tools">
       {#if app.queue.length}
-        <button class="btn small" onclick={() => app.run(commands.queueClear())}>Clear</button>
+        <button class="btn small" onclick={() => app.run(commands.queueClear())}>{t("queue.clear")}</button>
       {/if}
-      <button class="icon-btn" aria-label="Close queue" onclick={close}><Icon name="close" size={18} /></button>
+      <button class="icon-btn" aria-label={t("queue.close")} onclick={close}><Icon name="close" size={18} /></button>
     </div>
   </div>
 
   <div class="items scroll">
     {#if nowEntry}
-      <h3 class="kicker">Now playing</h3>
+      <h3 class="kicker">{t("common.nowPlayingKicker")}</h3>
       {@render row(nowEntry.item, nowEntry.index, "now")}
     {/if}
     {#if upNext.length}
-      <h3 class="kicker">Up next</h3>
+      <h3 class="kicker">{t("common.upNext")}</h3>
       {#each upNext as e (e.item.entryId)}
         {@render row(e.item, e.index, "next")}
       {/each}
     {/if}
     {#if played.length}
-      <h3 class="kicker">Played</h3>
+      <h3 class="kicker">{t("queue.played")}</h3>
       {#each played as e (e.item.entryId)}
         {@render row(e.item, e.index, "played")}
       {/each}
@@ -91,8 +94,8 @@
     {#if !app.queue.length}
       <div class="empty">
         <Icon name="disc" size={40} />
-        <p>The queue is empty.</p>
-        <button class="btn small" onclick={() => { app.queueOpen = false; app.go({ kind: "albums" }); }}>Browse albums</button>
+        <p>{t("queue.empty")}</p>
+        <button class="btn small" onclick={() => { app.queueOpen = false; app.go({ kind: "albums" }); }}>{t("common.browseAlbums")}</button>
       </div>
     {/if}
   </div>

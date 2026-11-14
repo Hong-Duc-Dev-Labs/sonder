@@ -6,6 +6,7 @@
   import { commands } from "../lib/bindings";
   import { playbackMs } from "../lib/clock.svelte";
   import { duration } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import { onFrame } from "../lib/motion";
   import { keySeeker } from "../lib/seek";
 
@@ -66,8 +67,8 @@
       step="1000"
       value={shownMs}
       disabled={!enabled}
-      aria-label="Seek"
-      aria-valuetext="{duration(shownMs)} of {duration(total)}"
+      aria-label={t("common.seek")}
+      aria-valuetext={t("common.seekValue", { elapsed: duration(shownMs), total: duration(total) })}
       oninput={(e) => (dragging = Number(e.currentTarget.value))}
       onchange={commit}
       onkeydown={(e) => seeker.onKey(e)}

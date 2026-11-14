@@ -2,6 +2,7 @@
   import { app } from "../lib/app.svelte";
   import { commands, type PlaylistEntry, type PlaylistInfo } from "../lib/bindings";
   import { durationShort, plural, shuffled } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import { fadeQuick } from "../lib/transitions";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
@@ -79,7 +80,11 @@
   async function rename() {
     menuOpen = false;
     if (!info) return;
-    const name = await app.ask({ title: "Rename playlist", input: info.playlist.name, confirm: "Rename" });
+    const name = await app.ask({
+      title: t("playlist.renameTitle"),
+      input: info.playlist.name,
+      confirm: t("playlist.rename"),
+    });
     if (!name || name === info.playlist.name) return;
     edit(() => app.run(commands.playlistRename(id, name)));
   }
@@ -88,9 +93,9 @@
     menuOpen = false;
     if (!info) return;
     const sure = await app.ask({
-      title: `Delete “${info.playlist.name}”?`,
-      message: "The playlist is removed. Its tracks stay in your library.",
-      confirm: "Delete",
+      title: t("playlist.deleteTitle", { name: info.playlist.name }),
+      message: t("playlist.deleteMessage"),
+      confirm: t("playlist.deleteConfirm"),
       danger: true,
     });
     if (sure == null) return;
@@ -102,13 +107,13 @@
 
 <div class="page-full scroll">
   {#if info === null}
-    <p class="missing dim">This playlist no longer exists.</p>
+    <p class="missing dim">{t("playlist.missing")}</p>
   {:else if info}
     {@const playlist = info.playlist}
     <section class="hero">
       <div class="art"><Cover hash={playlist.art} size={1000} alt="" /></div>
       <div class="meta">
-        <span class="kicker">Playlist</span>
+        <span class="kicker">{t("playlist.kicker")}</span>
         <h1 tabindex="-1" data-view-heading>{playlist.name}</h1>
         <div class="facts">
           <span>
@@ -117,25 +122,25 @@
               .join(" • ")}
           </span>
           {#if info.missing}
-            <span class="badge" title="Moved or deleted files; they return when a rescan finds them at the same path">
-              {plural(info.missing, "track")} not in library
+            <span class="badge" title={t("playlist.notInLibraryHint")}>
+              {t("playlist.notInLibrary", { count: info.missing })}
             </span>
           {/if}
         </div>
         <div class="actions">
           <button class="btn primary" disabled={!ids.length} onclick={() => app.run(commands.playerPlayTracks(ids, 0))}>
-            <Icon name="play" size={18} /> Play
+            <Icon name="play" size={18} /> {t("common.play")}
           </button>
           <button
             class="btn"
             disabled={!ids.length}
             onclick={() => app.run(commands.playerPlayTracks(shuffled(ids), 0))}
           >
-            <Icon name="shuffle" size={18} /> Shuffle
+            <Icon name="shuffle" size={18} /> {t("common.shuffle")}
           </button>
           <button
             class="icon-btn filled"
-            aria-label="Play next"
+            aria-label={t("common.playNext")}
             disabled={!ids.length}
             onclick={() => app.run(commands.playerPlayNextTracks(ids))}
           >
@@ -143,7 +148,7 @@
           </button>
           <button
             class="icon-btn filled"
-            aria-label="Add to queue"
+            aria-label={t("common.addToQueue")}
             disabled={!ids.length}
             onclick={() => app.run(commands.playerEnqueueTracks(ids))}
           >
@@ -152,16 +157,16 @@
           <button
             bind:this={menuButton}
             class="icon-btn filled"
-            aria-label="More for {playlist.name}"
+            aria-label={t("common.moreFor", { name: playlist.name })}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             onclick={() => (menuOpen = !menuOpen)}
           >
             <Icon name="more" size={20} />
           </button>
-          <Popover anchor={menuButton} bind:open={menuOpen} menu label="Playlist actions">
-            <button role="menuitem" onclick={rename}><Icon name="edit" size={18} /> Rename</button>
-            <button role="menuitem" onclick={deletePlaylist}><Icon name="trash" size={18} /> Delete playlist</button>
+          <Popover anchor={menuButton} bind:open={menuOpen} menu label={t("playlist.actions")}>
+            <button role="menuitem" onclick={rename}><Icon name="edit" size={18} /> {t("playlist.rename")}</button>
+            <button role="menuitem" onclick={deletePlaylist}><Icon name="trash" size={18} /> {t("playlist.delete")}</button>
           </Popover>
         </div>
       </div>
@@ -177,7 +182,7 @@
           onmove={move}
         />
       {:else}
-        <p class="dim">Empty. Use “Add to playlist” in any track’s ⋯ menu to fill it.</p>
+        <p class="dim">{t("playlist.empty")}</p>
       {/if}
     </div>
   {/if}

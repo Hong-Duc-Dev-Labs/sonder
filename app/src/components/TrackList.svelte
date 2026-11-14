@@ -7,6 +7,7 @@
   import { app } from "../lib/app.svelte";
   import type { TrackItem } from "../lib/bindings";
   import { duration, rate } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import MiniDisc from "./MiniDisc.svelte";
@@ -121,7 +122,7 @@
   {#each tracks as track, i (keys[i])}
     {#if multiDisc && (i === 0 || (tracks[i - 1].discNo ?? 1) !== (track.discNo ?? 1))}
       <div class="disc" role="presentation">
-        <Icon name="disc" size={14} /> Disc {track.discNo ?? 1} · {discLength(track.discNo ?? 1)}
+        <Icon name="disc" size={14} /> {t("tracks.disc", { n: track.discNo ?? 1 })} · {discLength(track.discNo ?? 1)}
       </div>
     {/if}
     {@const playing = track.id === playingId}
@@ -140,9 +141,9 @@
       {#if onmove}
         <button
           class="grip"
-          aria-label="Move {track.title}, position {i + 1} of {tracks.length}"
+          aria-label={t("tracks.move", { title: track.title, position: i + 1, total: tracks.length })}
           aria-keyshortcuts="ArrowUp ArrowDown"
-          title="Drag, or press Up or Down, to reorder"
+          title={t("tracks.reorderHint")}
           onpointerdown={(e) => gripDown(e, i)}
           onpointermove={gripMove}
           onpointerup={gripUp}
@@ -162,7 +163,9 @@
         {/if}
         <button
           class="play"
-          aria-label="Play {track.title}{track.artist ? ` by ${track.artist}` : ''}"
+          aria-label={track.artist
+            ? t("common.playItemBy", { title: track.title, artist: track.artist })
+            : t("common.playItem", { title: track.title })}
           onclick={() => onplay(i)}
         >
           <Icon name="play" size={16} />

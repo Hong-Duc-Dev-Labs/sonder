@@ -275,6 +275,11 @@ export type ImpulseResponseInfo = {
 	peakGainDb: number | null,
 };
 
+/**  The interface language. */
+export type LanguageSetting = 
+/**  Follow the operating system's preferred language (English when it is not offered). */
+"system" | "en" | "vi";
+
 /**  Where levelling gets its gain. */
 export type LevelingSetting = "off" | "track" | "album" | "auto";
 
@@ -471,6 +476,8 @@ export type Settings = {
 	coverStyle?: CoverStyle,
 	/**  How much frosted glass the UI draws. */
 	glass?: GlassQuality,
+	/**  The interface language. */
+	language?: LanguageSetting,
 	/**
 	 *  Look up lyrics online (title, artist, album and length are sent) when a track has
 	 *  none of its own.

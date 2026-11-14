@@ -4,6 +4,7 @@
   import { cubicOut } from "svelte/easing";
   import { app, type View } from "./lib/app.svelte";
   import { commands } from "./lib/bindings";
+  import { t } from "./lib/i18n.svelte";
   import { reducedMotion } from "./lib/motion";
   import { fadeQuick, pageIn, rise } from "./lib/transitions";
   import AlbumsView from "./components/AlbumsView.svelte";
@@ -27,14 +28,14 @@
   import TransportBar from "./components/TransportBar.svelte";
 
   type NavItem = { view: View; label: string; icon: IconName; hint?: string };
-  const top: NavItem[] = [
-    { view: { kind: "home" }, label: "Home", icon: "home" },
-    { view: { kind: "search" }, label: "Search", icon: "search", hint: "Ctrl F" },
-  ];
-  const library: NavItem[] = [
-    { view: { kind: "albums" }, label: "Albums", icon: "albums" },
-    { view: { kind: "artists" }, label: "Artists", icon: "artists" },
-  ];
+  let top = $derived<NavItem[]>([
+    { view: { kind: "home" }, label: t("nav.home"), icon: "home" },
+    { view: { kind: "search" }, label: t("common.search"), icon: "search", hint: "Ctrl F" },
+  ]);
+  let library = $derived<NavItem[]>([
+    { view: { kind: "albums" }, label: t("common.albums"), icon: "albums" },
+    { view: { kind: "artists" }, label: t("common.artists"), icon: "artists" },
+  ]);
   /** Playlists listed in the sidebar itself; the rest are one click away in "All playlists". */
   const SIDEBAR_PLAYLISTS = 8;
   let sidePlaylists = $derived(app.playlists.slice(0, SIDEBAR_PLAYLISTS));
@@ -130,7 +131,7 @@
 
   <main class:full={onNow}>
     {#if detail && app.history.length}
-      <button class="back glass" aria-label="Back (Alt+Left)" onclick={() => app.back()}>
+      <button class="back glass" aria-label={t("nav.back")} onclick={() => app.back()}>
         <Icon name="back" size={20} />
       </button>
     {/if}
@@ -167,7 +168,7 @@
     </div>
   </main>
 
-  <nav class="sidebar glass" aria-label="Main">
+  <nav class="sidebar glass" aria-label={t("nav.main")}>
     <div class="brand">
       <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
         <circle cx="12" cy="12" r="10.5" fill="#0b0b0d" stroke="currentColor" stroke-width="1.5" />
@@ -179,8 +180,8 @@
       {#if !app.narrow}
         <button
           class="icon-btn fold"
-          aria-label={app.sidebarCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"}
-          title={app.sidebarCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"}
+          aria-label={app.sidebarCollapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")}
+          title={app.sidebarCollapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")}
           aria-expanded={!app.sidebarCollapsed}
           onclick={() => app.toggleSidebar()}
         >
@@ -191,21 +192,21 @@
 
     <!-- The middle scrolls on short windows; the brand, Now Playing and Settings stay put. -->
     <div class="nav-scroll">
-      {#each top as item (item.label)}{@render navButton(item)}{/each}
+      {#each top as item (item.view.kind)}{@render navButton(item)}{/each}
 
       <span class="group-gap"></span>
-      <span class="group kicker">Library</span>
-      {#each library as item (item.label)}{@render navButton(item)}{/each}
+      <span class="group kicker">{t("nav.library")}</span>
+      {#each library as item (item.view.kind)}{@render navButton(item)}{/each}
 
       <span class="group-gap"></span>
       <div class="group-row">
-        <span class="group kicker">Playlists</span>
-        <button class="add icon-btn" aria-label="New playlist" title="New playlist" onclick={newPlaylist}>
+        <span class="group kicker">{t("common.playlists")}</span>
+        <button class="add icon-btn" aria-label={t("common.newPlaylist")} title={t("common.newPlaylist")} onclick={newPlaylist}>
           <Icon name="add" size={16} />
         </button>
       </div>
       {#if !app.playlists.length}
-        <span class="hint">None yet. Press + to make one.</span>
+        <span class="hint">{t("nav.noPlaylists")}</span>
       {/if}
       {#each sidePlaylists as playlist (playlist.id)}
         <button
@@ -223,11 +224,11 @@
         class="nav"
         class:active={allPlaylistsActive}
         aria-current={allPlaylistsActive ? "page" : undefined}
-        title="All playlists"
+        title={t("nav.allPlaylists")}
         onclick={() => app.go({ kind: "playlists" })}
       >
         <Icon name="playlist" size={20} />
-        <span class="label">All playlists</span>
+        <span class="label">{t("nav.allPlaylists")}</span>
       </button>
     </div>
 
@@ -235,7 +236,7 @@
       class="nav"
       class:active={onNow}
       aria-current={onNow ? "page" : undefined}
-      title="Now Playing"
+      title={t("common.nowPlaying")}
       onclick={() => app.go({ kind: "now" })}
     >
       {#if app.current}
@@ -243,16 +244,20 @@
       {:else}
         <Icon name="now" size={20} />
       {/if}
-      <span class="label">Now Playing</span>
+      <span class="label">{t("common.nowPlaying")}</span>
     </button>
 
     {#if app.scan.phase !== "idle"}
-      <button class="scan" title="Scanning the library" aria-live="polite" onclick={() => app.go({ kind: "settings" })}>
+      <button class="scan" title={t("nav.scanningTitle")} aria-live="polite" onclick={() => app.go({ kind: "settings" })}>
         <span class="spinner" aria-hidden="true"></span>
-        <span class="label">Scanning{app.scan.total ? ` ${app.scan.done}/${app.scan.total}` : "…"}</span>
+        <span class="label"
+          >{app.scan.total
+            ? t("nav.scanningProgress", { done: app.scan.done, total: app.scan.total })
+            : t("nav.scanning")}</span
+        >
       </button>
     {/if}
-    {@render navButton({ view: { kind: "settings" }, label: "Settings", icon: "settings" })}
+    {@render navButton({ view: { kind: "settings" }, label: t("common.settings"), icon: "settings" })}
   </nav>
 
   {#if app.inspector}
@@ -291,7 +296,7 @@
         <div class="toast glass error" in:rise out:fadeQuick animate:flip={{ duration: flipMs }}>
           <span class="dot" aria-hidden="true"></span>
           <span class="msg">{n.message}</span>
-          <button class="dismiss" aria-label="Dismiss" onclick={() => app.dismiss(n.id)}><Icon name="close" size={16} /></button>
+          <button class="dismiss" aria-label={t("common.dismiss")} onclick={() => app.dismiss(n.id)}><Icon name="close" size={16} /></button>
         </div>
       {/each}
     </div>
@@ -300,7 +305,7 @@
         <div class="toast glass {n.level}" in:rise out:fadeQuick animate:flip={{ duration: flipMs }}>
           <span class="dot" aria-hidden="true"></span>
           <span class="msg">{n.message}</span>
-          <button class="dismiss" aria-label="Dismiss" onclick={() => app.dismiss(n.id)}><Icon name="close" size={16} /></button>
+          <button class="dismiss" aria-label={t("common.dismiss")} onclick={() => app.dismiss(n.id)}><Icon name="close" size={16} /></button>
         </div>
       {/each}
     </div>

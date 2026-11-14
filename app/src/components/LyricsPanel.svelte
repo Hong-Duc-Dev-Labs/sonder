@@ -5,6 +5,7 @@
   import { app } from "../lib/app.svelte";
   import { commands, type Lyrics } from "../lib/bindings";
   import { playbackMs } from "../lib/clock.svelte";
+  import { t } from "../lib/i18n.svelte";
   import { activeLine, loadLyrics } from "../lib/lyrics";
   import { onFrame, reducedMotion } from "../lib/motion";
 
@@ -74,18 +75,18 @@
   }
 </script>
 
-<section class="lyrics" aria-label="Lyrics">
+<section class="lyrics" aria-label={t("common.lyrics")}>
   {#if loading}
-    <p class="state dim">Looking for lyrics…</p>
+    <p class="state dim">{t("lyrics.loading")}</p>
   {:else if !item}
-    <p class="state dim">Nothing playing.</p>
+    <p class="state dim">{t("lyrics.nothingPlaying")}</p>
   {:else if lyrics?.instrumental}
-    <p class="state">Instrumental</p>
+    <p class="state">{t("lyrics.instrumental")}</p>
   {:else if !lyrics}
     <div class="state">
-      <p>No lyrics for this track.</p>
+      <p>{t("lyrics.none")}</p>
       {#if !online}
-        <button class="link dim" onclick={() => app.go({ kind: "settings" })}>Online lyrics are off in Settings</button>
+        <button class="link dim" onclick={() => app.go({ kind: "settings" })}>{t("lyrics.onlineOff")}</button>
       {/if}
     </div>
   {:else}
@@ -112,7 +113,7 @@
         {/if}
       {/each}
     </div>
-    <p class="source dim">Lyrics · {lyrics.source}</p>
+    <p class="source dim">{t("lyrics.source", { source: lyrics.source })}</p>
   {/if}
 </section>
 

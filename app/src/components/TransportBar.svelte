@@ -8,6 +8,7 @@
   import { commands, type RepeatMode } from "../lib/bindings";
   import { playbackMs } from "../lib/clock.svelte";
   import { duration, isBitPerfect, outputLabel, sourceLabel } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import { onFrame } from "../lib/motion";
   import FormatBadges from "./FormatBadges.svelte";
   import Icon from "./Icon.svelte";
@@ -74,11 +75,11 @@
   // Repeat cycles off → all → one; the engine owns the mode, the snapshot reports it.
   let repeat = $derived<RepeatMode>(snap.repeat ?? "off");
   const repeatOrder: Record<RepeatMode, RepeatMode> = { off: "all", all: "one", one: "off" };
-  const repeatLabels: Record<RepeatMode, string> = {
-    off: "Repeat off",
-    all: "Repeat all",
-    one: "Repeat one",
-  };
+  let repeatLabels = $derived<Record<RepeatMode, string>>({
+    off: t("transport.repeatOff"),
+    all: t("transport.repeatAll"),
+    one: t("transport.repeatOne"),
+  });
   function cycleRepeat() {
     app.run(commands.playerSetRepeat(repeatOrder[repeat]));
   }
@@ -113,17 +114,22 @@
   });
   let chipState = $derived(perfect ? "ok" : snap.volumeDb != null && snap.output ? "warn" : "plain");
   let chipLabel = $derived.by(() => {
-    if (!snap.source) return "Signal path";
-    const state = perfect ? "bit-perfect" : snap.volumeDb != null ? `software volume ${snap.volumeDb.toFixed(1)} dB` : "";
-    return `Signal path: ${sourceLabel(snap.source)}${state ? `, ${state}` : ""}`;
+    if (!snap.source) return t("common.signalPath");
+    const source = sourceLabel(snap.source);
+    const state = perfect
+      ? t("transport.statePerfect")
+      : snap.volumeDb != null
+        ? t("transport.stateVolume", { db: snap.volumeDb.toFixed(1) })
+        : "";
+    return state ? t("transport.pathLabelState", { source, state }) : t("transport.pathLabel", { source });
   });
 </script>
 
-<footer class="dock" class:hidden inert={hidden} aria-label="Player">
+<footer class="dock" class:hidden inert={hidden} aria-label={t("transport.player")}>
   <div class="pill glass">
     <div class="now">
       {#if item}
-        <button class="disc" aria-label="Open Now Playing" onclick={() => app.go({ kind: "now" })}>
+        <button class="disc" aria-label={t("common.openNowPlaying")} onclick={() => app.go({ kind: "now" })}>
           <svg class="ring" viewBox="0 0 60 60" aria-hidden="true">
             <circle class="ring-track" cx="30" cy="30" r={RING_R} />
             <circle
@@ -157,18 +163,18 @@
           </button>
         {/if}
       {:else}
-        <span class="idle">Nothing playing</span>
+        <span class="idle">{t("common.nothingPlaying")}</span>
       {/if}
     </div>
 
     <div class="controls">
-      <button class="ctl" aria-label="Previous" onclick={() => app.run(commands.playerPrevious())}>
+      <button class="ctl" aria-label={t("common.previous")} onclick={() => app.run(commands.playerPrevious())}>
         <Icon name="prev" size={20} />
       </button>
-      <button class="ctl main" aria-label={playing ? "Pause" : "Play"} onclick={() => app.run(commands.playerToggle())}>
+      <button class="ctl main" aria-label={playing ? t("common.pause") : t("common.play")} onclick={() => app.run(commands.playerToggle())}>
         <PlayPauseIcon {playing} size={22} />
       </button>
-      <button class="ctl" aria-label="Next" onclick={() => app.run(commands.playerNext())}>
+      <button class="ctl" aria-label={t("common.next")} onclick={() => app.run(commands.playerNext())}>
         <Icon name="next" size={20} />
       </button>
       <button
@@ -197,8 +203,8 @@
           step="1000"
           value={shownMs}
           disabled={!item || !total}
-          aria-label="Seek"
-          aria-valuetext="{duration(shownMs)} of {duration(total)}"
+          aria-label={t("common.seek")}
+          aria-valuetext={t("common.seekValue", { elapsed: duration(shownMs), total: duration(total) })}
           oninput={(e) => (dragging = Number(e.currentTarget.value))}
           onchange={commitSeek}
           onkeydown={(e) => seeker.onKey(e)}
@@ -213,8 +219,8 @@
         data-lyrics-toggle
         class="icon-btn"
         class:on={app.lyricsOpen}
-        aria-label="Lyrics"
-        title="Lyrics"
+        aria-label={t("common.lyrics")}
+        title={t("common.lyrics")}
         aria-pressed={app.lyricsOpen}
         onclick={() => app.toggleLyrics()}
       >
@@ -224,8 +230,8 @@
         data-queue-toggle
         class="icon-btn"
         class:on={app.queueOpen}
-        aria-label="Queue"
-        title="Queue"
+        aria-label={t("common.queue")}
+        title={t("common.queue")}
         aria-expanded={app.queueOpen}
         onclick={() => app.toggleQueue()}
       >
@@ -238,7 +244,7 @@
           min={VOL_MIN}
           max="0"
           step="0.5"
-          aria-label="Software volume"
+          aria-label={t("common.softwareVolume")}
           aria-valuetext="{volumeDraft.toFixed(1)} dB"
           title="{volumeDraft.toFixed(1)} dB"
           bind:value={volumeDraft}
@@ -248,7 +254,7 @@
         <button
           class="icon-btn vol-btn"
           bind:this={volumeButton}
-          aria-label="Software volume {volumeDraft.toFixed(1)} dB"
+          aria-label={t("transport.volumeValue", { db: volumeDraft.toFixed(1) })}
           aria-haspopup="dialog"
           aria-expanded={volumeOpen}
           onclick={() => (volumeOpen = !volumeOpen)}
@@ -260,16 +266,16 @@
   </div>
 </footer>
 
-<Popover anchor={volumeButton} bind:open={volumeOpen} placement="top" label="Software volume">
+<Popover anchor={volumeButton} bind:open={volumeOpen} placement="top" label={t("common.softwareVolume")}>
   <div class="vol-pop">
-    <span class="kicker">Software volume</span>
+    <span class="kicker">{t("common.softwareVolume")}</span>
     <input
       class="range"
       type="range"
       min={VOL_MIN}
       max="0"
       step="0.5"
-      aria-label="Software volume"
+      aria-label={t("common.softwareVolume")}
       aria-valuetext="{volumeDraft.toFixed(1)} dB"
       bind:value={volumeDraft}
       use:rangeFill={volumeDraft}
@@ -279,12 +285,12 @@
   </div>
 </Popover>
 
-<Popover anchor={statusChip} bind:open={statusOpen} placement="top" label="Signal path">
+<Popover anchor={statusChip} bind:open={statusOpen} placement="top" label={t("common.signalPath")}>
   <div class="path">
-    <span class="kicker">Signal path</span>
+    <span class="kicker">{t("common.signalPath")}</span>
     <FormatBadges />
     {#if snap.output}
-      <span class="device">Device: {outputLabel(snap.output)}</span>
+      <span class="device">{t("transport.device", { format: outputLabel(snap.output) })}</span>
     {/if}
   </div>
 </Popover>

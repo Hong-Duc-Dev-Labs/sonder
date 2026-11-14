@@ -2,6 +2,7 @@
   import { app } from "../lib/app.svelte";
   import { commands, type ArtistInfo } from "../lib/bindings";
   import { plural, shuffled } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import AlbumCard from "./AlbumCard.svelte";
   import BlurredArt from "./BlurredArt.svelte";
   import FrostFade from "./FrostFade.svelte";
@@ -23,8 +24,8 @@
   let sections = $derived(
     info
       ? [
-          { title: "Albums", list: [...info.albums].reverse() },
-          { title: "Appears on", list: info.appearsOn },
+          { key: "albums", title: t("common.albums"), list: [...info.albums].reverse() },
+          { key: "appears", title: t("artist.appearsOn"), list: info.appearsOn },
         ].filter((s) => s.list.length > 0)
       : [],
   );
@@ -47,7 +48,7 @@
 
 <div class="page-full scroll">
   {#if info === null}
-    <p class="missing dim">This artist is no longer in the library.</p>
+    <p class="missing dim">{t("artist.missing")}</p>
   {:else if info}
     <section class="hero">
       <div class="backdrop" aria-hidden="true">
@@ -57,27 +58,27 @@
       <div class="hero-inner">
         <span class="avatar"><RecordAvatar art={info.artist.art} label={0.5} /></span>
         <div class="meta">
-          <span class="kicker">Artist</span>
+          <span class="kicker">{t("artist.kicker")}</span>
           <h1 tabindex="-1" data-view-heading>{info.artist.name}</h1>
           <span class="facts">
             {[
               info.albums.length ? plural(info.albums.length, "album") : null,
-              info.appearsOn.length ? `${info.appearsOn.length} appearances` : null,
+              info.appearsOn.length ? plural(info.appearsOn.length, "appearance") : null,
               plural(info.artist.trackCount, "track"),
             ]
               .filter(Boolean)
               .join(" • ")}
           </span>
           <div class="actions">
-            <button class="btn primary" onclick={() => play(false)}><Icon name="play" size={18} /> Play all</button>
-            <button class="btn" onclick={() => play(true)}><Icon name="shuffle" size={18} /> Shuffle</button>
+            <button class="btn primary" onclick={() => play(false)}><Icon name="play" size={18} /> {t("common.playAll")}</button>
+            <button class="btn" onclick={() => play(true)}><Icon name="shuffle" size={18} /> {t("common.shuffle")}</button>
           </div>
         </div>
       </div>
     </section>
 
     <div class="body">
-      {#each sections as section (section.title)}
+      {#each sections as section (section.key)}
         <h2>{section.title}</h2>
         <div class="grid">
           {#each section.list as album (album.id)}

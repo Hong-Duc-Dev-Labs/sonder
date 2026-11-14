@@ -3,6 +3,7 @@
   // buttons page through the row, and Left/Right move focus between the cards. The row's
   // edges fade out so a cut card reads as "more this way".
   import type { Snippet } from "svelte";
+  import { t } from "../lib/i18n.svelte";
   import { reducedMotion } from "../lib/motion";
   import Icon from "./Icon.svelte";
 
@@ -59,14 +60,26 @@
     <h2>{title}</h2>
     <span class="rule" aria-hidden="true"></span>
     {#if !(atStart && atEnd)}
-      <button class="icon-btn" aria-label="Scroll {title} back" title="Back" disabled={atStart} onclick={() => page(-1)}>
+      <button
+        class="icon-btn"
+        aria-label={t("shelf.scrollBack", { title })}
+        title={t("shelf.back")}
+        disabled={atStart}
+        onclick={() => page(-1)}
+      >
         <Icon name="chevron" size={18} />
       </button>
-      <button class="icon-btn fwd" aria-label="Scroll {title} on" title="More" disabled={atEnd} onclick={() => page(1)}>
+      <button
+        class="icon-btn fwd"
+        aria-label={t("shelf.scrollOn", { title })}
+        title={t("shelf.more")}
+        disabled={atEnd}
+        onclick={() => page(1)}
+      >
         <Icon name="chevron" size={18} />
       </button>
     {/if}
-    <button class="chip" onclick={onSeeAll}>See all</button>
+    <button class="chip" onclick={onSeeAll}>{t("shelf.seeAll")}</button>
   </header>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="row" class:fade-start={!atStart} class:fade-end={!atEnd} bind:this={row} onscroll={measure} onkeydown={onKey}>

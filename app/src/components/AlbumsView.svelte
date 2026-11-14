@@ -1,14 +1,16 @@
 <script lang="ts">
   import { app } from "../lib/app.svelte";
   import type { SortOrder } from "../lib/bindings";
+  import { plural } from "../lib/format";
+  import { t } from "../lib/i18n.svelte";
   import AlbumGrid from "./AlbumGrid.svelte";
 
-  const sorts: { value: SortOrder; label: string }[] = [
-    { value: "artist", label: "Artist" },
-    { value: "title", label: "Title" },
-    { value: "added", label: "Recently added" },
-    { value: "year", label: "Year" },
-  ];
+  let sorts = $derived<{ value: SortOrder; label: string }[]>([
+    { value: "artist", label: t("sort.artist") },
+    { value: "title", label: t("sort.title") },
+    { value: "added", label: t("sort.added") },
+    { value: "year", label: t("sort.year") },
+  ]);
   let sort = $derived<SortOrder>(app.settings.albumSort ?? "artist");
   let total = $state<number | null>(null);
 
@@ -20,10 +22,10 @@
 <div class="view">
   <header class="head">
     <div class="titles">
-      <h1 tabindex="-1" data-view-heading>Albums</h1>
-      {#if total}<span class="count">{total.toLocaleString()} {total === 1 ? "album" : "albums"}</span>{/if}
+      <h1 tabindex="-1" data-view-heading>{t("common.albums")}</h1>
+      {#if total}<span class="count">{plural(total, "album")}</span>{/if}
     </div>
-    <div class="sorts" role="group" aria-label="Sort albums by">
+    <div class="sorts" role="group" aria-label={t("albums.sortBy")}>
       {#each sorts as s (s.value)}
         <button
           class="chip"

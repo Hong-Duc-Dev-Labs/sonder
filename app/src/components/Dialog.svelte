@@ -2,6 +2,7 @@
   // The app's one modal dialog: a confirmation or a single text field, as `app.ask` requests.
   // A native <dialog> keeps focus inside, closes on Escape and returns focus when it closes.
   import { app } from "../lib/app.svelte";
+  import { t } from "../lib/i18n.svelte";
 
   let el: HTMLDialogElement | undefined = $state();
   let value = $state("");
@@ -40,7 +41,7 @@
         <input bind:value aria-label={request.title} maxlength="200" autofocus />
       {/if}
       <div class="actions">
-        <button type="button" class="btn" onclick={() => app.answer(null)}>Cancel</button>
+        <button type="button" class="btn" onclick={() => app.answer(null)}>{t("common.cancel")}</button>
         <button
           type="submit"
           class="btn primary"

@@ -169,6 +169,7 @@ export const vi: Record<MessageKey, Message> = {
   "tracks.disc": "Đĩa {n}",
   "tracks.move": "Di chuyển {title}, vị trí {position} trên {total}",
   "tracks.reorderHint": "Kéo, hoặc nhấn Lên/Xuống, để sắp xếp lại",
+  "tracks.dropOnPlaylist": "Thả vào danh sách phát để thêm",
 
   // playback
   "badges.sourceTitle": "Tệp nguồn",

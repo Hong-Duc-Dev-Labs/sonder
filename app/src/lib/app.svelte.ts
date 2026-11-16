@@ -276,12 +276,12 @@ export class AppState {
     if (!leaving && !entering) return null;
     const el = document.querySelector<HTMLElement>(leaving ? '[data-flight="stage"]' : '[data-flight="pill"]');
     if (!el) return null;
-    const square = (this.settings.coverStyle ?? "vinyl") === "square";
+    const isRound = (this.settings.coverStyle ?? "vinyl") === "vinyl";
     return {
       from: el.getBoundingClientRect(),
       target: leaving ? ("pill" as const) : ("stage" as const),
-      fromRound: leaving ? !square : true,
-      toRound: leaving ? true : !square,
+      fromRound: leaving ? isRound : true,
+      toRound: leaving ? true : isRound,
     };
   }
 

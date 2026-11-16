@@ -315,7 +315,9 @@ export type CoverStyle =
 /**  The cover as the label of a spinning record, under a tonearm. */
 "vinyl" | 
 /**  The flat square cover. */
-"square";
+"square" | 
+/**  Stage lyrics visualizer with Flow motion. */
+"stage";
 
 /**  Equal-power crossfade between queue entries. */
 export type CrossfadeSetting = {

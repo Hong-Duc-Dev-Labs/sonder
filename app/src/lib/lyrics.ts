@@ -2,6 +2,22 @@
 // session; "none" is not, so a .lrc added later or lookups turned on show up next time.
 
 import { commands, type Lyrics, type LyricsLine } from "./bindings";
+import { lineRandom } from "./stageMotion";
+
+export type TimedWord = {
+  text: string;
+  startMs: number;
+  endMs: number;
+  trailingSpace?: boolean;
+  dx?: number;
+  dy?: number;
+  rot?: number;
+};
+
+export type TimedLine = LyricsLine & {
+  endMs: number;
+  words: TimedWord[];
+};
 
 const loaded = new Map<string, Promise<Lyrics | null>>();
 /** Tracks kept; lyrics are small but a long session plays many. */
@@ -56,4 +72,96 @@ export function forgetLyrics(trackId: number) {
   for (const key of [...loaded.keys()]) {
     if (key.startsWith(`${trackId}:`)) loaded.delete(key);
   }
+}
+
+const CJK_REGEX = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+/**
+ * Splits a lyric line into individual timed words using character-count weighting
+ * and an 85% active singing span (15% trailing breath/pause).
+ * CJK characters are separated into single runes; Latin/Vietnamese are separated by whitespace.
+ */
+export function spreadWords(text: string, startMs: number, endMs: number): TimedWord[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+
+  const tokens: { text: string; trailingSpace: boolean }[] = [];
+  let current = "";
+
+  for (const char of trimmed) {
+    if (/\s/u.test(char)) {
+      if (current) {
+        tokens.push({ text: current, trailingSpace: true });
+        current = "";
+      } else if (tokens.length > 0) {
+        tokens[tokens.length - 1].trailingSpace = true;
+      }
+    } else if (CJK_REGEX.test(char)) {
+      if (current) {
+        tokens.push({ text: current, trailingSpace: false });
+        current = "";
+      }
+      tokens.push({ text: char, trailingSpace: false });
+    } else {
+      current += char;
+    }
+  }
+  if (current) {
+    tokens.push({ text: current, trailingSpace: false });
+  }
+
+  if (tokens.length === 0) return [];
+
+  const safeEndMs = Math.max(startMs, endMs);
+  const span = (safeEndMs - startMs) * 0.85;
+
+  let totalChars = 0;
+  for (const token of tokens) {
+    totalChars += Array.from(token.text).length;
+  }
+
+  if (totalChars === 0) return [];
+
+  let cumChars = 0;
+  const result: TimedWord[] = [];
+
+  for (const token of tokens) {
+    const charCount = Array.from(token.text).length;
+    const nextChars = cumChars + charCount;
+    const wordStart = startMs + Math.round((cumChars / totalChars) * span);
+    const wordEnd = startMs + Math.round((nextChars / totalChars) * span);
+    cumChars = nextChars;
+    result.push({
+      text: token.text,
+      startMs: wordStart,
+      endMs: wordEnd,
+      trailingSpace: token.trailingSpace,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Prepares timed lines with word-level breakdown and bounded line durations
+ * (up to 6s singing duration per line or until the next line starts).
+ */
+export function prepareTimedLines(lines: LyricsLine[]): TimedLine[] {
+  return lines.map((line, i) => {
+    const nextLine = lines[i + 1];
+    const endMs = nextLine
+      ? Math.max(line.startMs, Math.min(line.startMs + 6000, nextLine.startMs))
+      : line.startMs + 6000;
+    const words = spreadWords(line.text, line.startMs, endMs).map((w, wi) => ({
+      ...w,
+      dx: (lineRandom(line.startMs, wi * 4) - 0.5) * 14,
+      dy: (lineRandom(line.startMs, wi * 4 + 1) - 0.5) * 10,
+      rot: (lineRandom(line.startMs, wi * 4 + 2) - 0.5) * 4,
+    }));
+    return {
+      ...line,
+      endMs,
+      words,
+    };
+  });
 }

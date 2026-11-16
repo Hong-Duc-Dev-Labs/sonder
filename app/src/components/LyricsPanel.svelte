@@ -6,7 +6,7 @@
   import { commands, type Lyrics } from "../lib/bindings";
   import { playbackMs } from "../lib/clock.svelte";
   import { t } from "../lib/i18n.svelte";
-  import { activeLine, loadLyrics } from "../lib/lyrics";
+  import { activeLine, loadLyrics, prepareTimedLines } from "../lib/lyrics";
   import { onFrame, reducedMotion } from "../lib/motion";
 
   /** Lines light up this much before their stamp, so the eye arrives with the voice. */
@@ -20,8 +20,10 @@
   let trackId = $derived(app.current?.trackId);
   let online = $derived(app.settings.lyricsOnline ?? true);
   let lyrics = $state<Lyrics | null>(null);
+  let timedLines = $derived(lyrics?.synced ? prepareTimedLines(lyrics.lines) : null);
   let loading = $state(false);
   let active = $state(-1);
+  let currentMs = $state(0);
   let scroller: HTMLDivElement | undefined = $state();
   let heldUntil = 0;
 
@@ -31,6 +33,7 @@
     void app.lyricsVersion;
     lyrics = null;
     active = -1;
+    currentMs = 0;
     if (id == null) {
       loading = false;
       return;
@@ -51,7 +54,9 @@
     const l = lyrics;
     if (!l?.synced || !l.lines.length) return;
     return onFrame(() => {
-      const i = activeLine(l.lines, playbackMs() + LEAD_MS);
+      const ms = playbackMs();
+      currentMs = ms;
+      const i = activeLine(l.lines, ms + LEAD_MS);
       if (i !== active) active = i;
     });
   });
@@ -97,8 +102,17 @@
       bind:this={scroller}
       onwheel={hold}
     >
-      {#each lyrics.lines as line, i (i)}
-        {#if lyrics.synced}
+      {#if lyrics.synced && timedLines}
+        {#if timedLines.length > 0 && timedLines[0].startMs > 4000}
+          {@const activeBreak = currentMs + LEAD_MS < timedLines[0].startMs}
+          <div class="interlude" class:active={activeBreak} aria-hidden="true">
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+          </div>
+        {/if}
+
+        {#each timedLines as line, i (i)}
           <button
             class="line"
             class:on={i === active}
@@ -107,12 +121,33 @@
             data-line={i}
             onclick={() => seek(line.startMs)}
           >
-            {line.text || "♪"}
+            {#if i === active && line.words.length > 0}
+              <span class="karaoke">
+                {#each line.words as word, wi (wi)}
+                  {@const lit = currentMs + LEAD_MS >= word.startMs}
+                  {@const current = lit && currentMs + LEAD_MS < word.endMs}
+                  <span class="word" class:lit class:current>{word.text}</span>{#if word.trailingSpace}{' '}{/if}
+                {/each}
+              </span>
+            {:else}
+              {line.text || "♪"}
+            {/if}
           </button>
-        {:else}
+
+          {#if i < timedLines.length - 1 && timedLines[i + 1].startMs - line.endMs > 4000}
+            {@const activeBreak = currentMs + LEAD_MS >= line.endMs && currentMs + LEAD_MS < timedLines[i + 1].startMs}
+            <div class="interlude" class:active={activeBreak} aria-hidden="true">
+              <span class="dot"></span>
+              <span class="dot"></span>
+              <span class="dot"></span>
+            </div>
+          {/if}
+        {/each}
+      {:else}
+        {#each lyrics.lines as line, i (i)}
           <p class="line plain" class:gap={!line.text}>{line.text || " "}</p>
-        {/if}
-      {/each}
+        {/each}
+      {/if}
     </div>
     <p class="source dim">{t("lyrics.source", { source: lyrics.source })}</p>
   {/if}
@@ -216,6 +251,64 @@
   .line.plain.gap {
     height: 14px;
   }
+  .karaoke {
+    display: inline;
+  }
+  .word {
+    display: inline-block;
+    transition:
+      opacity 140ms ease-out,
+      text-shadow 180ms ease-out,
+      transform 160ms var(--ease-spring, ease-out);
+    opacity: var(--lyric-idle, 0.38);
+    transform-origin: center bottom;
+    will-change: transform, opacity;
+  }
+  .word.lit {
+    opacity: 1;
+    text-shadow: 0 0 16px rgba(255, 255, 255, 0.4);
+  }
+  .word.current {
+    transform: scale(1.05);
+    text-shadow: 0 0 22px rgba(255, 255, 255, 0.65);
+  }
+  .interlude {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 14px;
+    opacity: 0.25;
+    transition: opacity 300ms ease;
+  }
+  .interlude.active {
+    opacity: 0.9;
+  }
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    display: inline-block;
+  }
+  .interlude.active .dot {
+    animation: breath 1.4s ease-in-out infinite;
+  }
+  .interlude.active .dot:nth-child(2) {
+    animation-delay: 0.2s;
+  }
+  .interlude.active .dot:nth-child(3) {
+    animation-delay: 0.4s;
+  }
+  @keyframes breath {
+    0%, 100% {
+      opacity: 0.3;
+      transform: scale(0.85);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.25);
+    }
+  }
   .source {
     margin: 6px 0 0;
     font-size: 11.5px;
@@ -225,6 +318,13 @@
     .line {
       transition: opacity 120ms linear;
       transform: none;
+    }
+    .word {
+      transition: opacity 120ms linear;
+      transform: none !important;
+    }
+    .interlude.active .dot {
+      animation: none;
     }
   }
 </style>

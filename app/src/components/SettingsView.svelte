@@ -45,6 +45,7 @@
   let coverStyles = $derived<{ value: CoverStyle; label: string; hint: string }[]>([
     { value: "vinyl", label: t("settings.look.vinyl"), hint: t("settings.look.vinylHint") },
     { value: "square", label: t("settings.look.square"), hint: t("settings.look.squareHint") },
+    { value: "stage", label: t("settings.look.stage"), hint: t("settings.look.stageHint") },
   ]);
   let glassLevels = $derived<{ value: GlassQuality; label: string }[]>([
     { value: "full", label: t("settings.look.full") },
@@ -1647,7 +1648,7 @@
 
   .tiles {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 8px;
     padding: 6px;
   }
@@ -1699,6 +1700,13 @@
   .preview.square span {
     border-radius: var(--r-xs);
     box-shadow: 0 6px 16px rgb(0 0 0 / 0.5);
+  }
+  .preview.stage span {
+    border-radius: var(--r-sm);
+    background:
+      radial-gradient(circle at 50% 50%, rgb(99 102 241 / 0.45), transparent 70%),
+      radial-gradient(circle at 50% 40%, #1e1b4b 0%, #0c0c0e 100%);
+    box-shadow: 0 6px 16px rgb(0 0 0 / 0.5), inset 0 0 0 1px rgb(255 255 255 / 0.15);
   }
   .segmented {
     display: flex;

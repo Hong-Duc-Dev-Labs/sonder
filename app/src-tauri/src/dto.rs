@@ -49,6 +49,8 @@ pub enum CoverStyle {
     Vinyl,
     /// The flat square cover.
     Square,
+    /// Stage lyrics visualizer with Flow motion.
+    Stage,
 }
 
 /// How much frosted glass the UI draws. Blur is the costliest effect in the UI; `Off` keeps the

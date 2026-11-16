@@ -182,7 +182,7 @@
     </div>
   </main>
 
-  <nav class="sidebar glass" aria-label={t("nav.main")}>
+  <nav class="sidebar glass" class:hidden={onNow} aria-label={t("nav.main")}>
     <div class="brand">
       <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
         <circle cx="12" cy="12" r="10.5" fill="#0b0b0d" stroke="currentColor" stroke-width="1.5" />
@@ -381,7 +381,10 @@
     border-radius: var(--r-lg);
     overflow: hidden;
     background: color-mix(in srgb, var(--wash) 5%, rgb(255 255 255 / 0.035));
-    transition: background 900ms var(--ease-standard);
+    transition:
+      left 320ms cubic-bezier(0.2, 0.9, 0.2, 1),
+      right 320ms cubic-bezier(0.2, 0.9, 0.2, 1),
+      background 900ms var(--ease-standard);
   }
   /* the sheet's edge, drawn over the page so full-bleed heroes do not hide it */
   main::after {
@@ -394,12 +397,23 @@
     pointer-events: none;
   }
   main.full {
-    inset: 0;
-    border-radius: 0;
-    background: none;
+    position: fixed !important;
+    inset: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    border-radius: 0 !important;
+    background: none !important;
+    z-index: 100 !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
   main.full::after {
-    content: none;
+    display: none !important;
+    content: none !important;
   }
   .content {
     view-transition-name: content;
@@ -439,6 +453,17 @@
     flex-direction: column;
     gap: 2px;
     padding: 18px 12px 12px;
+    transition:
+      width 320ms cubic-bezier(0.2, 0.9, 0.2, 1),
+      transform var(--dur-med) var(--ease-standard),
+      opacity var(--dur-med) var(--ease-standard);
+  }
+  .sidebar.hidden {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transform: translateX(calc(-100% - var(--gutter) * 2)) !important;
   }
   .brand {
     display: flex;
@@ -459,11 +484,21 @@
     height: 28px;
     flex: none;
     color: var(--ink);
+    transition: transform 0.6s cubic-bezier(0.34, 1.25, 0.64, 1);
+  }
+  .brand:hover .mark {
+    transform: rotate(360deg);
   }
   .fold {
     width: 36px;
     height: 36px;
     margin-right: -4px;
+  }
+  .fold :global(svg) {
+    transition: transform var(--dur-med) var(--ease-spring);
+  }
+  .rail .fold :global(svg) {
+    transform: rotate(180deg);
   }
   .rail .fold {
     margin-right: 0;
@@ -497,9 +532,55 @@
       color var(--dur-fast) var(--ease-standard),
       transform var(--dur-med) var(--ease-spring);
   }
+  .nav::before {
+    content: "";
+    position: absolute;
+    left: 4px;
+    top: 50%;
+    width: 3px;
+    height: 0;
+    border-radius: 999px;
+    background: var(--ink, #fff);
+    transform: translateY(-50%);
+    transition: height var(--dur-med) var(--ease-spring-smooth, ease), opacity var(--dur-fast) ease;
+    opacity: 0;
+  }
+  .nav.active::before {
+    height: 20px;
+    opacity: 1;
+  }
   .nav:hover {
     color: var(--ink);
     background: var(--soft-hover);
+    transform: translateX(3px);
+  }
+  .rail .nav:hover {
+    transform: scale(1.05);
+  }
+  .rail .nav::after {
+    content: attr(title);
+    position: absolute;
+    left: calc(100% + 12px);
+    top: 50%;
+    transform: translateY(-50%) scale(0.92);
+    background: rgba(18, 18, 24, 0.92);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+    z-index: 50;
+  }
+  .rail .nav:hover::after {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
   }
   .nav:active {
     transform: scale(0.97);

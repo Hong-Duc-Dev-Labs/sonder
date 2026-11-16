@@ -24,6 +24,7 @@
   .band {
     position: absolute;
     inset: 0;
+    transform: translateZ(0);
   }
   .b1 {
     -webkit-backdrop-filter: blur(4px);
@@ -48,7 +49,8 @@
     background: linear-gradient(to bottom, transparent 0%, rgb(0 0 0 / 0.3) 50%, rgb(0 0 0 / 0.45) 100%);
   }
   :global([data-glass="off"]) .band,
-  :global([data-glass="reduced"]) .b1 {
+  :global([data-glass="reduced"]) .b2,
+  :global([data-glass="reduced"]) .b3 {
     display: none;
   }
   @media (prefers-reduced-transparency: reduce) {

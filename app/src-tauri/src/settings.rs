@@ -206,6 +206,10 @@ pub struct Settings {
     pub album_sort: SortOrder,
     /// How Now Playing shows the cover.
     pub cover_style: CoverStyle,
+    /// Volumetric fog backdrop in the cover's colors, rising with the bass.
+    pub fog_backdrop: bool,
+    /// Now Playing opens out of the cover in the player bar and shrinks back into it.
+    pub grow_from_cover: bool,
     /// How much frosted glass the UI draws.
     pub glass: GlassQuality,
     /// The interface language.
@@ -255,6 +259,8 @@ impl Default for Settings {
             volume_db: None,
             album_sort: SortOrder::default(),
             cover_style: CoverStyle::default(),
+            fog_backdrop: true,
+            grow_from_cover: true,
             glass: GlassQuality::default(),
             language: LanguageSetting::default(),
             lyrics_online: true,

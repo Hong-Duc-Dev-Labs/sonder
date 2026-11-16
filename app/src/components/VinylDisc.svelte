@@ -118,8 +118,9 @@
     inset: 0;
     border-radius: 50%;
     box-shadow:
-      0 28px 56px rgb(0 0 0 / 0.6),
-      0 6px 14px rgb(0 0 0 / 0.5);
+      0 4px 10px rgb(0 0 0 / 0.45),
+      0 16px 36px rgb(0 0 0 / 0.55),
+      0 0 0 1px rgb(255 255 255 / 0.04);
   }
   /* The still surface: painted by drawVinylSurface. */
   .surface {

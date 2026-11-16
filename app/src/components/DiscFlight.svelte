@@ -26,9 +26,10 @@
     const scale = to.width / from.width;
     const dx = to.left - from.left;
     const dy = to.top - from.top;
-    // A gentle arc: the record lifts a little off the straight line at mid-flight.
-    const lift = Math.min(60, Math.hypot(dx, dy) * 0.12) * (dy > 0 ? -1 : 1);
-    const radius = (round: boolean) => (round ? "50%" : "8%");
+    // A gentle ballistic arc: curves upwards when flying up to stage, slight gravity drop down to pill.
+    const baseLift = Math.min(54, Math.hypot(dx, dy) * 0.14);
+    const lift = dy < 0 ? -baseLift : baseLift * 0.4;
+    const radius = (round: boolean) => (round ? "50%" : "18px");
     const mine = () => app.flight === untrack(() => flight);
     const travel = el.animate(
       [
@@ -92,7 +93,7 @@
 <style>
   .flight {
     position: fixed;
-    z-index: 25;
+    z-index: 150;
     transform-origin: 0 0;
     pointer-events: none;
     overflow: hidden;

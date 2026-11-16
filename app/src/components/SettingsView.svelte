@@ -1258,6 +1258,46 @@
             {/each}
           </div>
         </div>
+
+        <div class="row">
+          <span class="icon"><Icon name="spectrum" size={18} /></span>
+          <span class="info">
+            <span class="name" id="fog-backdrop-label">{t("settings.look.fogBackdrop")}</span>
+            <span class="dim small">{t("settings.look.fogBackdropHint")}</span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="fog-backdrop-label">
+            {#each [true, false] as on (on)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(app.settings.fogBackdrop ?? true) === on}
+                onclick={() => app.saveSettings({ ...app.settings, fogBackdrop: on })}
+              >
+                {on ? t("common.on") : t("common.off")}
+              </button>
+            {/each}
+          </div>
+        </div>
+
+        <div class="row">
+          <span class="icon"><Icon name="albums" size={18} /></span>
+          <span class="info">
+            <span class="name" id="grow-from-cover-label">{t("settings.look.growFromCover")}</span>
+            <span class="dim small">{t("settings.look.growFromCoverHint")}</span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="grow-from-cover-label">
+            {#each [true, false] as on (on)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={(app.settings.growFromCover ?? true) === on}
+                onclick={() => app.saveSettings({ ...app.settings, growFromCover: on })}
+              >
+                {on ? t("common.on") : t("common.off")}
+              </button>
+            {/each}
+          </div>
+        </div>
       </div>
     </section>
 

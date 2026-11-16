@@ -41,7 +41,7 @@
   let grab: SVGGElement;
 
   const angle = new Spring(REST_ANGLE, { stiffness: 70, damping: 0.82 });
-  const lift = new Spring(0, { stiffness: 260, damping: 0.9 });
+  const lift = new Spring(0, { stiffness: 180, damping: 0.95 });
 
   let dragging = $state(false);
   let dragAngle = $state(START_ANGLE);
@@ -105,6 +105,8 @@
       }
       lift.target = Math.abs(angle.target - angle.value) > JUMP_DEGREES ? 0.5 : 0;
     }
+    lift.options.stiffness = lift.target > lift.value ? 180 : 42;
+    lift.options.damping = lift.target > lift.value ? 0.95 : 1.18;
     const moving = angle.step(dt);
     const lifting = lift.step(dt);
     render();

@@ -810,6 +810,10 @@ export type Settings = {
 	albumSort?: SortOrder,
 	/**  How Now Playing shows the cover. */
 	coverStyle?: CoverStyle,
+	/**  Volumetric fog backdrop in the cover's colors, rising with the bass. */
+	fogBackdrop?: boolean,
+	/**  Now Playing opens out of the cover in the player bar and shrinks back into it. */
+	growFromCover?: boolean,
 	/**  How much frosted glass the UI draws. */
 	glass?: GlassQuality,
 	/**  The interface language. */

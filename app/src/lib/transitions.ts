@@ -5,8 +5,6 @@ import { cubicIn, cubicOut } from "svelte/easing";
 import { viewTransitionActive } from "./app.svelte";
 import { reducedMotion } from "./motion";
 
-const MED = 280;
-
 /** The old record leaves once the arm has started lifting off it. */
 export const RECORD_LEAVE_DELAY = 120;
 export const RECORD_LEAVE_MS = 380;
@@ -33,7 +31,7 @@ export function slideRecord(
     duration: leaving ? RECORD_LEAVE_MS : RECORD_LAND_MS,
     easing: leaving ? cubicIn : landing,
     css: (t: number, u: number) =>
-      `transform: translateX(${side * u * 115}%) rotate(${side * u * 5}deg); opacity: ${Math.min(1, t * 1.6)}`,
+      `transform: translateX(${side * u * 115}%) rotate(${side * u * 5}deg); opacity: ${leaving ? Math.max(0, 1 - u * 1.4) : Math.min(1, t * 1.6)}`,
   };
 }
 
@@ -42,9 +40,9 @@ export function rise(_node: Element, { delay = 0 }: { delay?: number } = {}) {
   if (reducedMotion()) return { duration: 120, css: (t: number) => `opacity: ${t}` };
   return {
     delay,
-    duration: MED,
+    duration: 240,
     easing: cubicOut,
-    css: (t: number, u: number) => `transform: translateY(${u * 8}px); opacity: ${t}`,
+    css: (t: number, u: number) => `transform: translateY(${u * 6}px); opacity: ${t}`,
   };
 }
 
@@ -56,9 +54,9 @@ export function rise(_node: Element, { delay = 0 }: { delay?: number } = {}) {
 export function pageIn(_node: Element) {
   if (reducedMotion() || viewTransitionActive()) return { duration: 0 };
   return {
-    duration: 260,
+    duration: 240,
     easing: cubicOut,
-    css: (t: number, u: number) => `opacity: ${t}; transform: translateY(${u * 10}px)`,
+    css: (t: number, u: number) => `opacity: ${t}; transform: translateY(${u * 6}px)`,
   };
 }
 

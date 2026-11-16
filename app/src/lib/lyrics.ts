@@ -12,6 +12,8 @@ export type TimedWord = {
   dx?: number;
   dy?: number;
   rot?: number;
+  drift?: number;
+  scale?: number;
 };
 
 export type TimedLine = LyricsLine & {
@@ -76,6 +78,19 @@ export function forgetLyrics(trackId: number) {
 
 const CJK_REGEX = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
+function tokenWeight(token: string): number {
+  const chars = Array.from(token);
+  let w = 0;
+  for (const c of chars) {
+    if (/[.,!?:;…—"'\(\)\[\]{}]/u.test(c)) {
+      w += 0.25;
+    } else {
+      w += 1.0;
+    }
+  }
+  return Math.max(0.5, w);
+}
+
 /**
  * Splits a lyric line into individual timed words using character-count weighting
  * and an 85% active singing span (15% trailing breath/pause).
@@ -115,22 +130,22 @@ export function spreadWords(text: string, startMs: number, endMs: number): Timed
   const safeEndMs = Math.max(startMs, endMs);
   const span = (safeEndMs - startMs) * 0.85;
 
-  let totalChars = 0;
+  let totalWeight = 0;
   for (const token of tokens) {
-    totalChars += Array.from(token.text).length;
+    totalWeight += tokenWeight(token.text);
   }
 
-  if (totalChars === 0) return [];
+  if (totalWeight <= 0) return [];
 
-  let cumChars = 0;
+  let cumWeight = 0;
   const result: TimedWord[] = [];
 
   for (const token of tokens) {
-    const charCount = Array.from(token.text).length;
-    const nextChars = cumChars + charCount;
-    const wordStart = startMs + Math.round((cumChars / totalChars) * span);
-    const wordEnd = startMs + Math.round((nextChars / totalChars) * span);
-    cumChars = nextChars;
+    const weight = tokenWeight(token.text);
+    const nextWeight = cumWeight + weight;
+    const wordStart = startMs + Math.round((cumWeight / totalWeight) * span);
+    const wordEnd = startMs + Math.round((nextWeight / totalWeight) * span);
+    cumWeight = nextWeight;
     result.push({
       text: token.text,
       startMs: wordStart,
@@ -154,9 +169,11 @@ export function prepareTimedLines(lines: LyricsLine[]): TimedLine[] {
       : line.startMs + 6000;
     const words = spreadWords(line.text, line.startMs, endMs).map((w, wi) => ({
       ...w,
-      dx: (lineRandom(line.startMs, wi * 4) - 0.5) * 14,
-      dy: (lineRandom(line.startMs, wi * 4 + 1) - 0.5) * 10,
-      rot: (lineRandom(line.startMs, wi * 4 + 2) - 0.5) * 4,
+      dx: (lineRandom(line.startMs, wi * 5 + 1) - 0.5) * 28,
+      dy: (lineRandom(line.startMs, wi * 5 + 2) - 0.5) * 22,
+      rot: (lineRandom(line.startMs, wi * 5 + 3) - 0.5) * 8,
+      drift: (lineRandom(line.startMs, wi * 5 + 4) - 0.5) * 12,
+      scale: 1.05 + lineRandom(line.startMs, wi * 5 + 5) * 0.18,
     }));
     return {
       ...line,

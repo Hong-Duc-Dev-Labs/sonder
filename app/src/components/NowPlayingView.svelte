@@ -43,9 +43,12 @@
   // Active tab for the view: defaults to Lyrics or Stage based on user setting
   let activeTab = $state<NpTab>(app.settings.coverStyle === "stage" ? "stage" : "lyrics");
 
+  let lastCoverStyle = $state(app.settings.coverStyle);
   $effect(() => {
-    if (app.settings.coverStyle === "stage" && activeTab !== "stage") {
-      activeTab = "stage";
+    const cur = app.settings.coverStyle;
+    if (cur !== lastCoverStyle) {
+      lastCoverStyle = cur;
+      activeTab = cur === "stage" ? "stage" : "lyrics";
     }
   });
 
@@ -727,7 +730,7 @@
   .tab-pill.active {
     color: #fff;
     background: rgba(255, 255, 255, 0.2);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    box-shadow: none;
   }
 
   .tab-pill:focus-visible {
@@ -862,7 +865,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.85);
+    text-shadow: none;
   }
 
   .codec-chip {
@@ -886,7 +889,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+    text-shadow: none;
   }
 
   .link-btn {
@@ -1132,7 +1135,8 @@
     border-radius: 8px;
     overflow: hidden;
     flex-shrink: 0;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+    box-shadow: none;
+    border: 1px solid rgba(255, 255, 255, 0.12);
   }
 
   .dock-text {
@@ -1155,7 +1159,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+    text-shadow: none;
   }
 
   .dock-sub {

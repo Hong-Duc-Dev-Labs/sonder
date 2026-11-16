@@ -77,12 +77,22 @@
   let prevLine = $derived(timedLines && active > 0 ? timedLines[active - 1] : null);
   let nextLine = $derived(timedLines && active + 1 < timedLines.length ? timedLines[active + 1] : null);
 
-  // Line layout calculation
+  // Dynamic window width for responsive font sizing matching mygo-music (f = min(64, max(36, w * 0.045)))
+  let winW = $state(1280);
+
+  // Adaptive font scaling for dense verses to prevent wrapping collisions
+  let wordCount = $derived(curLine?.words.length ?? 0);
+  let fontMultiplier = $derived(wordCount > 10 ? 0.86 : wordCount > 7 ? 0.93 : 1.0);
+  let stageFontSize = $derived(
+    Math.min(64, Math.max(36, (winW || 1280) * 0.045)) * fontMultiplier,
+  );
+
+  // Line layout calculation with spaceWords collision avoidance
   let curLayout = $derived<LineLayout | null>(
-    curLine ? computeLineLayout(curLine.startMs, curLine.words.length) : null,
+    curLine ? computeLineLayout(curLine.startMs, curLine.words, stageFontSize) : null,
   );
   let prevLayout = $derived<LineLayout | null>(
-    prevLine ? computeLineLayout(prevLine.startMs, prevLine.words.length) : null,
+    prevLine ? computeLineLayout(prevLine.startMs, prevLine.words, stageFontSize) : null,
   );
 
   // Crossfade calculation: previous line fades out over 0.4s (400ms) after curLine starts
@@ -126,10 +136,6 @@
     return clamp01((currentMs - interludeInfo.from) / span);
   });
 
-  // Adaptive font scaling for dense verses to prevent wrapping collisions
-  let wordCount = $derived(curLine?.words.length ?? 0);
-  let fontMultiplier = $derived(wordCount > 10 ? 0.86 : wordCount > 7 ? 0.93 : 1.0);
-
   function onStageKeyDown(e: KeyboardEvent) {
     if (!timedLines?.length) return;
     if (e.key === "ArrowDown" || e.key === "ArrowRight") {
@@ -148,6 +154,8 @@
     }
   }
 </script>
+
+<svelte:window bind:innerWidth={winW} />
 
 <!-- Screen Reader Polite Live Region for Active Lyrics -->
 <div class="sr-only" aria-live="polite" aria-atomic="true">
@@ -203,17 +211,6 @@
     </div>
   {:else}
     <div class="stage-main-area">
-      {#if prevLine && !inInterlude}
-        <button
-          class="stage-prev-line"
-          onclick={() => seek(prevLine.startMs)}
-          title={prevLine.text}
-          aria-label={`${t("common.seek")}: ${prevLine.text}`}
-        >
-          <span class="prev-text">{prevLine.text}</span>
-        </button>
-      {/if}
-
       {#if inInterlude}
         <div class="interlude-container" aria-label="Instrumental interlude">
           <div class="interlude-row">
@@ -235,34 +232,37 @@
             style:justify-content={prevLayout.justify}
             style:transform={reducedMotion() ? undefined : `translate3d(0, calc(${prevLayout.liftRatio} * 30vh), 0)`}
             style:opacity={prevFade.toFixed(2)}
+            style:--stage-f="{stageFontSize}px"
           >
             {#each prevLine.words as word, i (i)}
               {@const shape = prevLayout.shapes[i] ?? { x: 0, y: 0, rotate: 0, scale: 1, drift: 0, margin: 16 }}
               {@const frame = evaluateWord(shape, word.startMs, word.endMs, currentMs, reducedMotion())}
-              <span
-                class="stage-word-box"
-                style:margin-right="{frame.margin}px"
-                style:transform="translate3d({frame.x.toFixed(1)}px, {frame.y.toFixed(1)}px, 0) rotate({frame.rotate.toFixed(1)}deg) scale({frame.scale.toFixed(3)})"
-                style:opacity={(frame.opacity * prevFade).toFixed(2)}
-              >
+              {#if frame.opacity > 0.005}
                 <span
-                  class="word-body"
-                  style:filter={frame.blur > 0.3 ? `blur(${frame.blur.toFixed(1)}px)` : undefined}
-                  style:color="rgba(255, 255, 255, {frame.textColorAlpha.toFixed(2)})"
+                  class="stage-word-box"
+                  style:margin-right="{frame.margin.toFixed(1)}px"
+                  style:transform="translate3d({frame.x.toFixed(1)}px, {frame.y.toFixed(1)}px, 0) rotate({frame.rotate.toFixed(1)}deg) scale({frame.scale.toFixed(3)})"
+                  style:opacity={(frame.opacity * prevFade).toFixed(2)}
                 >
-                  {word.text}
-                </span>
-                {#if frame.glow > 0.01}
                   <span
-                    class="word-glow"
-                    aria-hidden="true"
-                    style:color={accentColor}
-                    style:opacity={(0.85 * frame.glow * prevFade).toFixed(2)}
+                    class="word-body"
+                    style:filter={frame.blur > 0.3 ? `blur(${frame.blur.toFixed(1)}px)` : undefined}
+                    style:color="rgba(255, 255, 255, {frame.textColorAlpha.toFixed(2)})"
                   >
                     {word.text}
                   </span>
-                {/if}
-              </span>{#if word.trailingSpace}{' '}{/if}
+                  {#if frame.glow > 0.01}
+                    <span
+                      class="word-glow"
+                      aria-hidden="true"
+                      style:color={accentColor}
+                      style:opacity={(0.85 * frame.glow * prevFade).toFixed(2)}
+                    >
+                      {word.text}
+                    </span>
+                  {/if}
+                </span>
+              {/if}
             {/each}
           </div>
         {/if}
@@ -273,41 +273,44 @@
             class="stage-line-row cur-active"
             style:justify-content={curLayout.justify}
             style:transform={reducedMotion() ? undefined : `translate3d(0, calc(${curLayout.liftRatio} * 30vh), 0)`}
+            style:--stage-f="{stageFontSize}px"
           >
             {#each curLine.words as word, i (i)}
               {@const shape = curLayout.shapes[i] ?? { x: 0, y: 0, rotate: 0, scale: 1, drift: 0, margin: 16 }}
               {@const frame = evaluateWord(shape, word.startMs, word.endMs, currentMs, reducedMotion())}
-              <span
-                class="stage-word-box"
-                style:margin-right="{frame.margin}px"
-                style:transform="translate3d({frame.x.toFixed(1)}px, {frame.y.toFixed(1)}px, 0) rotate({frame.rotate.toFixed(1)}deg) scale({frame.scale.toFixed(3)})"
-                style:opacity={frame.opacity.toFixed(2)}
-              >
+              {#if frame.opacity > 0.005}
                 <span
-                  class="word-body"
-                  style:filter={frame.blur > 0.3 ? `blur(${frame.blur.toFixed(1)}px)` : undefined}
-                  style:color="rgba(255, 255, 255, {frame.textColorAlpha.toFixed(2)})"
+                  class="stage-word-box"
+                  style:margin-right="{frame.margin.toFixed(1)}px"
+                  style:transform="translate3d({frame.x.toFixed(1)}px, {frame.y.toFixed(1)}px, 0) rotate({frame.rotate.toFixed(1)}deg) scale({frame.scale.toFixed(3)})"
+                  style:opacity={frame.opacity.toFixed(2)}
                 >
-                  {word.text}
-                </span>
-                {#if frame.glow > 0.01}
                   <span
-                    class="word-glow"
-                    aria-hidden="true"
-                    style:color={accentColor}
-                    style:opacity={(0.85 * frame.glow).toFixed(2)}
+                    class="word-body"
+                    style:filter={frame.blur > 0.3 ? `blur(${frame.blur.toFixed(1)}px)` : undefined}
+                    style:color="rgba(255, 255, 255, {frame.textColorAlpha.toFixed(2)})"
                   >
                     {word.text}
                   </span>
-                {/if}
-              </span>{#if word.trailingSpace}{' '}{/if}
+                  {#if frame.glow > 0.01}
+                    <span
+                      class="word-glow"
+                      aria-hidden="true"
+                      style:color={accentColor}
+                      style:opacity={(0.85 * frame.glow).toFixed(2)}
+                    >
+                      {word.text}
+                    </span>
+                  {/if}
+                </span>
+              {/if}
             {/each}
           </div>
         {/if}
       {/if}
     </div>
 
-    <!-- Foot strip: Next Line preview capsule -->
+    <!-- Foot strip: Next Line preview (clean single line like mygo-music) -->
     <footer class="stage-foot">
       {#if nextLine}
         <button
@@ -316,7 +319,6 @@
           title={nextLine.text}
           aria-label={`${t("common.upNext")}: ${nextLine.text}`}
         >
-          <span class="next-prefix">{t("common.upNext")}:</span>
           <span class="next-text">{nextLine.text}</span>
         </button>
       {/if}
@@ -345,7 +347,7 @@
     flex-direction: column;
     justify-content: space-between;
     align-items: center;
-    padding: 0 48px 20px 48px;
+    padding: 0 48px 12px 48px;
     box-sizing: border-box;
     user-select: none;
     overflow: hidden;
@@ -362,39 +364,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: radial-gradient(ellipse at 50% 50%, rgba(0, 0, 0, 0.32) 0%, rgba(0, 0, 0, 0) 78%);
-  }
-
-  .stage-prev-line {
-    position: absolute;
-    top: 20px;
-    background: rgba(0, 0, 0, 0.38);
-    backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: rgba(255, 255, 255, 0.55);
-    font-size: 13.5px;
-    font-weight: 500;
-    padding: 4px 16px;
-    border-radius: 999px;
-    cursor: pointer;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 65%;
-    z-index: 10;
-    transition: all 0.2s ease;
-  }
-
-  .stage-prev-line:hover {
-    color: #fff;
-    background: rgba(255, 255, 255, 0.16);
-    border-color: rgba(255, 255, 255, 0.22);
-    transform: translateY(-1px);
-  }
-
-  .stage-prev-line:focus-visible {
-    outline: 2px solid #fff;
-    outline-offset: 2px;
+    background: transparent;
   }
 
   /* Each line row covers the stage center with organic alignment and lift */
@@ -405,15 +375,15 @@
     align-items: center;
     align-content: center;
     flex-wrap: wrap;
-    padding: 0 max(4vw, calc((100% - 1200px) / 2));
+    padding: 0 10vw;
     box-sizing: border-box;
     pointer-events: none;
-    font-size: calc(clamp(30px, min(4.2vw, 5.8vh), 76px) * var(--stage-mult, 1));
-    line-height: 1.32;
-    font-weight: 700;
-    letter-spacing: -0.022em;
-    --stage-f: calc(clamp(30px, min(4.2vw, 5.8vh), 76px) * var(--stage-mult, 1));
-    text-shadow: 0 2px 14px rgba(0, 0, 0, 0.88), 0 1px 3px rgba(0, 0, 0, 0.95);
+    font-family: "Momo Trust Sans", sans-serif;
+    font-size: var(--stage-f, 48px);
+    line-height: 1.35;
+    font-weight: 800;
+    letter-spacing: -0.015em;
+    text-shadow: none;
     transition: opacity 0.15s linear;
   }
 
@@ -449,7 +419,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    filter: blur(calc(var(--stage-f, 48px) * 0.22));
+    filter: blur(calc(var(--stage-f, 48px) * 0.2));
     pointer-events: none;
     user-select: none;
   }
@@ -475,14 +445,14 @@
     height: 16px;
     border-radius: 50%;
     background: rgba(255, 255, 255, 0.25);
-    box-shadow: 0 0 16px rgba(255, 255, 255, 0.4);
+    box-shadow: none;
     will-change: transform, background;
     transition: background 0.1s linear;
   }
 
   .interlude-dot.lit {
     background: #fff;
-    box-shadow: 0 0 20px var(--stage-accent, #fff);
+    box-shadow: none;
   }
 
   /* Foot row along the bottom */
@@ -494,52 +464,41 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    padding-bottom: 8px;
+    gap: 4px;
+    padding-bottom: 4px;
     z-index: 10;
   }
 
   .stage-next-line {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    background: rgba(0, 0, 0, 0.42);
-    backdrop-filter: blur(14px);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    color: rgba(255, 255, 255, 0.88);
-    font-size: 14px;
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.35);
+    font-family: "Momo Trust Sans", sans-serif;
+    font-size: 14.5px;
     font-weight: 500;
     cursor: pointer;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 85%;
-    padding: 6px 16px;
+    padding: 4px 14px;
     border-radius: 999px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-    transition: all 0.2s ease;
+    box-shadow: none;
+    transition: color 0.2s ease, background 0.2s ease;
   }
 
   .stage-next-line:hover {
-    color: #fff;
-    background: rgba(255, 255, 255, 0.18);
-    border-color: rgba(255, 255, 255, 0.28);
-    transform: translateY(-1px);
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    color: rgba(255, 255, 255, 0.88);
+    background: rgba(255, 255, 255, 0.08);
+    box-shadow: none;
+    transform: none;
   }
 
   .stage-next-line:focus-visible {
-    outline: 2px solid #fff;
-    outline-offset: 3px;
-    box-shadow: 0 0 0 5px rgba(0, 0, 0, 0.6);
-  }
-
-  .next-prefix {
-    font-size: 11.5px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: rgba(255, 255, 255, 0.55);
+    outline: 2px solid rgba(255, 255, 255, 0.7);
+    outline-offset: 2px;
   }
 
   .next-text {

@@ -76,10 +76,69 @@ export interface LineLayout {
 }
 
 /**
+ * Measures the rendering width of a word string in pixels.
+ * Uses canvas 2D measureText when available, or proportional character width fallback.
+ */
+let measureCtx: CanvasRenderingContext2D | null = null;
+export function measureWordWidth(text: string, fontSize: number): number {
+  if (typeof document !== "undefined") {
+    if (!measureCtx) {
+      const canvas = document.createElement("canvas");
+      measureCtx = canvas.getContext("2d");
+    }
+    if (measureCtx) {
+      measureCtx.font = `800 ${fontSize}px "Momo Trust Sans", sans-serif`;
+      const m = measureCtx.measureText(text);
+      if (m.width > 0) return m.width;
+    }
+  }
+  // Fallback for Node/Vitest or non-DOM environment
+  const chars = Array.from(text);
+  let units = 0;
+  for (const c of chars) {
+    if (/[ijlI1.,!':; ]/.test(c)) units += 0.35;
+    else if (/[mwWMQ@#%&]/.test(c)) units += 0.95;
+    else if (/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/.test(c)) units += 1.0;
+    else units += 0.65;
+  }
+  return units * fontSize;
+}
+
+/**
+ * Leaves room after each word so that swelling words do not collide with adjacent words.
+ * Ported directly from MyGo Music (`egoist/mygo-music/internal/app/ui_stage.go:spaceWords`).
+ * Incorporates growth reserve, neighbor growth reserve, directional collision shift (toward),
+ * and inter-word whitespace spacing.
+ */
+export function spaceWords(
+  shapes: WordShape[],
+  widths: number[],
+  gap: number,
+  trailingSpaces?: boolean[],
+): void {
+  for (let i = 0; i < shapes.length; i++) {
+    const grow = (widths[i] * (shapes[i].scale * 1.4 - 1)) / 2;
+    let next = 0;
+    let toward = 0;
+    if (i + 1 < shapes.length) {
+      next = (widths[i + 1] * (shapes[i + 1].scale * 1.4 - 1)) / 2;
+      toward = shapes[i].x - shapes[i + 1].x;
+    }
+    const spaceWidth = trailingSpaces?.[i] ? gap * 3.5 : 0;
+    shapes[i].margin = Math.max(2 * gap, grow + next + toward + gap) + spaceWidth;
+  }
+}
+
+/**
  * Computes organic line layout matching Folia / MyGo Music:
  * Lines alternate between start, center, and end alignment with organic vertical lift.
+ * Uses spaceWords to guarantee zero word collisions during spring swelling.
  */
-export function computeLineLayout(startMs: number, wordCount: number): LineLayout {
+export function computeLineLayout(
+  startMs: number,
+  wordsOrCount: number | { text: string; trailingSpace?: boolean }[],
+  fontSize = 48,
+): LineLayout {
   const seed = startMs;
   const justifyOptions: ("flex-start" | "center" | "flex-end")[] = ["flex-start", "center", "flex-end"];
   const liftOptions = [-0.14, 0, 0.12];
@@ -87,7 +146,13 @@ export function computeLineLayout(startMs: number, wordCount: number): LineLayou
   const justify = justifyOptions[Math.abs(Math.floor(seed)) % 3];
   const liftRatio = liftOptions[Math.abs(Math.floor(seed * 2)) % 3];
 
+  const isArray = Array.isArray(wordsOrCount);
+  const wordCount = isArray ? wordsOrCount.length : wordsOrCount;
+
   const shapes: WordShape[] = [];
+  const widths: number[] = [];
+  const trailingSpaces: boolean[] = [];
+
   for (let i = 0; i < wordCount; i++) {
     const ws = seed + i * 8;
     shapes.push({
@@ -99,7 +164,19 @@ export function computeLineLayout(startMs: number, wordCount: number): LineLayou
       margin: 16,
       last: i === wordCount - 1,
     });
+
+    if (isArray) {
+      const w = wordsOrCount[i];
+      widths.push(measureWordWidth(w.text, fontSize));
+      trailingSpaces.push(w.trailingSpace ?? true);
+    } else {
+      widths.push(fontSize * 1.5);
+      trailingSpaces.push(true);
+    }
   }
+
+  spaceWords(shapes, widths, fontSize * 0.08, trailingSpaces);
+
   return { justify, liftRatio, shapes };
 }
 

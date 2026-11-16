@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { clamp01, easeOutCubic, lerp, lineRandom, springStep } from "./stageMotion";
+import {
+  clamp01,
+  computeLineLayout,
+  easeOutCubic,
+  lerp,
+  lineRandom,
+  spaceWords,
+  springStep,
+  type WordShape,
+} from "./stageMotion";
 
 describe("stageMotion", () => {
   it("clamps values to [0, 1]", () => {
@@ -39,5 +48,33 @@ describe("stageMotion", () => {
     expect(val1).toBeGreaterThanOrEqual(0);
     expect(val1).toBeLessThan(1);
     expect(val3).not.toBe(val1);
+  });
+
+  it("spaceWords increases margin when words shift toward each other", () => {
+    const shapes: WordShape[] = [
+      { x: 15, y: 0, rotate: 0, scale: 1.1, drift: 0, margin: 0 },
+      { x: -15, y: 0, rotate: 0, scale: 1.1, drift: 0, margin: 0 },
+    ];
+    const widths = [60, 60];
+    const gap = 4;
+    spaceWords(shapes, widths, gap, [true, false]);
+
+    // toward = 15 - (-15) = 30
+    // Margin for word 0 must include toward distance (at least 30px) + growth reserve + gap + spaceWidth
+    expect(shapes[0].margin).toBeGreaterThan(45);
+  });
+
+  it("computeLineLayout calculates collision-free word margins for lyrics lines", () => {
+    const words = [
+      { text: "Vì", trailingSpace: true },
+      { text: "mấy", trailingSpace: true },
+      { text: "câu", trailingSpace: true },
+      { text: "thương", trailingSpace: true },
+    ];
+    const layout = computeLineLayout(42000, words, 48);
+    expect(layout.shapes.length).toBe(4);
+    for (const shape of layout.shapes) {
+      expect(shape.margin).toBeGreaterThanOrEqual(10);
+    }
   });
 });

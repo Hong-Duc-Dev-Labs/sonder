@@ -364,7 +364,7 @@
           </div>
           <div class="dock-text">
             <div class="dock-title-row">
-              <span class="dock-title" title={item?.title}>{item?.title ?? t("common.nothingPlaying")}</span>
+              <span class="dock-title" title={item?.title}>{item?.title ?? ""}</span>
               {#if codec}<span class="codec-chip">{codec}</span>{/if}
             </div>
             {#if item}

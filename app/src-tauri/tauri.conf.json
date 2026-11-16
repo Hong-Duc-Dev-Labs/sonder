@@ -16,8 +16,8 @@
         "title": "Sonder",
         "width": 1280,
         "height": 820,
-        "minWidth": 900,
-        "minHeight": 600
+        "minWidth": 640,
+        "minHeight": 540
       }
     ],
     "security": {

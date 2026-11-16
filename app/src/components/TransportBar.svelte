@@ -328,6 +328,7 @@
     pointer-events: auto;
     container-type: inline-size;
     width: min(100%, 1080px);
+    min-width: 0;
     height: var(--dock-h);
     border-radius: var(--r-pill);
     display: grid;
@@ -623,6 +624,71 @@
     }
     .vol-btn {
       display: grid;
+    }
+  }
+
+  /* Compact desktop dock (snapped or half-screen window, container under 640px) */
+  @container (max-width: 640px) {
+    .pill {
+      gap: 8px;
+      padding: 0 10px 0 6px;
+    }
+    .now {
+      gap: 8px;
+    }
+    .disc {
+      width: 48px;
+      height: 48px;
+    }
+    .disc-inner {
+      width: 38px;
+    }
+    .status {
+      display: none;
+    }
+    .controls {
+      gap: 2px;
+    }
+    .ctl {
+      width: 34px;
+      height: 34px;
+    }
+    .ctl.main {
+      width: 42px;
+      height: 42px;
+    }
+    .right {
+      gap: 2px;
+    }
+    .bar {
+      left: 20px;
+      right: 20px;
+    }
+  }
+
+  /* Ultra-compact desktop split (container under 480px) */
+  @container (max-width: 480px) {
+    .pill {
+      gap: 6px;
+      padding: 0 8px 0 4px;
+    }
+    .disc {
+      width: 40px;
+      height: 40px;
+    }
+    .disc-inner {
+      width: 32px;
+    }
+    .ctl {
+      width: 30px;
+      height: 30px;
+    }
+    .ctl.main {
+      width: 36px;
+      height: 36px;
+    }
+    .remain {
+      display: none;
     }
   }
 </style>

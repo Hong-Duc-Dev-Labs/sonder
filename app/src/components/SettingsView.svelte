@@ -1869,5 +1869,16 @@
     .band {
       grid-template-columns: 1fr 1fr;
     }
+    .row {
+      gap: 10px;
+      padding: 8px 10px;
+    }
+    .hero {
+      padding: 20px 16px;
+    }
+    .hero-disc {
+      opacity: 0.15;
+      right: -60px;
+    }
   }
 </style>

@@ -272,13 +272,13 @@
     display: block;
     width: 100%;
     margin: 0;
-    padding: 5px 10px;
+    padding: 8px 12px;
     border-radius: var(--r-md, 10px);
     text-align: left;
-    font-size: clamp(16px, 1.05cqw + 6px, 22px);
-    line-height: 1.36;
+    font-size: clamp(24px, 2cqw + 14px, 34px);
+    line-height: 1.34;
     font-weight: 700;
-    letter-spacing: -0.015em;
+    letter-spacing: -0.018em;
     color: var(--ink, #fff);
     /* Inactive lines kept legible above WCAG AA 3:1 contrast */
     opacity: var(--lyric-idle, 0.44);
@@ -302,11 +302,11 @@
   }
   .line.on {
     opacity: 1;
-    transform: none;
+    transform: scale(1.02);
     text-shadow: 0 0 20px rgb(255 255 255 / 0.35);
   }
   .line.gap {
-    font-size: 16px;
+    font-size: 22px;
   }
   button.line:hover {
     opacity: 0.9;
@@ -315,9 +315,9 @@
   .line.plain {
     opacity: 0.9;
     transform: none;
-    font-size: 18px;
+    font-size: 22px;
     font-weight: 600;
-    padding: 3px 0;
+    padding: 4px 0;
   }
   .line.plain.gap {
     height: 14px;

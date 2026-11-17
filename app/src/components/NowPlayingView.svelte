@@ -774,12 +774,12 @@
   .np-body {
     flex: 1;
     min-height: 0;
-    max-width: 1440px;
+    max-width: 1480px;
     width: 100%;
     margin: 0 auto;
     padding: 0 40px 32px 40px;
     display: grid;
-    grid-template-columns: minmax(380px, 520px) minmax(360px, 620px);
+    grid-template-columns: minmax(380px, 520px) minmax(360px, 1fr);
     justify-content: center;
     gap: clamp(36px, 4.5vw, 68px);
     align-items: center;
@@ -1028,7 +1028,7 @@
   /* Right Column: Pane */
   .right-col {
     width: 100%;
-    max-width: 620px;
+    max-width: 680px;
     height: 100%;
     min-height: 0;
     display: flex;

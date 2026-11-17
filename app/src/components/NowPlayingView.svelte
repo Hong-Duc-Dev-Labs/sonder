@@ -774,22 +774,40 @@
   .np-body {
     flex: 1;
     min-height: 0;
-    max-width: 1480px;
+    max-width: 1320px;
     width: 100%;
     margin: 0 auto;
     padding: 0 40px 32px 40px;
     display: grid;
-    grid-template-columns: minmax(380px, 520px) minmax(360px, 1fr);
+    grid-template-columns: minmax(360px, 520px) minmax(360px, 520px);
     justify-content: center;
-    gap: clamp(36px, 4.5vw, 68px);
+    gap: clamp(32px, 4vw, 64px);
     align-items: center;
     box-sizing: border-box;
   }
 
-  @media (max-width: 820px) {
+  @media (max-width: 860px) {
     .np-body {
       grid-template-columns: 1fr;
       gap: 28px;
+      padding: 16px 20px 32px 20px;
+      overflow-y: auto;
+    }
+
+    .left-col,
+    .right-col {
+      max-width: 480px;
+      margin: 0 auto;
+    }
+
+    .right-col {
+      height: 480px;
+      min-height: 360px;
+    }
+  }
+
+  @media (max-height: 640px) {
+    .np-body {
       overflow-y: auto;
     }
   }
@@ -1028,11 +1046,12 @@
   /* Right Column: Pane */
   .right-col {
     width: 100%;
-    max-width: 680px;
+    max-width: 520px;
     height: 100%;
     min-height: 0;
     display: flex;
     flex-direction: column;
+    margin: 0 auto;
     container-type: inline-size;
   }
 

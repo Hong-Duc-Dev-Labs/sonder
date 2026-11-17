@@ -87,7 +87,7 @@ export function measureWordWidth(text: string, fontSize: number): number {
       measureCtx = canvas.getContext("2d");
     }
     if (measureCtx) {
-      measureCtx.font = `800 ${fontSize}px "Momo Trust Sans", sans-serif`;
+      measureCtx.font = `800 ${fontSize}px "Momo Trust Sans Variable", "Momo Trust Sans", sans-serif`;
       const m = measureCtx.measureText(text);
       if (m.width > 0) return m.width;
     }

@@ -378,7 +378,7 @@
     padding: 0 10vw;
     box-sizing: border-box;
     pointer-events: none;
-    font-family: "Momo Trust Sans", sans-serif;
+    font-family: var(--font);
     font-size: var(--stage-f, 48px);
     line-height: 1.35;
     font-weight: 800;
@@ -475,7 +475,7 @@
     background: transparent;
     border: none;
     color: rgba(255, 255, 255, 0.35);
-    font-family: "Momo Trust Sans", sans-serif;
+    font-family: var(--font);
     font-size: 14.5px;
     font-weight: 500;
     cursor: pointer;

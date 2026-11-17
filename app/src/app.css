@@ -14,6 +14,11 @@
   initial-value: transparent;
 }
 
+@font-face {
+  font-family: "Momo Trust Sans";
+  src: local("Momo Trust Sans Variable");
+}
+
 :root {
   /* canvas and ink */
   --canvas: #000;

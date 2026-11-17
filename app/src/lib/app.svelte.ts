@@ -113,6 +113,12 @@ export type LoudnessState = {
   last: string | null;
 };
 
+/** Controller bounds captured before navigating to Now Playing for shared-element morph. */
+export type ControllerRect = {
+  pill: { top: number; left: number; width: number; height: number; right: number; bottom: number };
+  disc: { top: number; left: number; width: number; height: number };
+};
+
 /** Set while a View Transition animates the page, so the content's own entrance stays still. */
 let viewTransitionRunning = false;
 export function viewTransitionActive(): boolean {
@@ -265,12 +271,24 @@ export class AppState {
   /** The record in flight between Now Playing and the player pill, if any. */
   flight = $state<DiscFlight | null>(null);
 
+  /** Controller bounds captured before navigating to Now Playing. */
+  controllerRect = $state<ControllerRect | null>(null);
+
+  /** Set while Now Playing is running its exit animation, keeping the player bar ready underneath. */
+  nowExiting = $state(false);
+
   /**
    * Before a view change that opens or leaves Now Playing: where the record is now. Returns
-   * nothing when there is no record to fly (nothing playing) or motion is reduced.
+   * nothing when there is no record to fly (nothing playing), motion is reduced, or Grow From Cover is active.
    */
   private flightStart(next: View) {
     if (reducedMotion() || !this.current) return null;
+    const growEnabled = this.settings.growFromCover ?? true;
+    if (growEnabled) {
+      // When grow from cover is active, the shared-element morph handles the transition.
+      // DiscFlight should not fly over it.
+      return null;
+    }
     const leaving = this.view.kind === "now" && next.kind !== "now";
     const entering = this.view.kind !== "now" && next.kind === "now";
     if (!leaving && !entering) return null;
@@ -318,6 +336,18 @@ export class AppState {
 
   go(view: View) {
     if (JSON.stringify(view) === JSON.stringify(this.view)) return;
+    if (view.kind === "now") {
+      const pillEl = document.querySelector<HTMLElement>(".dock .pill");
+      const discEl = document.querySelector<HTMLElement>('[data-flight="pill"]');
+      if (pillEl) {
+        const pr = pillEl.getBoundingClientRect();
+        const dr = discEl ? discEl.getBoundingClientRect() : { top: pr.top + 6, left: pr.left + 8, width: 48, height: 48 };
+        this.controllerRect = {
+          pill: { top: pr.top, left: pr.left, width: pr.width, height: pr.height, right: pr.right, bottom: pr.bottom },
+          disc: { top: dr.top, left: dr.left, width: dr.width, height: dr.height },
+        };
+      }
+    }
     // The card the user clicked set morphAlbumId; its cover morphs into the album page.
     const morph = view.kind === "album" && view.id === this.morphAlbumId;
     const flight = this.flightStart(view);

@@ -145,10 +145,10 @@
           </svg>
           <span class="disc-inner" data-flight="pill" class:landing={app.flight?.target === "pill" && !app.flight.landed}><MiniDisc art={item.art} paused={snap.state === "paused"} /></span>
         </button>
-        <div class="text">
+        <button class="text text-btn" aria-label={t("common.openNowPlaying")} onclick={() => app.go({ kind: "now" })}>
           <span class="t" title={item.title}>{item.title}</span>
           <span class="a" title={item.artist ?? ""}>{item.artist ?? ""}</span>
-        </div>
+        </button>
         {#if chipText}
           <button
             class="status {chipState}"
@@ -382,6 +382,23 @@
     flex-direction: column;
     min-width: 0;
     gap: 2px;
+  }
+  .text-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    text-align: left;
+    cursor: pointer;
+    font-family: inherit;
+    color: inherit;
+  }
+  .text-btn:hover .t {
+    color: var(--ink);
+  }
+  .text-btn:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 4px;
+    border-radius: var(--r-sm);
   }
   .t,
   .a {

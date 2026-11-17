@@ -298,7 +298,7 @@
     </div>
   {/if}
 
-  <TransportBar hidden={onNow} />
+  <TransportBar hidden={onNow && !app.nowExiting} />
 
   <Dialog />
   <TrackEditDialog />

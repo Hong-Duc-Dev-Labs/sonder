@@ -2,7 +2,7 @@
 // OS asks for reduced motion, and moves only transform and opacity.
 
 import { cubicIn, cubicOut } from "svelte/easing";
-import { viewTransitionActive } from "./app.svelte";
+import { app, viewTransitionActive } from "./app.svelte";
 import { reducedMotion } from "./motion";
 
 /** The old record leaves once the arm has started lifting off it. */
@@ -22,9 +22,9 @@ function landing(t: number): number {
 /** A record sliding along the queue: in from `dir`'s side, out to the other side. */
 export function slideRecord(
   _node: Element,
-  { dir, leaving }: { dir: 1 | -1; leaving: boolean },
+  { dir, leaving, active = true }: { dir: 1 | -1; leaving: boolean; active?: boolean },
 ) {
-  if (reducedMotion()) return { duration: 150, css: (t: number) => `opacity: ${t}` };
+  if (!active || reducedMotion()) return { duration: leaving ? 150 : 0, css: (t: number) => `opacity: ${t}` };
   const side = leaving ? -dir : dir;
   return {
     delay: leaving ? RECORD_LEAVE_DELAY : RECORD_LAND_DELAY,
@@ -49,10 +49,16 @@ export function rise(_node: Element, { delay = 0 }: { delay?: number } = {}) {
 /**
  * A view arriving: fades in while rising a few pixels. Only opacity and transform animate, on
  * the content alone, so the glass chrome around it keeps running. Still while a View
- * Transition is morphing a cover, which animates the page itself.
+ * Transition is morphing a cover, which animates the page itself, or when Now Playing grows from the cover.
  */
 export function pageIn(_node: Element) {
-  if (reducedMotion() || viewTransitionActive()) return { duration: 0 };
+  if (
+    reducedMotion() ||
+    viewTransitionActive() ||
+    (app.view.kind === "now" && (app.settings.growFromCover ?? true))
+  ) {
+    return { duration: 0 };
+  }
   return {
     duration: 240,
     easing: cubicOut,

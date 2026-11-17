@@ -176,11 +176,18 @@
     }
   }
 
-  function dismiss() {
-    if (app.history.length > 0) {
-      app.back();
-    } else {
-      app.go({ kind: "home" });
+  async function dismiss() {
+    if (isExiting) return;
+    isExiting = true;
+    try {
+      await playExitAnimation();
+    } finally {
+      app.nowExiting = false;
+      if (app.history.length > 0) {
+        app.back();
+      } else {
+        app.go({ kind: "home" });
+      }
     }
   }
 
@@ -192,33 +199,233 @@
   }
 
   let rootEl: HTMLDivElement | undefined = $state();
-  onMount(() => {
-    onPointerMove();
-    const growEnabled = app.settings.growFromCover ?? true;
-    if (growEnabled && rootEl && !reducedMotion()) {
-      const fromEl = document.querySelector<HTMLElement>('[data-flight="pill"]');
-      if (fromEl) {
-        const fromRect = fromEl.getBoundingClientRect();
-        const winW = window.innerWidth;
-        const winH = window.innerHeight;
-        rootEl.animate(
+  let visualWrapperEl: HTMLDivElement | undefined = $state();
+  let rightColEl: HTMLElement | undefined = $state();
+  let headerEl: HTMLElement | undefined = $state();
+  let isExiting = $state(false);
+
+  function getControllerBounds() {
+    if (app.controllerRect) return app.controllerRect;
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+    const pillW = Math.min(winW - 32, 1080);
+    const pillH = 60;
+    const pillLeft = (winW - pillW) / 2;
+    const pillTop = winH - pillH - 24;
+    return {
+      pill: {
+        top: pillTop,
+        left: pillLeft,
+        width: pillW,
+        height: pillH,
+        right: pillLeft + pillW,
+        bottom: pillTop + pillH,
+      },
+      disc: {
+        top: pillTop + 6,
+        left: pillLeft + 8,
+        width: 48,
+        height: 48,
+      },
+    };
+  }
+
+  function playEnterAnimation() {
+    if (!rootEl) return;
+    const bounds = getControllerBounds();
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+
+    const topInset = Math.max(0, Math.round(bounds.pill.top));
+    const rightInset = Math.max(0, Math.round(winW - bounds.pill.right));
+    const bottomInset = Math.max(0, Math.round(winH - bounds.pill.bottom));
+    const leftInset = Math.max(0, Math.round(bounds.pill.left));
+    const pillRadius = Math.round(bounds.pill.height / 2);
+
+    // 1. Expand root container clipPath from player pill to full viewport
+    rootEl.animate(
+      [
+        {
+          clipPath: `inset(${topInset}px ${rightInset}px ${bottomInset}px ${leftInset}px round ${pillRadius}px)`,
+          opacity: 0.85,
+        },
+        {
+          clipPath: `inset(0px 0px 0px 0px round 0px)`,
+          opacity: 1,
+        },
+      ],
+      {
+        duration: 440,
+        easing: "cubic-bezier(0.2, 0.9, 0.2, 1)",
+        fill: "forwards",
+      },
+    );
+
+    // 2. Shared-element cover morph: scale up and glide from controller disc into place
+    const targetCover = visualWrapperEl || rootEl.querySelector<HTMLElement>('.record-slot, .square-art-box, .dock-art');
+    if (targetCover) {
+      const targetRect = targetCover.getBoundingClientRect();
+      if (targetRect.width > 0 && targetRect.height > 0) {
+        const s = bounds.disc.width / targetRect.width;
+        const dx = (bounds.disc.left + bounds.disc.width / 2) - (targetRect.left + targetRect.width / 2);
+        const dy = (bounds.disc.top + bounds.disc.height / 2) - (targetRect.top + targetRect.height / 2);
+
+        targetCover.animate(
           [
             {
-              clipPath: `inset(${fromRect.top}px ${winW - fromRect.right}px ${winH - fromRect.bottom}px ${fromRect.left}px round 8px)`,
-              opacity: 0.2,
+              transform: `translate3d(${dx}px, ${dy}px, 0) scale(${s})`,
+              transformOrigin: "center center",
             },
             {
-              clipPath: `inset(0px 0px 0px 0px round 0px)`,
-              opacity: 1,
+              transform: "translate3d(0, 0, 0) scale(1)",
+              transformOrigin: "center center",
             },
           ],
           {
-            duration: 480,
+            duration: 460,
             easing: "cubic-bezier(0.2, 0.9, 0.2, 1)",
             fill: "forwards",
           },
         );
       }
+    }
+
+    // 3. Staggered elevation for metadata, seekbar, and transport controls
+    const controls = rootEl.querySelectorAll<HTMLElement>(
+      '.meta-section, .seek-section, .transport-section, .dock-center, .dock-tools'
+    );
+    controls.forEach((el, i) => {
+      el.animate(
+        [
+          { opacity: 0, transform: "translate3d(0, 24px, 0)" },
+          { opacity: 1, transform: "translate3d(0, 0, 0)" },
+        ],
+        {
+          duration: 380,
+          delay: 80 + i * 40,
+          easing: "cubic-bezier(0.2, 0.9, 0.2, 1)",
+          fill: "both",
+        },
+      );
+    });
+
+    // 4. Staggered elevation for lyrics / queue right column
+    if (rightColEl) {
+      rightColEl.animate(
+        [
+          { opacity: 0, transform: "translate3d(0, 28px, 0)" },
+          { opacity: 1, transform: "translate3d(0, 0, 0)" },
+        ],
+        {
+          duration: 420,
+          delay: 140,
+          easing: "cubic-bezier(0.2, 0.9, 0.2, 1)",
+          fill: "both",
+        },
+      );
+    }
+
+    // 5. Header tabs & chevron fade in
+    if (headerEl) {
+      headerEl.animate(
+        [
+          { opacity: 0, transform: "translate3d(0, -10px, 0)" },
+          { opacity: 1, transform: "translate3d(0, 0, 0)" },
+        ],
+        {
+          duration: 340,
+          delay: 100,
+          easing: "ease-out",
+          fill: "both",
+        },
+      );
+    }
+  }
+
+  async function playExitAnimation() {
+    if (reducedMotion()) return;
+    const growEnabled = app.settings.growFromCover ?? true;
+    if (!growEnabled || !rootEl) return;
+
+    app.nowExiting = true;
+    pullY = 0;
+    const bounds = getControllerBounds();
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+
+    const topInset = Math.max(0, Math.round(bounds.pill.top));
+    const rightInset = Math.max(0, Math.round(winW - bounds.pill.right));
+    const bottomInset = Math.max(0, Math.round(winH - bounds.pill.bottom));
+    const leftInset = Math.max(0, Math.round(bounds.pill.left));
+    const pillRadius = Math.round(bounds.pill.height / 2);
+
+    const targetCover = visualWrapperEl || rootEl.querySelector<HTMLElement>('.record-slot, .square-art-box, .dock-art');
+    let coverAnim: Animation | undefined;
+    if (targetCover) {
+      const targetRect = targetCover.getBoundingClientRect();
+      if (targetRect.width > 0 && targetRect.height > 0) {
+        const s = bounds.disc.width / targetRect.width;
+        const dx = (bounds.disc.left + bounds.disc.width / 2) - (targetRect.left + targetRect.width / 2);
+        const dy = (bounds.disc.top + bounds.disc.height / 2) - (targetRect.top + targetRect.height / 2);
+        coverAnim = targetCover.animate(
+          [
+            { transform: "translate3d(0, 0, 0) scale(1)", transformOrigin: "center center" },
+            { transform: `translate3d(${dx}px, ${dy}px, 0) scale(${s})`, transformOrigin: "center center" },
+          ],
+          {
+            duration: 320,
+            easing: "cubic-bezier(0.25, 1, 0.5, 1)",
+            fill: "forwards",
+          },
+        );
+      }
+    }
+
+    // Fade out surrounding controls quickly
+    const elementsToFade = rootEl.querySelectorAll<HTMLElement>(
+      '.meta-section, .seek-section, .transport-section, .dock-center, .dock-tools, .np-header, .right-col, .stage-body'
+    );
+    elementsToFade.forEach((el) => {
+      el.animate(
+        [
+          { opacity: 1, transform: "translate3d(0, 0, 0)" },
+          { opacity: 0, transform: "translate3d(0, 14px, 0)" },
+        ],
+        {
+          duration: 160,
+          easing: "ease-in",
+          fill: "forwards",
+        },
+      );
+    });
+
+    const cardAnim = rootEl.animate(
+      [
+        {
+          clipPath: `inset(0px 0px 0px 0px round 0px)`,
+          opacity: 1,
+        },
+        {
+          clipPath: `inset(${topInset}px ${rightInset}px ${bottomInset}px ${leftInset}px round ${pillRadius}px)`,
+          opacity: 0.25,
+        },
+      ],
+      {
+        duration: 320,
+        easing: "cubic-bezier(0.25, 1, 0.5, 1)",
+        fill: "forwards",
+      },
+    );
+
+    const anims = [cardAnim.finished, coverAnim?.finished].filter(Boolean) as Promise<Animation>[];
+    await Promise.all(anims);
+  }
+
+  onMount(() => {
+    onPointerMove();
+    const growEnabled = app.settings.growFromCover ?? true;
+    if (growEnabled && rootEl && !reducedMotion()) {
+      playEnterAnimation();
     }
     return () => clearTimeout(hideTimer);
   });
@@ -256,6 +463,7 @@
 >
   <!-- Floating auto-revealing header -->
   <header
+    bind:this={headerEl}
     class="np-header"
     class:visible={headerHovered || pointerActive || pullY > 0}
     onmouseenter={() => (headerHovered = true)}
@@ -446,7 +654,7 @@
     >
       <!-- Left Column: Vinyl Turntable (or square cover) + Metadata + Playback Controls -->
       <section class="left-col" aria-label={t("common.nowPlaying")}>
-        <div class="visual-wrapper">
+        <div class="visual-wrapper" bind:this={visualWrapperEl}>
           {#if coverStyle === "vinyl"}
             <div class="turntable-box">
               <TurntableStage />
@@ -569,7 +777,7 @@
       </section>
 
       <!-- Right Column: Lyrics / Queue -->
-      <section class="right-col" aria-label={activeTab === "lyrics" ? t("common.lyrics") : t("common.queue")}>
+      <section bind:this={rightColEl} class="right-col" aria-label={activeTab === "lyrics" ? t("common.lyrics") : t("common.queue")}>
         <div class="pane-box">
           {#if activeTab === "lyrics"}
             <div class="pane-scroll">

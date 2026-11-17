@@ -39,7 +39,7 @@
     {#key trackKey}
       <div
         class="record"
-        in:slideRecord={{ dir: app.trackDirection, leaving: false }}
+        in:slideRecord={{ dir: app.trackDirection, leaving: false, active: changing }}
         out:slideRecord={{ dir: app.trackDirection, leaving: true }}
       >
         <VinylDisc art={item?.art} title={item?.album ?? ""} paused={app.player.state === "paused"} />

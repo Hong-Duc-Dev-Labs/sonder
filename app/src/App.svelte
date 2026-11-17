@@ -532,23 +532,6 @@
       color var(--dur-fast) var(--ease-standard),
       transform var(--dur-med) var(--ease-spring);
   }
-  .nav::before {
-    content: "";
-    position: absolute;
-    left: 4px;
-    top: 50%;
-    width: 3px;
-    height: 0;
-    border-radius: 999px;
-    background: var(--ink, #fff);
-    transform: translateY(-50%);
-    transition: height var(--dur-med) var(--ease-spring-smooth, ease), opacity var(--dur-fast) ease;
-    opacity: 0;
-  }
-  .nav.active::before {
-    height: 20px;
-    opacity: 1;
-  }
   .nav:hover {
     color: var(--ink);
     background: var(--soft-hover);

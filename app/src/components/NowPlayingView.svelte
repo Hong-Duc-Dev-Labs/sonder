@@ -774,18 +774,19 @@
   .np-body {
     flex: 1;
     min-height: 0;
-    max-width: 1320px;
+    max-width: 1440px;
     width: 100%;
     margin: 0 auto;
-    padding: 0 32px 32px 32px;
+    padding: 0 40px 32px 40px;
     display: grid;
-    grid-template-columns: minmax(320px, 440px) 1fr;
-    gap: 52px;
+    grid-template-columns: minmax(380px, 520px) minmax(360px, 620px);
+    justify-content: center;
+    gap: clamp(36px, 4.5vw, 68px);
     align-items: center;
     box-sizing: border-box;
   }
 
-  @media (max-width: 720px) {
+  @media (max-width: 820px) {
     .np-body {
       grid-template-columns: 1fr;
       gap: 28px;
@@ -808,7 +809,7 @@
     flex-direction: column;
     gap: 16px;
     width: 100%;
-    max-width: 440px;
+    max-width: 520px;
     margin: 0 auto;
   }
 
@@ -821,7 +822,7 @@
 
   .turntable-box {
     width: 100%;
-    max-width: 400px;
+    max-width: min(480px, 52vh);
     aspect-ratio: 1;
     position: relative;
     display: flex;
@@ -833,7 +834,7 @@
   .square-art-box {
     width: 100%;
     aspect-ratio: 1;
-    max-width: 380px;
+    max-width: min(460px, 50vh);
     border-radius: 18px;
     overflow: hidden;
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.1);
@@ -1027,6 +1028,7 @@
   /* Right Column: Pane */
   .right-col {
     width: 100%;
+    max-width: 620px;
     height: 100%;
     min-height: 0;
     display: flex;

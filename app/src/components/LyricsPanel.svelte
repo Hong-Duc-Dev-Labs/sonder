@@ -272,13 +272,13 @@
     display: block;
     width: 100%;
     margin: 0;
-    padding: 7px 10px;
+    padding: 5px 10px;
     border-radius: var(--r-md, 10px);
     text-align: left;
-    font-size: clamp(20px, 1.3cqw + 10px, 28px);
-    line-height: 1.25;
+    font-size: clamp(16px, 1.05cqw + 6px, 22px);
+    line-height: 1.36;
     font-weight: 700;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.015em;
     color: var(--ink, #fff);
     /* Inactive lines kept legible above WCAG AA 3:1 contrast */
     opacity: var(--lyric-idle, 0.44);
@@ -306,7 +306,7 @@
     text-shadow: 0 0 20px rgb(255 255 255 / 0.35);
   }
   .line.gap {
-    font-size: 20px;
+    font-size: 16px;
   }
   button.line:hover {
     opacity: 0.9;

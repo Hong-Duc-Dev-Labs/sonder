@@ -64,6 +64,13 @@ Sonder is a dedicated desktop application with support for dynamic window tiling
 | **$\le 640\text{px}$** | Narrow Dock / 1/3 Snap | Compact pill (`@container`): disc scales to 48px, status chip hides, control buttons compact to 34px. Zero overflow down to 480px. |
 | **Window Minimum** | Native Window Constraint | `minWidth: 640px`, `minHeight: 540px` configured in `tauri.conf.json`. |
 
+### Cross-Platform Title Bar (`TitleBar.svelte`)
+- **Height:** `--titlebar-h: 40px`, rendered as a transparent atmospheric layer over `AmbientBackdrop` / `FogBackdrop` (`z-index: 200`) with a subtle top dark scrim (`rgb(0 0 0 / 0.36)`) to preserve WCAG AA contrast over bright album covers, keeping the brand mark, sidebar toggle, back navigation, quick search pill, and always-on-top pin aligned in a balanced `1fr auto 1fr` grid (collapsing to `auto minmax(0, 1fr) auto` below `760px`).
+- **OS Detection & Theme:** Rust injects `window.__SONDER_OS__` and forces `Theme::Dark` on the main window so native borders/menus never flash light-mode chrome against `#000000`.
+- **macOS:** Uses `TitleBarStyle::Overlay` with `hiddenTitle: true`, `.traffic_light_position(14, 18)` (centered in `40px`), and `78px` left padding (collapsing to `14px` in native fullscreen) with macOS shortcuts (`⌘F`, `⌘B`, `⌘[`).
+- **Windows:** Uses frameless DWM shadow + rounded corners (`decorations: false`, `shadow: true`) paired with flush `46px × 100%` Fluent 11 caption controls on the top-right (Fitts's Law) and 8-way resize handles stopping clear of the close button (`right: 142px`).
+- **Linux:** Uses circular frosted GNOME/Adwaita-inspired caption controls, an inset 1px window hairline when unmaximized, and 8-way invisible edge/corner resize handles via `startResizeDragging`.
+
 ---
 
 ## 4. Motion & Animation Principles

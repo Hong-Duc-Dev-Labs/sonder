@@ -35,22 +35,36 @@
   const GAP = 8;
   const MARGIN = 12;
 
+  function minTop(): number {
+    if (document.documentElement.dataset.window === "mini") return MARGIN;
+    const raw = getComputedStyle(document.documentElement).getPropertyValue("--titlebar-h");
+    const titlebarH = Number.parseFloat(raw) || 0;
+    return MARGIN + titlebarH;
+  }
+
   function place() {
     if (!panel) return;
     const p = panel.getBoundingClientRect();
+    const topBound = minTop();
+    const maxTop = Math.max(topBound, window.innerHeight - p.height - MARGIN);
     if (at) {
       const above = window.innerHeight - at.y - MARGIN < p.height;
       const left = Math.min(Math.max(MARGIN, at.x), window.innerWidth - p.width - MARGIN);
-      const top = Math.max(MARGIN, above ? at.y - p.height : at.y);
+      const top = Math.min(maxTop, Math.max(topBound, above ? at.y - p.height : at.y));
       pos = { left, top, above };
       return;
     }
     if (!anchor) return;
     const a = anchor.getBoundingClientRect();
     const roomBelow = window.innerHeight - a.bottom - MARGIN;
-    const above = placement === "top" ? a.top - MARGIN > p.height || roomBelow < p.height : roomBelow < p.height;
+    const roomAbove = a.top - topBound;
+    const above =
+      placement === "top"
+        ? roomAbove > p.height || roomBelow < p.height
+        : roomBelow < p.height && roomAbove > roomBelow;
     const left = Math.min(Math.max(MARGIN, a.right - p.width), window.innerWidth - p.width - MARGIN);
-    const top = above ? a.top - GAP - p.height : a.bottom + GAP;
+    const rawTop = above ? a.top - GAP - p.height : a.bottom + GAP;
+    const top = Math.min(maxTop, Math.max(topBound, rawTop));
     pos = { left, top, above };
   }
 
@@ -156,6 +170,8 @@
     z-index: 50;
     min-width: 220px;
     max-width: 360px;
+    max-height: calc(100vh - var(--titlebar-h, 0px) - 24px);
+    overflow-y: auto;
     padding: 6px;
     border-radius: var(--r-md);
     transform-origin: top right;

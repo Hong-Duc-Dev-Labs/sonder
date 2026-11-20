@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-frameless",
+  "description": "Custom frameless window controls and edge resizing for the main window on Windows and Linux.",
+  "windows": ["main"],
+  "platforms": ["windows", "linux"],
+  "permissions": [
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close"
+  ]
+}

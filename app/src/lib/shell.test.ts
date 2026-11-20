@@ -53,4 +53,16 @@ describe("the inspector", () => {
     expect(app.inspector).toBe(null);
     expect(app.docked).toBe(false);
   });
+
+  it("resets signalPathOpen when navigating away from Now Playing", () => {
+    const app = shell();
+    app.signalPathOpen = true;
+    app.go({ kind: "albums" });
+    expect(app.signalPathOpen).toBe(false);
+
+    app.go({ kind: "now" });
+    app.signalPathOpen = true;
+    app.back();
+    expect(app.signalPathOpen).toBe(false);
+  });
 });

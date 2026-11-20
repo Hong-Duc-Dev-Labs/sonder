@@ -132,9 +132,14 @@ export function viewTransitionActive(): boolean {
  * directly and the content animates in by itself, so the sidebar and player stay live.
  */
 function transition(change: () => void, morph: boolean) {
-  const start = (document as Document & {
-    startViewTransition?: (cb: () => Promise<void>) => { finished: Promise<void> };
-  }).startViewTransition;
+  const start =
+    typeof document !== "undefined"
+      ? (
+          document as Document & {
+            startViewTransition?: (cb: () => Promise<void>) => { finished: Promise<void> };
+          }
+        ).startViewTransition
+      : undefined;
   if (!morph || !start || reducedMotion()) {
     change();
     tick().then(focusHeading);
@@ -156,6 +161,7 @@ function transition(change: () => void, morph: boolean) {
  * page body would drop screen-reader users at the top of the document.
  */
 function focusHeading() {
+  if (typeof document === "undefined") return;
   document.querySelector<HTMLElement>("[data-view-heading]")?.focus({ preventScroll: true });
 }
 
@@ -282,7 +288,7 @@ export class AppState {
    * nothing when there is no record to fly (nothing playing), motion is reduced, or Grow From Cover is active.
    */
   private flightStart(next: View) {
-    if (reducedMotion() || !this.current) return null;
+    if (reducedMotion() || !this.current || typeof document === "undefined") return null;
     const growEnabled = this.settings.growFromCover ?? true;
     if (growEnabled) {
       // When grow from cover is active, the shared-element morph handles the transition.
@@ -336,7 +342,7 @@ export class AppState {
 
   go(view: View) {
     if (JSON.stringify(view) === JSON.stringify(this.view)) return;
-    if (view.kind === "now") {
+    if (view.kind === "now" && typeof document !== "undefined") {
       const pillEl = document.querySelector<HTMLElement>(".dock .pill");
       const discEl = document.querySelector<HTMLElement>('[data-flight="pill"]');
       if (pillEl) {
@@ -351,12 +357,22 @@ export class AppState {
     // The card the user clicked set morphAlbumId; its cover morphs into the album page.
     const morph = view.kind === "album" && view.id === this.morphAlbumId;
     const flight = this.flightStart(view);
+    if (view.kind !== "now") this.signalPathOpen = false;
     transition(() => {
       this.history.push(this.view);
       if (this.history.length > 50) this.history.shift();
       this.view = view;
     }, morph);
     this.flightLaunch(flight);
+  }
+
+  /** Opens Search (or focuses its input when already on the Search view). */
+  openSearch() {
+    this.go({ kind: "search" });
+    if (typeof document === "undefined") return;
+    void tick().then(() => {
+      document.querySelector<HTMLInputElement>(".field.search input")?.focus();
+    });
   }
 
   back() {
@@ -366,6 +382,7 @@ export class AppState {
     // Leaving the album page the cover morphed into: it morphs back into its card.
     const morph = this.view.kind === "album" && this.view.id === this.morphAlbumId;
     const flight = this.flightStart(prev);
+    if (prev.kind !== "now") this.signalPathOpen = false;
     transition(() => {
       this.history.pop();
       this.view = prev;

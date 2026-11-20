@@ -2,9 +2,12 @@
   import { app } from "../lib/app.svelte";
   import { commands, type TrackItem } from "../lib/bindings";
   import { t } from "../lib/i18n.svelte";
+  import { resolveDesktopOs, shortcutKeys } from "../lib/platform";
   import Cover from "./Cover.svelte";
   import Icon from "./Icon.svelte";
   import TrackList from "./TrackList.svelte";
+
+  const [modKey, actionKey] = shortcutKeys(resolveDesktopOs(), "search");
 
   let results = $state<TrackItem[]>([]);
   /** The query the shown results belong to; differs from the field while a search is pending. */
@@ -67,7 +70,7 @@
     <div class="hint">
       <Icon name="search" size={36} />
       <p>{t("search.hint")}</p>
-      <p class="dim small">{t("search.shortcutBefore")} <kbd>Ctrl</kbd> <kbd>F</kbd> {t("search.shortcutAfter")}</p>
+      <p class="dim small">{t("search.shortcutBefore")} <kbd>{modKey}</kbd> <kbd>{actionKey}</kbd> {t("search.shortcutAfter")}</p>
     </div>
   {:else if results.length}
     <div class:stale={pending}>

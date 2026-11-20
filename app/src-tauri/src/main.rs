@@ -194,9 +194,39 @@ fn main() {
             scan::start_watcher(app.handle());
             scan::backfill_cover_colors(app.handle());
             update::check_on_launch(app.handle());
-            if let Some(window) = app.get_webview_window("main") {
-                media::init(app.handle(), &window);
+            #[cfg(target_os = "macos")]
+            const HOST_OS: &str = "macos";
+            #[cfg(target_os = "windows")]
+            const HOST_OS: &str = "windows";
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            const HOST_OS: &str = "linux";
+
+            let main_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|w| w.label == mini::MAIN)
+                .ok_or("missing main window config")?
+                .clone();
+            let mut main_builder =
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &main_config)?
+                    .theme(Some(tauri::Theme::Dark))
+                    .initialization_script(format!("window.__SONDER_OS__ = \"{HOST_OS}\";"));
+            #[cfg(target_os = "macos")]
+            {
+                main_builder = main_builder
+                    .decorations(true)
+                    .title_bar_style(tauri::TitleBarStyle::Overlay)
+                    .traffic_light_position(tauri::LogicalPosition::new(14.0, 18.0))
+                    .hidden_title(true);
             }
+            #[cfg(not(target_os = "macos"))]
+            {
+                main_builder = main_builder.decorations(false).shadow(true);
+            }
+            let window = main_builder.build()?;
+            media::init(app.handle(), &window);
             Ok(())
         })
         .build(tauri::generate_context!())

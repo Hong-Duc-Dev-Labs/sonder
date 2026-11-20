@@ -144,7 +144,7 @@
       return;
     }
     const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
-    if (clientY > 160) return;
+    if (clientY > 200) return;
 
     isDragging = true;
     startY = clientY;
@@ -192,11 +192,21 @@
   }
 
   function onWindowKey(e: KeyboardEvent) {
-    if (e.key === "Escape" && !app.signalPathOpen) {
+    if (e.key === "Escape" && !app.signalPathOpen && !app.dialog && !app.editing) {
       e.preventDefault();
       dismiss();
     }
   }
+
+  let signalDialog: HTMLDialogElement | undefined = $state();
+  $effect(() => {
+    if (!signalDialog) return;
+    if (app.signalPathOpen && path) {
+      if (!signalDialog.open) signalDialog.showModal();
+    } else if (signalDialog.open) {
+      signalDialog.close();
+    }
+  });
 
   let rootEl: HTMLDivElement | undefined = $state();
   let visualWrapperEl: HTMLDivElement | undefined = $state();
@@ -793,23 +803,23 @@
     </div>
   {/if}
 
-  {#if app.signalPathOpen && path}
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("common.signalPath")}
-      class="signal-modal-backdrop"
-      onclick={() => (app.signalPathOpen = false)}
-      onkeydown={(e) => e.key === "Escape" && (app.signalPathOpen = false)}
-      tabindex="-1"
-    >
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="signal-modal-content" onclick={(e) => e.stopPropagation()}>
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <dialog
+    bind:this={signalDialog}
+    class="signal-dialog"
+    aria-label={t("common.signalPath")}
+    onclick={(e) => {
+      if (e.target === signalDialog) app.signalPathOpen = false;
+    }}
+    onclose={() => (app.signalPathOpen = false)}
+  >
+    {#if app.signalPathOpen && path}
+      <div class="signal-modal-content">
         <SignalPathPanel {path} />
       </div>
-    </div>
-  {/if}
+    {/if}
+  </dialog>
 </div>
 
 <style>
@@ -831,7 +841,7 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    padding: 0;
+    padding: var(--titlebar-h) 0 0;
     box-sizing: border-box;
     overflow: hidden;
     user-select: none;
@@ -1014,7 +1024,7 @@
     }
   }
 
-  @media (max-height: 640px) {
+  @media (max-height: 720px) {
     .np-body {
       overflow-y: auto;
     }
@@ -1431,16 +1441,20 @@
     gap: 8px;
   }
 
-  /* Signal modal */
-  .signal-modal-backdrop {
-    position: fixed;
-    inset: 0;
+  /* Signal modal (native top-layer dialog so backdrop clears TitleBar) */
+  .signal-dialog {
+    padding: 0;
+    border: none;
+    background: transparent;
+    max-width: min(500px, calc(100vw - 32px));
+    width: 100%;
+    overflow: visible;
+    color: var(--ink);
+  }
+
+  .signal-dialog::backdrop {
     background: rgba(0, 0, 0, 0.72);
     backdrop-filter: blur(16px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
   }
 
   .signal-modal-content {
@@ -1448,8 +1462,7 @@
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 18px;
     padding: 24px;
-    max-width: 500px;
-    width: 90%;
+    width: 100%;
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
   }
 </style>

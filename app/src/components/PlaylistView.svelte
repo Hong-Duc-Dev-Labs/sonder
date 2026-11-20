@@ -213,13 +213,13 @@
     container-type: inline-size;
   }
   .missing {
-    padding: 96px var(--page-x) 96px var(--page-x);
+    padding: 48px var(--page-x) 48px var(--page-x);
   }
   .hero {
     display: flex;
     align-items: flex-end;
     gap: 40px;
-    padding: 84px var(--page-x) 36px var(--page-x);
+    padding: 40px var(--page-x) 36px var(--page-x);
   }
   .art {
     flex: none;
@@ -274,7 +274,7 @@
       align-items: center;
       text-align: center;
       gap: 22px;
-      padding-top: 76px;
+      padding-top: 36px;
     }
     .meta {
       align-items: center;

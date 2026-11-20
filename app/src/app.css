@@ -70,6 +70,7 @@
   --fs-label: 11.5px;
 
   /* layout */
+  --titlebar-h: 40px;
   --sidebar: 232px;
   --dock-h: 72px;
   /* room left under scrolling content so its end clears the floating player */
@@ -548,14 +549,17 @@ h3 {
   animation: vt-in var(--dur-med) var(--ease-out) 40ms both;
 }
 /* The glass chrome stays put during a morph: shown as it is, above the content. */
+::view-transition-old(titlebar),
 ::view-transition-old(sidebar),
 ::view-transition-old(player) {
   display: none;
 }
+::view-transition-new(titlebar),
 ::view-transition-new(sidebar),
 ::view-transition-new(player) {
   animation: none;
 }
+::view-transition-group(titlebar),
 ::view-transition-group(sidebar),
 ::view-transition-group(player) {
   animation: none;

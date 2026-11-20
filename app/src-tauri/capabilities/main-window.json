@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Always-on-top toggle for the main window across desktop platforms.",
+  "windows": ["main"],
+  "permissions": ["core:window:allow-set-always-on-top"]
+}

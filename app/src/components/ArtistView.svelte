@@ -95,14 +95,14 @@
     height: 100%;
   }
   .missing {
-    padding: 96px var(--page-x) 96px var(--page-x);
+    padding: 48px var(--page-x) 48px var(--page-x);
   }
   .hero {
     position: relative;
     min-height: clamp(300px, 42vh, 420px);
     display: flex;
     align-items: flex-end;
-    padding: 84px var(--page-x) 32px var(--page-x);
+    padding: 44px var(--page-x) 32px var(--page-x);
     overflow: hidden;
   }
   .backdrop {

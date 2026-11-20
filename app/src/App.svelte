@@ -6,6 +6,7 @@
   import { commands } from "./lib/bindings";
   import { t } from "./lib/i18n.svelte";
   import { reducedMotion } from "./lib/motion";
+  import { formatShortcut, resolveDesktopOs, resolveGlobalShortcut } from "./lib/platform";
   import { trackDrag } from "./lib/trackDrag.svelte";
   import { fadeQuick, pageIn, rise } from "./lib/transitions";
   import AlbumsView from "./components/AlbumsView.svelte";
@@ -29,13 +30,17 @@
   import SongsView from "./components/SongsView.svelte";
   import QualityView from "./components/QualityView.svelte";
   import StatsView from "./components/StatsView.svelte";
+  import TitleBar from "./components/TitleBar.svelte";
   import TrackEditDialog from "./components/TrackEditDialog.svelte";
   import TransportBar from "./components/TransportBar.svelte";
+
+  const os = resolveDesktopOs();
+  let windowState = $state({ maximized: false, fullscreen: false, focused: true });
 
   type NavItem = { view: View; label: string; icon: IconName; hint?: string };
   let top = $derived<NavItem[]>([
     { view: { kind: "home" }, label: t("nav.home"), icon: "home" },
-    { view: { kind: "search" }, label: t("common.search"), icon: "search", hint: "Ctrl F" },
+    { view: { kind: "search" }, label: t("common.search"), icon: "search", hint: formatShortcut(os, "search") },
     { view: { kind: "quality" }, label: t("nav.quality"), icon: "verified" },
   ]);
   let library = $derived<NavItem[]>([
@@ -66,31 +71,26 @@
   let errors = $derived(app.notices.filter((n) => n.level === "error"));
   let others = $derived(app.notices.filter((n) => n.level !== "error"));
   const flipMs = reducedMotion() ? 0 : 200;
-  let detail = $derived(app.view.kind === "album" || app.view.kind === "artist" || app.view.kind === "playlist");
 
   /** Controls that handle Space themselves: a global shortcut must not steal it from them. */
   const OWNS_SPACE = 'input, select, textarea, button, a, [role="button"], [role="slider"], [role="menuitem"], [role="radio"], [role="switch"], [contenteditable]';
 
   function onKey(e: KeyboardEvent) {
-    const target = e.target as HTMLElement;
-    if (e.code === "Space" && !e.repeat && !target.closest(OWNS_SPACE)) {
-      e.preventDefault();
-      app.run(commands.playerToggle());
-    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
-      e.preventDefault();
-      app.go({ kind: "search" });
-    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b" && !app.narrow) {
-      e.preventDefault();
-      app.toggleSidebar();
-    } else if (e.key === "Escape" && !e.defaultPrevented && !app.dialog && app.inspector) {
-      // The inspector's own keydown only fires with focus inside it; opening it from the pill
-      // leaves focus on the toggle, so Escape has to be handled here. A control that already
-      // consumed it (a menu, a tonearm drag) keeps it.
-      e.preventDefault();
-      app.closeInspector();
-    } else if (e.altKey && e.key === "ArrowLeft") {
-      app.back();
-    }
+    const target = e.target as HTMLElement | null;
+    const action = resolveGlobalShortcut(e, os, {
+      modalOpen: Boolean(app.dialog || app.editing || app.signalPathOpen),
+      editable: Boolean(target?.closest("input, textarea, [contenteditable]")),
+      ownsSpace: Boolean(target?.closest(OWNS_SPACE)),
+      narrow: app.narrow,
+      hasInspector: Boolean(app.inspector),
+    });
+    if (!action) return;
+    e.preventDefault();
+    if (action === "togglePlay") app.run(commands.playerToggle());
+    else if (action === "search") app.openSearch();
+    else if (action === "toggleSidebar") app.toggleSidebar();
+    else if (action === "closeInspector") app.closeInspector();
+    else if (action === "back") app.back();
   }
 
   function isActive(v: View): boolean {
@@ -127,6 +127,8 @@
 <div
   class="shell"
   class:rail={app.rail}
+  class:linux-framed={os === "linux" && !windowState.maximized && !windowState.fullscreen}
+  data-os={os}
   data-glass={app.settings.glass ?? "full"}
   style:--wash={app.wash ?? "transparent"}
   style:--inset-right={app.docked ? "calc(var(--inspector-w) + var(--gutter) * 2)" : "0px"}
@@ -137,12 +139,9 @@
     still={(app.settings.glass ?? "full") === "off"}
   />
 
+  <TitleBar {onNow} {os} onWindowStateChange={(s) => (windowState = s)} />
+
   <main class:full={onNow}>
-    {#if detail && app.history.length}
-      <button class="back glass" aria-label={t("nav.back")} onclick={() => app.back()}>
-        <Icon name="back" size={20} />
-      </button>
-    {/if}
     <div class="content">
       {#if ready}
         <!-- Each view fades in on its own; the old one leaves at once, so nothing outside the
@@ -183,28 +182,7 @@
   </main>
 
   <nav class="sidebar glass" class:hidden={onNow} aria-label={t("nav.main")}>
-    <div class="brand">
-      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="10.5" fill="#0b0b0d" stroke="currentColor" stroke-width="1.5" />
-        <circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width=".8" />
-        <circle cx="12" cy="12" r="3.6" fill="currentColor" />
-        <circle cx="12" cy="12" r="1" fill="#0b0b0d" />
-      </svg>
-      <span class="label wordmark">Sonder</span>
-      {#if !app.narrow}
-        <button
-          class="icon-btn fold"
-          aria-label={app.sidebarCollapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")}
-          title={app.sidebarCollapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")}
-          aria-expanded={!app.sidebarCollapsed}
-          onclick={() => app.toggleSidebar()}
-        >
-          <Icon name="sidebar" size={18} />
-        </button>
-      {/if}
-    </div>
-
-    <!-- The middle scrolls on short windows; the brand, Now Playing and Settings stay put. -->
+    <!-- The middle scrolls on short windows; Now Playing and Settings stay put. -->
     <div class="nav-scroll">
       {#each top as item (item.view.kind)}{@render navButton(item)}{/each}
 
@@ -374,7 +352,7 @@
   main {
     position: absolute;
     z-index: 1;
-    top: var(--gutter);
+    top: var(--titlebar-h);
     bottom: var(--gutter);
     left: var(--inset-left);
     right: max(var(--gutter), var(--inset-right));
@@ -422,29 +400,13 @@
   .view {
     height: 100%;
   }
-  .back {
-    position: absolute;
-    top: 20px;
-    left: 20px;
-    z-index: 7;
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    color: var(--ink);
-    transition: transform var(--dur-med) var(--ease-spring);
-  }
-  .back:active {
-    transform: scale(0.9);
-  }
 
   .sidebar {
     /* its own layer during a cover morph: above the moving page, not cross-faded */
     view-transition-name: sidebar;
     position: absolute;
     z-index: 10;
-    top: var(--gutter);
+    top: var(--titlebar-h);
     bottom: var(--gutter);
     left: var(--gutter);
     width: var(--sidebar);
@@ -452,7 +414,7 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 18px 12px 12px;
+    padding: 12px 12px 12px;
     transition:
       width 320ms cubic-bezier(0.2, 0.9, 0.2, 1),
       transform var(--dur-med) var(--ease-standard),
@@ -464,44 +426,6 @@
     opacity: 0 !important;
     pointer-events: none !important;
     transform: translateX(calc(-100% - var(--gutter) * 2)) !important;
-  }
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 4px 10px 22px;
-    font-size: 20px;
-    font-weight: 800;
-    letter-spacing: -0.03em;
-  }
-  .wordmark {
-    font-family: var(--font-signature);
-    font-weight: 400;
-    letter-spacing: 0;
-  }
-  .mark {
-    width: 28px;
-    height: 28px;
-    flex: none;
-    color: var(--ink);
-    transition: transform 0.6s cubic-bezier(0.34, 1.25, 0.64, 1);
-  }
-  .brand:hover .mark {
-    transform: rotate(360deg);
-  }
-  .fold {
-    width: 36px;
-    height: 36px;
-    margin-right: -4px;
-  }
-  .fold :global(svg) {
-    transition: transform var(--dur-med) var(--ease-spring);
-  }
-  .rail .fold :global(svg) {
-    transform: rotate(180deg);
-  }
-  .rail .fold {
-    margin-right: 0;
   }
   .group {
     padding: 0 14px 6px;
@@ -579,6 +503,8 @@
   .label {
     flex: 1;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   kbd {
     font-family: var(--font);
@@ -627,10 +553,6 @@
     gap: 12px;
     padding-left: 12px;
     font-weight: 550;
-  }
-  .label {
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .pl-art {
     width: 24px;
@@ -720,7 +642,7 @@
   .inspector {
     position: absolute;
     z-index: 15;
-    top: var(--gutter);
+    top: var(--titlebar-h);
     right: var(--gutter);
     bottom: calc(var(--dock-h) + var(--gutter) * 3);
     width: var(--inspector-w);
@@ -795,13 +717,8 @@
     --sidebar: 72px;
   }
   .rail .sidebar {
-    padding: 16px 10px 10px;
+    padding: 12px 10px 10px;
     align-items: center;
-  }
-  .rail .brand {
-    flex-direction: column;
-    gap: 10px;
-    padding: 4px 0 18px;
   }
   .rail .label,
   .rail kbd,
@@ -819,5 +736,14 @@
     width: 52px;
     padding: 0;
     justify-content: center;
+  }
+
+  .shell.linux-framed::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 250;
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    pointer-events: none;
   }
 </style>

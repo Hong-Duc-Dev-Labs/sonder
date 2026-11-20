@@ -124,11 +124,11 @@
     container-type: inline-size;
   }
   .missing {
-    padding: 96px var(--page-x) 96px var(--page-x);
+    padding: 48px var(--page-x) 48px var(--page-x);
   }
   .hero {
     position: relative;
-    padding: 84px var(--page-x) 36px var(--page-x);
+    padding: 40px var(--page-x) 36px var(--page-x);
     overflow: hidden;
   }
   .backdrop {
@@ -236,7 +236,7 @@
   /* Narrow content: Mochy's centred stack. */
   @container (max-width: 760px) {
     .hero {
-      padding-top: 76px;
+      padding-top: 36px;
     }
     .hero-inner {
       flex-direction: column;

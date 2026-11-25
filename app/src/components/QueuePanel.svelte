@@ -3,7 +3,7 @@
   // otherwise (see App.svelte). Rows are keyed by
   // their queue entry, so the highlight never jumps when entries move. Click or Enter plays a
   // row, the × removes it, Escape closes the card and returns focus to the queue button.
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { app } from "../lib/app.svelte";
   import { commands, type QueueItem } from "../lib/bindings";
   import { duration, plural } from "../lib/format";
@@ -19,9 +19,74 @@
   let upNext = $derived(entries.filter((e) => current == null || e.index > current));
   let played = $derived(current == null ? [] : entries.filter((e) => e.index < current));
   let remainingMs = $derived(upNext.reduce((sum, e) => sum + e.item.durationMs, 0));
+  let canShuffle = $derived((current == null ? app.queue.length : upNext.length) >= 2);
+
+  let saving = $state(false);
+  let playlistName = $state("");
+  let saveInput = $state<HTMLInputElement | undefined>(undefined);
+  let dragIndex = $state<number | null>(null);
+  let dropIndex = $state<number | null>(null);
 
   function close() {
     app.closeInspector();
+  }
+
+  async function toggleSave() {
+    saving = !saving;
+    playlistName = "";
+    if (saving) {
+      await tick();
+      saveInput?.focus();
+    }
+  }
+
+  async function submitSave(e: SubmitEvent) {
+    e.preventDefault();
+    const created = await app.saveQueueAsPlaylist(playlistName);
+    if (created) {
+      saving = false;
+      playlistName = "";
+    }
+  }
+
+  function onDragStart(e: DragEvent, index: number) {
+    dragIndex = index;
+    dropIndex = index;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", String(index));
+    }
+  }
+
+  function onDragOver(e: DragEvent, index: number) {
+    if (dragIndex == null) return;
+    e.preventDefault();
+    dropIndex = index;
+  }
+
+  function onDrop(e: DragEvent, to: number) {
+    e.preventDefault();
+    const from = dragIndex;
+    dragIndex = null;
+    dropIndex = null;
+    if (from != null && from !== to) {
+      void app.run(commands.queueMove(from, to));
+    }
+  }
+
+  function onDragEnd() {
+    dragIndex = null;
+    dropIndex = null;
+  }
+
+  async function gripKey(e: KeyboardEvent, index: number, entryId: number) {
+    const step = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0;
+    const to = index + step;
+    if (!step || to < 0 || to >= app.queue.length) return;
+    e.preventDefault();
+    await app.run(commands.queueMove(index, to));
+    await tick();
+    panel.querySelector<HTMLElement>(`[data-queue-grip="${entryId}"]`)?.focus();
   }
 
   onMount(() => {
@@ -30,7 +95,29 @@
 </script>
 
 {#snippet row(item: QueueItem, index: number, kind: "now" | "next" | "played")}
-  <div class="row {kind}" aria-current={kind === "now" ? "true" : undefined}>
+  <div
+    class="row {kind}"
+    class:dragging={dragIndex === index}
+    class:drop-before={dropIndex === index && dragIndex != null && dragIndex > index}
+    class:drop-after={dropIndex === index && dragIndex != null && dragIndex < index}
+    role="listitem"
+    aria-current={kind === "now" ? "true" : undefined}
+    draggable="true"
+    ondragstart={(e) => onDragStart(e, index)}
+    ondragover={(e) => onDragOver(e, index)}
+    ondrop={(e) => onDrop(e, index)}
+    ondragend={onDragEnd}
+  >
+    <button
+      class="grip"
+      data-queue-grip={item.entryId}
+      aria-label={t("queue.move", { title: item.title, position: index + 1, total: app.queue.length })}
+      aria-keyshortcuts="ArrowUp ArrowDown"
+      title={t("queue.reorderHint")}
+      onkeydown={(e) => gripKey(e, index, item.entryId)}
+    >
+      <Icon name="grip" size={16} />
+    </button>
     <button
       class="play"
       aria-label={item.artist
@@ -68,13 +155,46 @@
     </div>
     <div class="tools">
       {#if app.queue.length}
+        <button
+          class="icon-btn"
+          disabled={!canShuffle}
+          aria-label={t("queue.shuffleUpcoming")}
+          title={t("queue.shuffleUpcoming")}
+          onclick={() => app.run(commands.queueShuffle())}
+        >
+          <Icon name="shuffle" size={16} />
+        </button>
+        <button
+          class="icon-btn"
+          aria-label={t("queue.savePlaylist")}
+          title={t("queue.savePlaylist")}
+          aria-expanded={saving}
+          onclick={toggleSave}
+        >
+          <Icon name="save" size={16} />
+        </button>
         <button class="btn small" onclick={() => app.run(commands.queueClear())}>{t("queue.clear")}</button>
       {/if}
       <button class="icon-btn" aria-label={t("queue.close")} onclick={close}><Icon name="close" size={18} /></button>
     </div>
   </div>
+  {#if saving && app.queue.length}
+    <form class="save-bar" onsubmit={submitSave}>
+      <input
+        bind:this={saveInput}
+        type="text"
+        bind:value={playlistName}
+        placeholder={t("queue.playlistNamePlaceholder")}
+        aria-label={t("queue.savePlaylist")}
+      />
+      <button type="submit" class="btn small primary" disabled={!playlistName.trim()}>{t("common.save")}</button>
+      <button type="button" class="icon-btn" aria-label={t("common.cancel")} onclick={() => (saving = false)}>
+        <Icon name="close" size={16} />
+      </button>
+    </form>
+  {/if}
 
-  <div class="items scroll">
+  <div class="items scroll" role="list">
     {#if nowEntry}
       <h3 class="kicker">{t("common.nowPlayingKicker")}</h3>
       {@render row(nowEntry.item, nowEntry.index, "now")}
@@ -129,6 +249,24 @@
     gap: 6px;
     align-items: center;
   }
+  .save-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 16px 10px 20px;
+  }
+  .save-bar input {
+    flex: 1;
+    min-width: 0;
+    height: 32px;
+    padding: 0 10px;
+    border-radius: var(--r-sm);
+    background: rgb(0 0 0 / 0.25);
+    color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    font: inherit;
+    font-size: var(--fs-small);
+  }
   .items {
     flex: 1;
     padding: 0 10px 14px;
@@ -144,6 +282,36 @@
     align-items: center;
     border-radius: var(--r-sm);
     transition: background var(--dur-fast) var(--ease-standard);
+  }
+  .row.dragging {
+    opacity: 0.45;
+  }
+  .row.drop-before {
+    box-shadow: inset 0 2px 0 0 var(--ink);
+  }
+  .row.drop-after {
+    box-shadow: inset 0 -2px 0 0 var(--ink);
+  }
+  .grip {
+    width: 24px;
+    height: 32px;
+    flex: none;
+    margin-left: 4px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--r-xs);
+    color: var(--ink-3);
+    cursor: grab;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-standard);
+  }
+  .row:hover .grip,
+  .row:focus-within .grip {
+    opacity: 1;
+  }
+  .grip:hover,
+  .grip:focus-visible {
+    color: var(--ink);
   }
   .row:hover,
   .row:focus-within {

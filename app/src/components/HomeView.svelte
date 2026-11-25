@@ -24,16 +24,21 @@
   let heading = $derived(greeting(hour));
 
   let recent = $state<Album[]>([]);
+  let recentPlayed = $state<Album[]>([]);
   let albumTotal = $state<number | null>(null);
   let artists = $state<Artist[] | null>(null);
 
   $effect(() => {
     app.pageWash = null;
     void app.libraryVersion;
+    void app.historyVersion;
     app.run(commands.libraryAlbums("added", 0, SHELF)).then((r) => {
       if (!r) return;
       recent = r.albums;
       albumTotal = r.total;
+    });
+    app.run(commands.libraryRecentAlbums(SHELF)).then((r) => {
+      if (r) recentPlayed = r;
     });
     app.run(commands.libraryArtists()).then((r) => {
       if (r) artists = r;
@@ -86,7 +91,11 @@
         <span class="kicker">{kicker}</span>
         <h2 title={item.title}>{item.title}</h2>
         <span class="artist">{item.artist ?? t("common.unknownArtist")}</span>
-        <button class="album link" onclick={() => app.go({ kind: "album", id: item.albumId })}>{item.album}</button>
+        {#if item.albumId > 0}
+          <button class="album link" onclick={() => app.go({ kind: "album", id: item.albumId })}>{item.album}</button>
+        {:else if item.album}
+          <span class="album dim">{item.album}</span>
+        {/if}
         <div class="hero-actions">
           <button class="btn primary" onclick={playOrPause}>
             <PlayPauseIcon playing={!!playingItem && playing} size={18} />
@@ -143,6 +152,14 @@
 
   {#if !empty}
     <div class="shortcuts">
+      <button class="shortcut soft" onclick={() => app.go({ kind: "favorites" })}>
+        <span class="badge-icon"><Icon name="heart" size={22} /></span>
+        <span class="info">
+          <span class="name">{t("common.favorites")}</span>
+          <span class="dim small">{app.favoritePaths.size ? plural(app.favoritePaths.size, "track") : t("home.favoritesHint")}</span>
+        </span>
+        <Icon name="chevron" size={18} />
+      </button>
       <button class="shortcut soft" onclick={() => app.go({ kind: "playlists" })}>
         <span class="badge-icon"><Icon name="playlist" size={22} /></span>
         <span class="info">
@@ -160,6 +177,14 @@
         <Icon name="chevron" size={18} />
       </button>
     </div>
+
+    {#if recentPlayed.length}
+      <Shelf title={t("home.recentlyPlayed")} onSeeAll={() => app.go({ kind: "stats" })}>
+        {#each recentPlayed as album (album.id)}
+          <AlbumCard {album} />
+        {/each}
+      </Shelf>
+    {/if}
 
     {#if albumTotal == null}
       <div class="skeleton" aria-hidden="true">

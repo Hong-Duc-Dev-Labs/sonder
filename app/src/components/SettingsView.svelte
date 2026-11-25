@@ -21,6 +21,7 @@
     type ImpulseResponseInfo,
     type LanguageSetting,
     type LevelingSetting,
+    type OutputShareMode,
     type PeqBandSetting,
     type PcmToDsd,
     type PeqImport,
@@ -134,7 +135,10 @@
     return t("settings.update.source");
   });
 
+  let outputMode = $derived<OutputShareMode>(app.settings.outputMode ?? "exclusive");
+  let isShared = $derived(outputMode === "shared");
   let bitPerfect = $derived(app.player.volumeDb == null);
+  let outputPure = $derived(bitPerfect && !isShared);
   $effect(() => {
     if (app.player.volumeDb != null) volumeDraft = app.player.volumeDb;
   });
@@ -142,6 +146,14 @@
 
   function setVolume(db: number | null) {
     app.run(commands.playerSetVolume(db));
+  }
+
+  let outputModes = $derived<{ value: OutputShareMode; label: string; hint: string }[]>([
+    { value: "exclusive", label: t("settings.outputMode.exclusive"), hint: t("settings.outputMode.exclusiveHint") },
+    { value: "shared", label: t("settings.outputMode.shared"), hint: t("settings.outputMode.sharedHint") },
+  ]);
+  function setOutputMode(mode: OutputShareMode) {
+    if (mode !== outputMode) app.saveSettings({ ...app.settings, outputMode: mode });
   }
 
   let dsdModes = $derived<{ value: DsdMode; label: string; hint: string }[]>([
@@ -457,12 +469,16 @@
     <!-- Output: the most important state in an audiophile player, up front. -->
     <section class="card hero soft" aria-labelledby="out-title">
       <div class="hero-text">
-        <span class="state" class:ok={bitPerfect}>
+        <span class="state" class:ok={outputPure}>
           <span class="dot" aria-hidden="true"></span>
-          {bitPerfect ? t("common.bitPerfect") : t("settings.softwareVolumeState", { db: volumeDraft.toFixed(1) })}
+          {isShared
+            ? t("settings.sharedModeState")
+            : bitPerfect
+              ? t("common.bitPerfect")
+              : t("settings.softwareVolumeState", { db: volumeDraft.toFixed(1) })}
         </span>
         <h2 id="out-title">{selected?.name ?? t("settings.output")}</h2>
-        <p class="dim">{t("settings.outputIntro")}</p>
+        <p class="dim">{isShared ? t("settings.sharedIntro") : t("settings.outputIntro")}</p>
       </div>
       <svg class="hero-disc" viewBox="0 0 100 100" aria-hidden="true">
         <circle cx="50" cy="50" r="48" fill="none" stroke="currentColor" stroke-opacity=".18" />
@@ -471,6 +487,25 @@
         <circle cx="50" cy="50" r="12" fill="currentColor" fill-opacity=".14" />
       </svg>
       <div class="rows">
+        <div class="row">
+          <span class="icon"><Icon name="speaker" size={18} /></span>
+          <span class="info">
+            <span class="name" id="output-mode-label">{t("settings.outputMode.label")}</span>
+            <span class="dim small">{outputModes.find((m) => m.value === outputMode)?.hint}</span>
+          </span>
+          <div class="segmented" role="radiogroup" aria-labelledby="output-mode-label">
+            {#each outputModes as mode (mode.value)}
+              <button
+                class="chip"
+                role="radio"
+                aria-checked={outputMode === mode.value}
+                onclick={() => setOutputMode(mode.value)}
+              >
+                {mode.label}
+              </button>
+            {/each}
+          </div>
+        </div>
         <label class="row">
           <span class="icon"><Icon name="volume" size={18} /></span>
           <span class="info">

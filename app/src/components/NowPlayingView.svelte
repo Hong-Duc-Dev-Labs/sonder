@@ -30,6 +30,7 @@
   let output = $derived(app.player.output);
   let playing = $derived(app.player.state === "playing");
   let bitPerfect = $derived(isBitPerfect(app.player));
+  let isShared = $derived(Boolean(path?.shared));
   let coverStyle = $derived(app.settings.coverStyle ?? "vinyl");
 
   /** Codec chip (e.g. "24/96", "16/44.1", or DSD) */
@@ -544,13 +545,15 @@
       {#if output}
         <button
           class="path-chip"
-          class:warn={!bitPerfect}
+          class:warn={!bitPerfect || isShared}
           title={outputLabel(output)}
-          aria-label={bitPerfect ? t("np.outputPerfect") : t("np.outputVolume")}
+          aria-label={isShared ? t("np.outputShared") : bitPerfect ? t("np.outputPerfect") : t("np.outputVolume")}
           onclick={() => (app.signalPathOpen = !app.signalPathOpen)}
         >
           <span class="chip-dot" aria-hidden="true"></span>
-          <span class="chip-text">{bitPerfect ? t("transport.statePerfect") : t("np.outputVolume")}</span>
+          <span class="chip-text">
+            {isShared ? t("transport.shared") : bitPerfect ? t("transport.statePerfect") : t("np.outputVolume")}
+          </span>
         </button>
       {/if}
     </div>
@@ -589,13 +592,17 @@
               {#if codec}<span class="codec-chip">{codec}</span>{/if}
             </div>
             {#if item}
-              <button
-                class="dock-sub link-btn"
-                aria-label={`${t("common.goToAlbum")}: ${item.album}`}
-                onclick={() => item && app.go({ kind: "album", id: item.albumId })}
-              >
-                {item.artist ?? t("common.unknownArtist")} · {item.album}
-              </button>
+              {#if item.albumId > 0}
+                <button
+                  class="dock-sub link-btn"
+                  aria-label={`${t("common.goToAlbum")}: ${item.album}`}
+                  onclick={() => item && app.go({ kind: "album", id: item.albumId })}
+                >
+                  {item.artist ?? t("common.unknownArtist")}{item.album ? ` · ${item.album}` : ""}
+                </button>
+              {:else}
+                <span class="dock-sub">{item.artist ?? t("common.unknownArtist")}{item.album ? ` · ${item.album}` : ""}</span>
+              {/if}
             {/if}
           </div>
         </div>
@@ -686,24 +693,45 @@
             {#if codec}
               <span class="codec-chip">{codec}</span>
             {/if}
+            {#if item}
+              {@const fav = app.isFavorite(item.path)}
+              <button
+                class="icon-btn np-fav"
+                class:on={fav}
+                aria-label={fav ? t("favorites.remove") : t("favorites.add")}
+                title={fav ? t("favorites.remove") : t("favorites.add")}
+                aria-pressed={fav}
+                onclick={() => item && void app.toggleFavorite(item.path)}
+              >
+                <Icon name={fav ? "heart" : "heart-outline"} size={18} />
+              </button>
+            {/if}
           </div>
           <p class="track-artist">
             {#if item}
-              <button
-                class="link-btn artist"
-                aria-label={`${t("common.goToAlbum")}: ${item.artist}`}
-                onclick={() => item && app.go({ kind: "album", id: item.albumId })}
-              >
-                {item.artist ?? t("common.unknownArtist")}
-              </button>
-              <span class="dot-sep" aria-hidden="true">·</span>
-              <button
-                class="link-btn album"
-                aria-label={`${t("common.goToAlbum")}: ${item.album}`}
-                onclick={() => item && app.go({ kind: "album", id: item.albumId })}
-              >
-                {item.album}
-              </button>
+              {#if item.albumId > 0}
+                <button
+                  class="link-btn artist"
+                  aria-label={`${t("common.goToAlbum")}: ${item.artist}`}
+                  onclick={() => item && app.go({ kind: "album", id: item.albumId })}
+                >
+                  {item.artist ?? t("common.unknownArtist")}
+                </button>
+                <span class="dot-sep" aria-hidden="true">·</span>
+                <button
+                  class="link-btn album"
+                  aria-label={`${t("common.goToAlbum")}: ${item.album}`}
+                  onclick={() => item && app.go({ kind: "album", id: item.albumId })}
+                >
+                  {item.album}
+                </button>
+              {:else}
+                <span>{item.artist ?? t("common.unknownArtist")}</span>
+                {#if item.album}
+                  <span class="dot-sep" aria-hidden="true">·</span>
+                  <span>{item.album}</span>
+                {/if}
+              {/if}
             {:else}
               <span class="dim">{t("np.pickAlbum")}</span>
             {/if}
@@ -1114,6 +1142,16 @@
     color: #fff;
     letter-spacing: 0.3px;
     flex-shrink: 0;
+  }
+
+  .np-fav {
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    color: var(--ink-2);
+  }
+  .np-fav.on {
+    color: #ff7b89;
   }
 
   .track-artist {

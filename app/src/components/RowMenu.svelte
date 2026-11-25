@@ -23,6 +23,7 @@
   /** Where a right-click opened the menu; null when it hangs off the ⋯ button. */
   let at = $state<{ x: number; y: number } | null>(null);
   let picking = $state(false);
+  let fav = $derived(app.isFavorite(track.path));
   let button: HTMLButtonElement | undefined = $state();
   let items: HTMLElement | undefined = $state();
 
@@ -103,12 +104,19 @@
       <button role="menuitem" onclick={() => act(() => app.checkQuality(track))}>
         <Icon name="spectrum" size={18} /> {t("menu.checkQuality")}
       </button>
+      <button role="menuitem" onclick={() => act(() => void app.toggleFavorite(track.path))}>
+        <Icon name={fav ? "heart" : "heart-outline"} size={18} />
+        {fav ? t("favorites.remove") : t("favorites.add")}
+      </button>
+      <button role="menuitem" onclick={() => act(() => void app.revealInFolder(track.path))}>
+        <Icon name="folder-open" size={18} /> {t("menu.revealInFolder")}
+      </button>
       {#if onremove}
         <button role="menuitem" onclick={() => act(onremove)}>
           <Icon name="trash" size={18} /> {t("menu.removeFromPlaylist")}
         </button>
       {/if}
-      {#if showAlbum}
+      {#if showAlbum && track.albumId > 0}
         <button role="menuitem" onclick={() => act(() => app.go({ kind: "album", id: track.albumId }))}>
           <Icon name="albums" size={18} /> {t("common.goToAlbum")}
         </button>

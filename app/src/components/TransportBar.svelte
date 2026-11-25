@@ -113,15 +113,18 @@
     const khz = src.rate / 1000;
     return `${src.bits}/${Number.isInteger(khz) ? khz : khz.toFixed(1)}`;
   });
-  let chipState = $derived(perfect ? "ok" : snap.volumeDb != null && snap.output ? "warn" : "plain");
+  let isShared = $derived(Boolean(snap.signalPath?.shared));
+  let chipState = $derived(perfect ? "ok" : isShared || (snap.volumeDb != null && snap.output) ? "warn" : "plain");
   let chipLabel = $derived.by(() => {
     if (!snap.source) return t("common.signalPath");
     const source = sourceLabel(snap.source);
     const state = perfect
       ? t("transport.statePerfect")
-      : snap.volumeDb != null
-        ? t("transport.stateVolume", { db: snap.volumeDb.toFixed(1) })
-        : "";
+      : isShared
+        ? t("transport.stateShared")
+        : snap.volumeDb != null
+          ? t("transport.stateVolume", { db: snap.volumeDb.toFixed(1) })
+          : "";
     return state ? t("transport.pathLabelState", { source, state }) : t("transport.pathLabel", { source });
   });
 </script>
@@ -160,7 +163,7 @@
             onclick={() => (statusOpen = !statusOpen)}
           >
             <span class="dot" aria-hidden="true"></span>
-            {chipText}
+            {isShared ? `${t("transport.shared")} · ${chipText}` : chipText}
           </button>
         {/if}
       {:else}
@@ -216,6 +219,19 @@
     </div>
 
     <div class="right">
+      {#if item}
+        {@const fav = app.isFavorite(item.path)}
+        <button
+          class="icon-btn fav-btn"
+          class:fav-on={fav}
+          aria-label={fav ? t("favorites.remove") : t("favorites.add")}
+          title={fav ? t("favorites.remove") : t("favorites.add")}
+          aria-pressed={fav}
+          onclick={() => item && void app.toggleFavorite(item.path)}
+        >
+          <Icon name={fav ? "heart" : "heart-outline"} size={18} />
+        </button>
+      {/if}
       <SleepTimerButton />
       <button
         data-lyrics-toggle
@@ -454,6 +470,13 @@
   }
   .status.warn .dot {
     background: var(--warn);
+    box-shadow: 0 0 8px var(--warn);
+  }
+  .fav-btn {
+    color: var(--ink-2);
+  }
+  .fav-btn.fav-on {
+    color: #ff7b89;
   }
 
   .controls {
@@ -705,6 +728,9 @@
       height: 36px;
     }
     .remain {
+      display: none;
+    }
+    .fav-btn {
       display: none;
     }
   }

@@ -2,8 +2,10 @@
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { cubicOut } from "svelte/easing";
+  import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { app, type View } from "./lib/app.svelte";
   import { commands } from "./lib/bindings";
+  import { playbackMs } from "./lib/clock.svelte";
   import { t } from "./lib/i18n.svelte";
   import { reducedMotion } from "./lib/motion";
   import { formatShortcut, resolveDesktopOs, resolveGlobalShortcut } from "./lib/platform";
@@ -17,6 +19,7 @@
   import Dialog from "./components/Dialog.svelte";
   import ArtistsView from "./components/ArtistsView.svelte";
   import ArtistView from "./components/ArtistView.svelte";
+  import FavoritesView from "./components/FavoritesView.svelte";
   import HomeView from "./components/HomeView.svelte";
   import Icon, { type IconName } from "./components/Icon.svelte";
   import MiniDisc from "./components/MiniDisc.svelte";
@@ -47,6 +50,7 @@
     { view: { kind: "albums" }, label: t("common.albums"), icon: "albums" },
     { view: { kind: "artists" }, label: t("common.artists"), icon: "artists" },
     { view: { kind: "songs" }, label: t("common.songs"), icon: "note" },
+    { view: { kind: "favorites" }, label: t("common.favorites"), icon: "heart" },
     { view: { kind: "stats" }, label: t("stats.title"), icon: "chart" },
   ]);
   /** Playlists listed in the sidebar itself; the rest are one click away in "All playlists". */
@@ -63,8 +67,35 @@
   }
 
   let ready = $state(false);
+  let fileDropping = $state(false);
   onMount(() => {
     app.init().then(() => (ready = true));
+    let unlistenDrop: (() => void) | undefined;
+    try {
+      const win = getCurrentWebviewWindow();
+      void win
+        .onDragDropEvent((event) => {
+          if (event.payload.type === "enter" || event.payload.type === "over") {
+            fileDropping = true;
+          } else if (event.payload.type === "leave") {
+            fileDropping = false;
+          } else if (event.payload.type === "drop") {
+            fileDropping = false;
+            if (event.payload.paths.length > 0) {
+              void app.openExternalPaths(event.payload.paths);
+            }
+          }
+        })
+        .then((fn) => {
+          unlistenDrop = fn;
+        })
+        .catch(() => {});
+    } catch {
+      // Non-Tauri browser preview has no native window drag-drop listener.
+    }
+    return () => {
+      unlistenDrop?.();
+    };
   });
 
   let onNow = $derived(app.view.kind === "now");
@@ -73,7 +104,7 @@
   const flipMs = reducedMotion() ? 0 : 200;
 
   /** Controls that handle Space themselves: a global shortcut must not steal it from them. */
-  const OWNS_SPACE = 'input, select, textarea, button, a, [role="button"], [role="slider"], [role="menuitem"], [role="radio"], [role="switch"], [contenteditable]';
+  const OWNS_SPACE = 'input, select, textarea, button, a, [role="button"], [role="slider"], [role="menuitem"], [role="radio"], [role="switch"], [role="tab"], [contenteditable]';
 
   function onKey(e: KeyboardEvent) {
     const target = e.target as HTMLElement | null;
@@ -85,12 +116,55 @@
       hasInspector: Boolean(app.inspector),
     });
     if (!action) return;
+    if (action === "volumeUp" || action === "volumeDown") {
+      if (app.player.volumeDb == null) return;
+      e.preventDefault();
+      const delta = action === "volumeUp" ? 2 : -2;
+      const next = Math.max(-60, Math.min(0, app.player.volumeDb + delta));
+      void app.run(commands.playerSetVolume(next));
+      return;
+    }
+    if (action === "seekBack" || action === "seekForward" || action === "seekBackLong" || action === "seekForwardLong") {
+      if (!app.current) return;
+      e.preventDefault();
+      const step =
+        action === "seekBack"
+          ? -5_000
+          : action === "seekForward"
+            ? 5_000
+            : action === "seekBackLong"
+              ? -30_000
+              : 30_000;
+      const total = app.player.durationMs ?? app.current.durationMs ?? 0;
+      const base = app.player.state === "playing" ? playbackMs() : app.player.elapsedMs;
+      const clamped = Math.max(0, total > 0 ? Math.min(total, Math.round(base + step)) : Math.round(base + step));
+      void app.run(commands.playerSeek(clamped));
+      return;
+    }
     e.preventDefault();
     if (action === "togglePlay") app.run(commands.playerToggle());
     else if (action === "search") app.openSearch();
     else if (action === "toggleSidebar") app.toggleSidebar();
     else if (action === "closeInspector") app.closeInspector();
     else if (action === "back") app.back();
+    else if (action === "previousTrack") app.run(commands.playerPrevious());
+    else if (action === "nextTrack") app.run(commands.playerNext());
+    else if (action === "toggleLyrics") app.toggleLyrics();
+    else if (action === "toggleQueue") app.toggleQueue();
+    else if (action === "toggleNowPlaying") {
+      if (app.view.kind === "now") app.back();
+      else app.go({ kind: "now" });
+    } else if (action === "toggleFullscreen") {
+      try {
+        const win = getCurrentWebviewWindow();
+        void win
+          .isFullscreen()
+          .then((fs) => win.setFullscreen(!fs))
+          .catch(() => {});
+      } catch {
+        // Non-Tauri browser preview has no window fullscreen control.
+      }
+    }
   }
 
   function isActive(v: View): boolean {
@@ -160,6 +234,8 @@
               <ArtistView id={app.view.id} />
             {:else if app.view.kind === "songs"}
               <SongsView />
+            {:else if app.view.kind === "favorites"}
+              <FavoritesView />
             {:else if app.view.kind === "playlists"}
               <PlaylistsView />
             {:else if app.view.kind === "playlist"}
@@ -332,6 +408,16 @@
       {/each}
     </div>
   </div>
+
+  {#if fileDropping}
+    <div class="drop-overlay" class:reduced={reducedMotion()} aria-live="polite">
+      <div class="drop-card glass">
+        <span class="drop-icon"><Icon name="disc" size={44} /></span>
+        <p class="drop-title">{t("drop.title")}</p>
+        <p class="drop-hint">{t("drop.hint")}</p>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -745,5 +831,53 @@
     z-index: 250;
     box-shadow: inset 0 0 0 1px var(--hairline);
     pointer-events: none;
+  }
+
+  .drop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 220;
+    display: grid;
+    place-items: center;
+    background: rgb(0 0 0 / 0.62);
+    backdrop-filter: blur(8px);
+    pointer-events: none;
+  }
+  .drop-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 36px 48px;
+    border-radius: var(--r-xl);
+    text-align: center;
+    box-shadow: inset 0 0 0 2px rgb(255 255 255 / 0.25), var(--glass-shadow);
+    animation: drop-pop var(--dur-med) var(--ease-spring);
+  }
+  .drop-overlay.reduced .drop-card {
+    animation: none;
+  }
+  @keyframes drop-pop {
+    from {
+      opacity: 0;
+      transform: scale(0.94);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  .drop-icon {
+    color: var(--ink);
+  }
+  .drop-title {
+    margin: 0;
+    font-size: var(--fs-title);
+    font-weight: 700;
+  }
+  .drop-hint {
+    margin: 0;
+    font-size: var(--fs-small);
+    color: var(--ink-2);
   }
 </style>

@@ -29,11 +29,14 @@ const KEEP = 200;
 export function loadLyrics(
   trackId: number,
   online: boolean,
+  path?: string,
 ): Promise<Lyrics | null> {
-  const key = `${trackId}:${online}`;
+  const usePath = trackId <= 0 && Boolean(path);
+  const key = usePath ? `path:${path}:${online}` : `${trackId}:${online}`;
   let found = loaded.get(key);
   if (!found) {
-    found = commands.lyricsGet(trackId).then(
+    const work = usePath && path ? commands.lyricsGetPath(path) : commands.lyricsGet(trackId);
+    found = work.then(
       (lyrics) => {
         if (!lyrics) loaded.delete(key);
         return lyrics;

@@ -23,6 +23,7 @@
 
   let item = $derived(app.current);
   let trackId = $derived(app.current?.trackId);
+  let trackPath = $derived(app.current?.path);
   let online = $derived(app.settings.lyricsOnline ?? true);
   let lyrics = $state<Lyrics | null>(null);
   let loading = $state(false);
@@ -34,18 +35,19 @@
 
   $effect(() => {
     const id = trackId;
+    const path = trackPath;
     const on = online;
     void app.lyricsVersion;
     lyrics = null;
     active = -1;
     currentMs = 0;
-    if (id == null) {
+    if (id == null && !path) {
       loading = false;
       return;
     }
     let current = true;
     loading = true;
-    loadLyrics(id, on).then((found) => {
+    loadLyrics(id ?? 0, on, path).then((found) => {
       if (!current) return;
       lyrics = found;
       loading = false;

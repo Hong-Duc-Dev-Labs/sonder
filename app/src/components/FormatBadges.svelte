@@ -6,6 +6,7 @@
 
   let snap = $derived(app.player);
   let perfect = $derived(isBitPerfect(snap));
+  let isShared = $derived(Boolean(snap.signalPath?.shared));
 </script>
 
 {#if snap.source}
@@ -21,6 +22,9 @@
       <span class="badge ok" title={t("badges.bitPerfectTitle")}>{t("common.bitPerfect")}</span>
     {:else if snap.volumeDb != null && snap.output}
       <span class="badge warn" title={t("badges.volumeTitle")}>{t("badges.volume", { db: snap.volumeDb.toFixed(1) })}</span>
+    {/if}
+    {#if isShared}
+      <span class="badge warn" title={t("badges.sharedTitle")}>{t("badges.shared")}</span>
     {/if}
   </div>
 {/if}

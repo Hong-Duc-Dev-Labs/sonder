@@ -22,7 +22,7 @@
     <h3>{t("common.signalPath")}</h3>
     <span class="verdict" class:ok={path.bitPerfect} class:warn={!path.bitPerfect}>
       {#if path.bitPerfect}<Icon name="check" size={14} />{/if}
-      {path.bitPerfect ? t("common.bitPerfect") : t("path.processed")}
+      {path.bitPerfect ? t("common.bitPerfect") : path.shared ? t("path.shared") : t("path.processed")}
     </span>
   </header>
 

@@ -40,6 +40,8 @@ export const vi: Record<MessageKey, Message> = {
   "common.artists": "Nghệ sĩ",
   "common.playlists": "Danh sách phát",
   "common.songs": "Bài hát",
+  "common.favorites": "Yêu thích",
+  "common.save": "Lưu",
   "common.settings": "Cài đặt",
   "common.search": "Tìm kiếm",
   "common.libraryEmpty": "Thư viện đang trống",
@@ -72,6 +74,14 @@ export const vi: Record<MessageKey, Message> = {
   "home.pickAlbum": "Chọn một album và nó sẽ quay ở đây.",
   "home.firstPlaylist": "Tạo danh sách đầu tiên",
   "home.recentlyAdded": "Mới thêm gần đây",
+  "home.recentlyPlayed": "Nghe gần đây",
+  "home.favoritesHint": "Bài hát đã lưu",
+
+  // yêu thích
+  "favorites.empty": "Chưa có bài hát yêu thích",
+  "favorites.emptyHint": "Nhấn biểu tượng trái tim trên bất kỳ bài hát nào để lưu tại đây.",
+  "favorites.add": "Thêm vào Yêu thích",
+  "favorites.remove": "Bỏ khỏi Yêu thích",
 
   // shell
   "window.titlebar": "Thanh tiêu đề cửa sổ",
@@ -158,11 +168,22 @@ export const vi: Record<MessageKey, Message> = {
   "queue.played": "Đã phát",
   "queue.empty": "Hàng chờ đang trống.",
   "queue.removeItem": "Xoá {title} khỏi hàng chờ",
+  "queue.shuffleUpcoming": "Trộn phần tiếp theo",
+  "queue.savePlaylist": "Lưu thành danh sách phát",
+  "queue.playlistNamePlaceholder": "Tên danh sách phát…",
+  "queue.savedPlaylist": "Đã lưu hàng chờ thành “{name}”",
+  "queue.move": "Di chuyển {title}, vị trí {position} trên {total}",
+  "queue.reorderHint": "Kéo, hoặc nhấn Lên/Xuống, để sắp xếp lại",
   "menu.trackActions": "Thao tác bài hát",
   "menu.newPlaylist": "Danh sách phát mới…",
   "menu.removeFromPlaylist": "Xoá khỏi danh sách phát",
   "menu.editTags": "Sửa thông tin",
   "menu.checkQuality": "Kiểm tra chất lượng",
+  "menu.revealInFolder": "Mở trong thư mục",
+
+  // kéo thả tệp
+  "drop.title": "Thả tệp nhạc hoặc thư mục để phát",
+  "drop.hint": "Hỗ trợ: FLAC, ALAC, WAV, AIFF, DSF, DFF",
 
   // kiểm tra chất lượng lossless
   "quality.title": "Thẩm định nhạc",
@@ -399,6 +420,8 @@ export const vi: Record<MessageKey, Message> = {
   "badges.bitPerfectTitle": "Thiết bị nhận nguyên vẹn các mẫu đã giải mã",
   "badges.volumeTitle": "Âm lượng phần mềm làm thay đổi các mẫu",
   "badges.volume": "Âm lượng {db} dB",
+  "badges.shared": "Chế độ chia sẻ",
+  "badges.sharedTitle": "Âm thanh đi qua bộ trộn hệ điều hành (không bit-perfect)",
   "lyrics.close": "Đóng lời bài hát",
   "lyrics.loading": "Đang tìm lời bài hát…",
   "lyrics.nothingPlaying": "Chưa phát gì.",
@@ -416,6 +439,7 @@ export const vi: Record<MessageKey, Message> = {
   "np.close": "Đóng Now Playing",
   "np.outputPerfect": "Đầu ra bit-perfect: mở cài đặt đầu ra",
   "np.outputVolume": "Đang bật âm lượng phần mềm: mở cài đặt đầu ra",
+  "np.outputShared": "Đang bật chế độ chia sẻ: mở cài đặt đầu ra",
   "np.showSquare": "Hiện bìa vuông",
   "np.showVinyl": "Hiện đĩa than",
   "np.showStage": "Hiện sân khấu ca từ",
@@ -431,10 +455,13 @@ export const vi: Record<MessageKey, Message> = {
   "transport.pathLabelState": "Đường tín hiệu: {source}, {state}",
   "transport.statePerfect": "bit-perfect",
   "transport.stateVolume": "âm lượng phần mềm {db} dB",
+  "transport.stateShared": "chế độ chia sẻ (không bit-perfect)",
+  "transport.shared": "Chia sẻ",
   "transport.volumeValue": "Âm lượng phần mềm {db} dB",
   "transport.device": "Thiết bị: {format}",
   "tonearm.seek": "Tua (cần đĩa)",
   "path.processed": "Đã xử lý",
+  "path.shared": "Chế độ chia sẻ",
   "path.source": "Nguồn",
   "path.noProcessing": "Không xử lý",
   "path.output": "Đầu ra",
@@ -452,9 +479,19 @@ export const vi: Record<MessageKey, Message> = {
 
   // settings: output
   "settings.softwareVolumeState": "Âm lượng phần mềm {db} dB",
+  "settings.sharedModeState": "Chế độ chia sẻ (OS mixer)",
   "settings.output": "Đầu ra",
   "settings.outputIntro":
     "Chế độ độc quyền, mỗi tệp phát đúng tần số và độ sâu bit của nó. Tệp mà thiết bị không nhận được nguyên trạng sẽ bị bỏ qua, không bao giờ bị chuyển đổi.",
+  "settings.sharedIntro":
+    "Chế độ chia sẻ hoà âm cùng các ứng dụng khác theo tần số bộ trộn hệ điều hành. Chuyển lại Độc quyền để phát bit-perfect và DSD nguyên bản.",
+  "settings.outputMode.label": "Chế độ đầu ra",
+  "settings.outputMode.exclusive": "Độc quyền",
+  "settings.outputMode.shared": "Chia sẻ",
+  "settings.outputMode.exclusiveHint":
+    "Chiếm quyền độc quyền thiết bị, xuất nguyên bản bit-perfect, hỗ trợ DSD/DoP.",
+  "settings.outputMode.sharedHint":
+    "Phát cùng các ứng dụng khác qua bộ trộn hệ điều hành. Tự lấy mẫu lại khi cần; tắt bit-perfect và truyền thẳng DSD.",
   "settings.bitPerfectOutput": "Đầu ra bit-perfect",
   "settings.bitPerfectHint": "Không dùng âm lượng phần mềm; hãy chỉnh âm lượng trên DAC hoặc ampli",
   "settings.outputDevice": "Thiết bị đầu ra",

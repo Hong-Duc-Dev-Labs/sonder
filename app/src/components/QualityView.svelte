@@ -273,6 +273,7 @@
         </div>
       {:else}
         {@const target = app.qualityTarget}
+        {@const revealPath = target.kind === "track" ? target.track.path : target.file.path}
         <div class="subject">
           <span class="subject-art">
             {#if target.kind === "track"}
@@ -290,11 +291,22 @@
               <p class="dim small path" title={target.file.path}>{target.file.path}</p>
             {/if}
           </div>
-          {#if running}
-            <button type="button" class="btn small" onclick={() => commands.qualityCancelCheck()}>{t("quality.cancel")}</button>
-          {:else}
-            <button type="button" class="btn small" onclick={recheck}><Icon name="refresh" size={16} /> {t("quality.recheck")}</button>
-          {/if}
+          <div class="subject-actions">
+            <button
+              type="button"
+              class="btn small"
+              aria-label={t("menu.revealInFolder")}
+              title={revealPath}
+              onclick={() => void app.revealInFolder(revealPath)}
+            >
+              <Icon name="folder-open" size={16} /> {t("menu.revealInFolder")}
+            </button>
+            {#if running}
+              <button type="button" class="btn small" onclick={() => commands.qualityCancelCheck()}>{t("quality.cancel")}</button>
+            {:else}
+              <button type="button" class="btn small" onclick={recheck}><Icon name="refresh" size={16} /> {t("quality.recheck")}</button>
+            {/if}
+          </div>
         </div>
         {#if target.kind === "file"}
           <p class="dim small">{t("quality.outsideLibrary")}</p>
@@ -563,6 +575,12 @@
     display: flex;
     align-items: center;
     gap: 16px;
+  }
+  .subject-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    flex: none;
   }
   .subject-art {
     width: 72px;

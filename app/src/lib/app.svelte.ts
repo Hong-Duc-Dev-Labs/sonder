@@ -32,6 +32,7 @@ export type View =
   | { kind: "artists" }
   | { kind: "artist"; id: number }
   | { kind: "songs" }
+  | { kind: "favorites" }
   | { kind: "playlists" }
   | { kind: "playlist"; id: number }
   | { kind: "search" }
@@ -235,6 +236,10 @@ export class AppState {
   playlists = $state<Playlist[]>([]);
   /** Bumped after every playlist change made here; playlist pages reload when it moves. */
   playlistsVersion = $state(0);
+  /** Paths of all favorited tracks for fast O(1) heart lookup across views. */
+  favoritePaths = $state<Set<string>>(new Set());
+  /** Bumped when favorites change; FavoritesView reloads on change. */
+  favoritesVersion = $state(0);
   /** The question the modal dialog is showing, if any. */
   dialog = $state<DialogRequest | null>(null);
   /** Bumped when the editor saved new lyrics into a file; the lyrics panel reloads. */
@@ -592,6 +597,52 @@ export class AppState {
     if (saved) this.notify("info", t("m3u.exported", { file: saved.split(/[\\/]/).pop() ?? saved }));
   }
 
+  async saveQueueAsPlaylist(name: string): Promise<Playlist | undefined> {
+    const trimmed = name.trim();
+    if (!trimmed || !this.queue.length) return undefined;
+    const created = await this.run(commands.playlistCreateFromQueue(trimmed));
+    if (created) {
+      await this.playlistsChanged();
+      this.notify("info", t("queue.savedPlaylist", { name: created.name }));
+    }
+    return created;
+  }
+
+  isFavorite(path: string | null | undefined): boolean {
+    return path ? this.favoritePaths.has(path) : false;
+  }
+
+  async refreshFavorites() {
+    const paths = await commands.libraryFavoritePaths().catch(() => null);
+    if (!paths) return;
+    this.favoritePaths = new Set(paths);
+    this.favoritesVersion++;
+  }
+
+  async toggleFavorite(path: string): Promise<boolean | undefined> {
+    if (!path) return undefined;
+    const fav = await this.run(commands.libraryToggleFavorite(path));
+    if (fav === undefined) return undefined;
+    const next = new Set(this.favoritePaths);
+    if (fav) next.add(path);
+    else next.delete(path);
+    this.favoritePaths = next;
+    this.favoritesVersion++;
+    return fav;
+  }
+
+  async openExternalPaths(paths: string[]): Promise<number | undefined> {
+    if (!paths.length) return 0;
+    const count = await this.run(commands.playerOpenPaths(paths));
+    if (count && count > 0) this.go({ kind: "now" });
+    return count;
+  }
+
+  async revealInFolder(path: string) {
+    if (!path) return;
+    await this.run(commands.revealInFolder(path));
+  }
+
   /** Sets the sleep timer: minutes from now, the end of the current track, or off. */
   async setSleep(minutes: number | null, endOfTrack = false) {
     const next = await this.run(commands.sleepTimerSet(minutes, endOfTrack));
@@ -618,6 +669,7 @@ export class AppState {
     await Promise.all([
       events.playerStateEvent.listen((e) => this.setPlayer(e.payload)),
       events.queueChangedEvent.listen((e) => (this.queue = e.payload)),
+      events.favoritesChangedEvent.listen(() => void this.refreshFavorites()),
       events.noticeEvent.listen((e) => this.notify(e.payload.level, e.payload.message)),
       events.libraryChangedEvent.listen(() => this.libraryVersion++),
       events.scanProgressEvent.listen((e) => {
@@ -675,7 +727,7 @@ export class AppState {
         if (found && !this.update) this.updateFound(found);
       })
       .catch(() => {});
-    const [player, queue, settings, scanning, analyzing, pending] = await Promise.all([
+    const [player, queue, settings, scanning, analyzing, pending, favPaths] = await Promise.all([
       commands.playerSnapshot(),
       commands.queueItems(),
       commands.settingsGet(),
@@ -684,10 +736,12 @@ export class AppState {
       // The only start-up call that reads the database: a failure leaves the count unknown
       // instead of failing the whole start-up.
       commands.libraryLoudnessPending().catch(() => null),
+      commands.libraryFavoritePaths().catch(() => [] as string[]),
     ]);
     this.player = player;
     this.queue = queue;
     this.settings = settings;
+    this.favoritePaths = new Set(favPaths);
     applyLanguage(settings.language);
     if (scanning && this.scan.phase === "idle") this.scan = { ...this.scan, phase: "walking" };
     this.loudness = { ...this.loudness, running: this.loudness.running || analyzing, pending };

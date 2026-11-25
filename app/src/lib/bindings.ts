@@ -209,11 +209,28 @@ export const commands = {
 	 *  library) and returns the saved path; `None` when the dialog was cancelled.
 	 */
 	playlistExportM3u: (id: number) => __TAURI_INVOKE<string | null>("playlist_export_m3u", { id }),
+	/**  Moves the queue entry at `from` to `to` and keeps playback synced. */
+	queueMove: (from: number, to: number) => __TAURI_INVOKE<null>("queue_move", { from, to }),
+	/**  Shuffles all entries after the current track (or the full queue when idle). */
+	queueShuffle: () => __TAURI_INVOKE<null>("queue_shuffle"),
+	/**  Creates a new playlist populated with every path currently in the play queue. */
+	playlistCreateFromQueue: (name: string) => __TAURI_INVOKE<Playlist>("playlist_create_from_queue", { name }),
+	libraryToggleFavorite: (path: string) => __TAURI_INVOKE<boolean>("library_toggle_favorite", { path }),
+	libraryFavorites: () => __TAURI_INVOKE<TrackItem[]>("library_favorites"),
+	libraryFavoritePaths: () => __TAURI_INVOKE<string[]>("library_favorite_paths"),
+	libraryRecentAlbums: (limit: number) => __TAURI_INVOKE<Album[]>("library_recent_albums", { limit }),
+	/**  Lyrics for any local audio path (including files played directly outside the library). */
+	lyricsGetPath: (path: string) => __TAURI_INVOKE<Lyrics | null>("lyrics_get_path", { path }),
+	/**  Replaces the queue with external audio files or folders (dropped or opened from OS) and starts playback. */
+	playerOpenPaths: (paths: string[]) => __TAURI_INVOKE<number>("player_open_paths", { paths }),
+	/**  Opens the system file manager highlighting `path`. */
+	revealInFolder: (path: string) => __TAURI_INVOKE<null>("reveal_in_folder", { path }),
 };
 
 /** Events */
 export const events = {
 	devicesChangedEvent: makeEvent<DevicesChangedEvent, DevicesChangedEvent>("devices-changed-event"),
+	favoritesChangedEvent: makeEvent<FavoritesChangedEvent, FavoritesChangedEvent>("favorites-changed-event"),
 	historyChangedEvent: makeEvent<HistoryChangedEvent, HistoryChangedEvent>("history-changed-event"),
 	libraryChangedEvent: makeEvent<LibraryChangedEvent, LibraryChangedEvent>("library-changed-event"),
 	loudnessFinishedEvent: makeEvent<LoudnessFinishedEvent, LoudnessFinishedEvent>("loudness-finished-event"),
@@ -366,6 +383,9 @@ export type DsdMode =
 
 /**  Output rate of DSD→PCM conversion. */
 export type DsdPcmRate = "hz176400" | "hz352800";
+
+/**  The set of favorited tracks changed. */
+export type FavoritesChangedEvent = null;
 
 /**  Filter phase choice for Sonder-designed tables. */
 export type FilterPhaseSetting = "linear" | "minimum";
@@ -529,6 +549,13 @@ export type OutputInfo = {
 	channels: number,
 	label: string,
 };
+
+/**  How the player opens the audio output device. */
+export type OutputShareMode = 
+/**  Exclusive hardware access (WASAPI Exclusive / CoreAudio Hog / ALSA hw), bit-perfect by default. */
+"exclusive" | 
+/**  OS mixer shared mode so other applications can play audio concurrently (not bit-perfect). */
+"shared";
 
 /**  DSD output for PCM sources. */
 export type PcmToDsd = "off" | "dsd64" | "dsd128" | "dsd256";
@@ -752,6 +779,7 @@ export type QueueItem = {
 	/**  Stable for the life of this entry, unlike its position: a track queued twice gets two. */
 	entryId: number,
 	trackId: number,
+	path: string,
 	title: string,
 	artist: string | null,
 	album: string,
@@ -805,6 +833,8 @@ export type SdmOrderSetting = "order5" | "order7";
 export type Settings = {
 	/**  Backend id of the output device; `None` uses the system default device. */
 	outputDevice?: string | null,
+	/**  Device sharing policy: exclusive bit-perfect (default) or shared OS mixer. */
+	outputMode?: OutputShareMode,
 	/**  Software volume in dB; `None` keeps output bit-perfect. */
 	volumeDb?: number | null,
 	albumSort?: SortOrder,
@@ -870,6 +900,8 @@ export type SignalPathInfo = {
 	stages: SignalPathStage[],
 	/**  `true` only when nothing touched the samples and the rate is unchanged. */
 	bitPerfect: boolean,
+	/**  `true` when playing through the OS shared mixer rather than exclusive mode. */
+	shared: boolean,
 	/**  How the track joined the previous one: the crossfade length, or why it stayed gapless. */
 	transition: string | null,
 };
@@ -999,6 +1031,8 @@ export type TrackItem = {
 	artColors: string[],
 	/**  The cached quality check, when the file has not changed since it ran. */
 	quality: QualityBadge | null,
+	/**  Whether this track is marked as favorite. */
+	favorite: boolean,
 };
 
 /**

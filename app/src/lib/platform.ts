@@ -7,7 +7,19 @@ export type GlobalShortcutAction =
   | "search"
   | "toggleSidebar"
   | "closeInspector"
-  | "back";
+  | "back"
+  | "seekBack"
+  | "seekForward"
+  | "seekBackLong"
+  | "seekForwardLong"
+  | "previousTrack"
+  | "nextTrack"
+  | "volumeUp"
+  | "volumeDown"
+  | "toggleLyrics"
+  | "toggleQueue"
+  | "toggleNowPlaying"
+  | "toggleFullscreen";
 
 export type ShortcutKeyEvent = {
   key: string;
@@ -15,6 +27,7 @@ export type ShortcutKeyEvent = {
   ctrlKey: boolean;
   metaKey: boolean;
   altKey: boolean;
+  shiftKey?: boolean;
   repeat?: boolean;
   defaultPrevented?: boolean;
 };
@@ -100,25 +113,39 @@ export function resolveGlobalShortcut(
   os: DesktopOs,
   ctx: ShortcutContext,
 ): GlobalShortcutAction | null {
-  if (ctx.modalOpen) return null;
+  if (ctx.modalOpen || e.defaultPrevented) return null;
 
   if (e.code === "Space" && !e.repeat && !ctx.ownsSpace) {
     return "togglePlay";
   }
 
+  const shift = Boolean(e.shiftKey);
   const primary =
     os === "macos"
       ? e.metaKey && !e.ctrlKey && !e.altKey
       : e.ctrlKey && !e.metaKey && !e.altKey;
   const lower = e.key.toLowerCase();
 
-  if (primary && lower === "f") {
-    return "search";
+  if (os === "macos") {
+    if (e.metaKey && e.ctrlKey && !e.altKey && !shift && lower === "f") {
+      return "toggleFullscreen";
+    }
+  } else if (!e.ctrlKey && !e.metaKey && !e.altKey && !shift && e.key === "F11") {
+    return "toggleFullscreen";
   }
-  if (primary && lower === "b" && !ctx.narrow) {
-    return "toggleSidebar";
+
+  if (primary && !shift) {
+    if (lower === "f") return "search";
+    if (lower === "b" && !ctx.narrow) return "toggleSidebar";
+    if (!ctx.editable) {
+      if (e.key === "ArrowLeft") return "previousTrack";
+      if (e.key === "ArrowRight") return "nextTrack";
+      if (e.key === "ArrowUp") return "volumeUp";
+      if (e.key === "ArrowDown") return "volumeDown";
+    }
   }
-  if (e.key === "Escape" && !e.defaultPrevented && ctx.hasInspector) {
+
+  if (e.key === "Escape" && ctx.hasInspector) {
     return "closeInspector";
   }
   if (os === "macos") {
@@ -127,6 +154,18 @@ export function resolveGlobalShortcut(
     }
   } else if (!ctx.editable && e.altKey && !e.ctrlKey && !e.metaKey && e.key === "ArrowLeft") {
     return "back";
+  }
+
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && !ctx.editable) {
+    if (!ctx.ownsSpace) {
+      if (e.key === "ArrowLeft") return shift ? "seekBackLong" : "seekBack";
+      if (e.key === "ArrowRight") return shift ? "seekForwardLong" : "seekForward";
+    }
+    if (!shift && !e.repeat) {
+      if (lower === "l") return "toggleLyrics";
+      if (lower === "q") return "toggleQueue";
+      if (lower === "n") return "toggleNowPlaying";
+    }
   }
 
   return null;

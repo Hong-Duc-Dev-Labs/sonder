@@ -139,4 +139,31 @@ describe("resolveGlobalShortcut", () => {
     expect(resolveGlobalShortcut(key({ code: "Space" }), "windows", { ...baseCtx, ownsSpace: true })).toBeNull();
     expect(resolveGlobalShortcut(key({ code: "Space" }), "windows", baseCtx)).toBe("togglePlay");
   });
+
+  it("handles seek, track step, volume, panel toggles, and fullscreen shortcuts with guards", () => {
+    expect(resolveGlobalShortcut(key({ key: "ArrowLeft" }), "windows", baseCtx)).toBe("seekBack");
+    expect(resolveGlobalShortcut(key({ key: "ArrowRight", shiftKey: true }), "windows", baseCtx)).toBe("seekForwardLong");
+    expect(resolveGlobalShortcut(key({ key: "ArrowLeft" }), "windows", { ...baseCtx, ownsSpace: true })).toBeNull();
+    expect(resolveGlobalShortcut(key({ key: "ArrowRight" }), "windows", { ...baseCtx, editable: true })).toBeNull();
+
+    expect(resolveGlobalShortcut(key({ key: "ArrowLeft", ctrlKey: true }), "windows", baseCtx)).toBe("previousTrack");
+    expect(resolveGlobalShortcut(key({ key: "ArrowRight", metaKey: true }), "macos", baseCtx)).toBe("nextTrack");
+    expect(resolveGlobalShortcut(key({ key: "ArrowUp", ctrlKey: true }), "linux", baseCtx)).toBe("volumeUp");
+    expect(resolveGlobalShortcut(key({ key: "ArrowDown", metaKey: true }), "macos", baseCtx)).toBe("volumeDown");
+    expect(
+      resolveGlobalShortcut(key({ key: "ArrowLeft", ctrlKey: true }), "windows", { ...baseCtx, editable: true }),
+    ).toBeNull();
+    expect(
+      resolveGlobalShortcut(key({ key: "ArrowRight", metaKey: true }), "macos", { ...baseCtx, editable: true }),
+    ).toBeNull();
+
+    expect(resolveGlobalShortcut(key({ key: "l" }), "windows", baseCtx)).toBe("toggleLyrics");
+    expect(resolveGlobalShortcut(key({ key: "q" }), "windows", baseCtx)).toBe("toggleQueue");
+    expect(resolveGlobalShortcut(key({ key: "n" }), "windows", baseCtx)).toBe("toggleNowPlaying");
+    expect(resolveGlobalShortcut(key({ key: "l" }), "windows", { ...baseCtx, editable: true })).toBeNull();
+
+    expect(resolveGlobalShortcut(key({ key: "F11" }), "windows", baseCtx)).toBe("toggleFullscreen");
+    expect(resolveGlobalShortcut(key({ key: "f", metaKey: true, ctrlKey: true }), "macos", baseCtx)).toBe("toggleFullscreen");
+    expect(resolveGlobalShortcut(key({ key: "l", defaultPrevented: true }), "windows", baseCtx)).toBeNull();
+  });
 });

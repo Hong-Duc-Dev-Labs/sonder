@@ -40,6 +40,8 @@ export const en = {
   "common.artists": "Artists",
   "common.playlists": "Playlists",
   "common.songs": "Songs",
+  "common.favorites": "Favorites",
+  "common.save": "Save",
   "common.settings": "Settings",
   "common.search": "Search",
   "common.libraryEmpty": "Your library is empty",
@@ -72,6 +74,14 @@ export const en = {
   "home.pickAlbum": "Pick an album and it will spin here.",
   "home.firstPlaylist": "Make your first",
   "home.recentlyAdded": "Recently added",
+  "home.recentlyPlayed": "Recently played",
+  "home.favoritesHint": "Saved tracks",
+
+  // favorites
+  "favorites.empty": "No favorites yet",
+  "favorites.emptyHint": "Click the heart on any track to keep it here.",
+  "favorites.add": "Add to Favorites",
+  "favorites.remove": "Remove from Favorites",
 
   // shell
   "window.titlebar": "Window title bar",
@@ -157,11 +167,22 @@ export const en = {
   "queue.played": "Played",
   "queue.empty": "The queue is empty.",
   "queue.removeItem": "Remove {title} from the queue",
+  "queue.shuffleUpcoming": "Shuffle up next",
+  "queue.savePlaylist": "Save as playlist",
+  "queue.playlistNamePlaceholder": "Playlist name…",
+  "queue.savedPlaylist": "Saved queue as “{name}”",
+  "queue.move": "Move {title}, position {position} of {total}",
+  "queue.reorderHint": "Drag, or press Up or Down, to reorder",
   "menu.trackActions": "Track actions",
   "menu.newPlaylist": "New playlist…",
   "menu.removeFromPlaylist": "Remove from playlist",
   "menu.editTags": "Edit metadata",
   "menu.checkQuality": "Check quality",
+  "menu.revealInFolder": "Show in folder",
+
+  // drop external files
+  "drop.title": "Drop audio files or folders to play",
+  "drop.hint": "Supported: FLAC, ALAC, WAV, AIFF, DSF, DFF",
 
   // lossless quality check
   "quality.title": "Quality check",
@@ -398,6 +419,8 @@ export const en = {
   "badges.bitPerfectTitle": "The device receives the decoded samples unchanged",
   "badges.volumeTitle": "Software volume changes the samples",
   "badges.volume": "Volume {db} dB",
+  "badges.shared": "Shared mode",
+  "badges.sharedTitle": "Audio routes through the OS mixer (not bit-perfect)",
   "lyrics.close": "Close lyrics",
   "lyrics.loading": "Looking for lyrics…",
   "lyrics.nothingPlaying": "Nothing playing.",
@@ -415,6 +438,7 @@ export const en = {
   "np.close": "Close Now Playing",
   "np.outputPerfect": "Bit-perfect output: open output settings",
   "np.outputVolume": "Software volume on: open output settings",
+  "np.outputShared": "Shared mode active: open output settings",
   "np.showSquare": "Show the square cover",
   "np.showVinyl": "Show the vinyl record",
   "np.showStage": "Show the lyric stage",
@@ -430,10 +454,13 @@ export const en = {
   "transport.pathLabelState": "Signal path: {source}, {state}",
   "transport.statePerfect": "bit-perfect",
   "transport.stateVolume": "software volume {db} dB",
+  "transport.stateShared": "shared mode (not bit-perfect)",
+  "transport.shared": "Shared",
   "transport.volumeValue": "Software volume {db} dB",
   "transport.device": "Device: {format}",
   "tonearm.seek": "Seek (tonearm)",
   "path.processed": "Processed",
+  "path.shared": "Shared mode",
   "path.source": "Source",
   "path.noProcessing": "No processing",
   "path.output": "Output",
@@ -451,9 +478,19 @@ export const en = {
 
   // settings: output
   "settings.softwareVolumeState": "Software volume {db} dB",
+  "settings.sharedModeState": "Shared mode (OS mixer)",
   "settings.output": "Output",
   "settings.outputIntro":
     "Exclusive mode, each file at its own rate and bit depth. A file the device cannot take as-is is skipped, never converted.",
+  "settings.sharedIntro":
+    "Shared mode mixes with other apps at the OS mixer rate. Switch back to Exclusive for bit-perfect and DSD hardware output.",
+  "settings.outputMode.label": "Output access",
+  "settings.outputMode.exclusive": "Exclusive",
+  "settings.outputMode.shared": "Shared",
+  "settings.outputMode.exclusiveHint":
+    "Exclusive device lock, bit-perfect hardware formats, DSD/DoP supported.",
+  "settings.outputMode.sharedHint":
+    "Plays alongside other apps via the OS mixer. Resamples cleanly if needed; disables bit-perfect and DSD pass-through.",
   "settings.bitPerfectOutput": "Bit-perfect output",
   "settings.bitPerfectHint": "No software volume; use your DAC or amplifier volume",
   "settings.outputDevice": "Output device",

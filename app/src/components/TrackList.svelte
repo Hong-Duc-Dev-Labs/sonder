@@ -143,6 +143,7 @@
       </div>
     {/if}
     {@const playing = track.id === playingId}
+    {@const fav = app.isFavorite(track.path)}
     <div
       bind:this={rows[i]}
       class="row"
@@ -208,6 +209,19 @@
           <span class="badge" class:accent={isHiRes(track)}>{track.codec.toUpperCase()} {quality(track)}</span>
         {/if}
       </span>
+      <button
+        type="button"
+        class="fav icon-btn"
+        class:on={fav}
+        aria-label={fav ? t("favorites.remove") : t("favorites.add")}
+        aria-pressed={fav}
+        onclick={(e) => {
+          e.stopPropagation();
+          void app.toggleFavorite(track.path);
+        }}
+      >
+        <Icon name={fav ? "heart" : "heart-outline"} size={16} />
+      </button>
       <span class="dur">{duration(track.durationMs)}</span>
       <RowMenu bind:this={menus[i]} {track} showAlbum={mixed} onremove={onremove ? () => onremove(i) : undefined} />
     </div>
@@ -239,7 +253,7 @@
   }
   .row {
     display: grid;
-    grid-template-columns: 40px minmax(0, 1fr) auto 52px 34px;
+    grid-template-columns: 40px minmax(0, 1fr) auto 32px 52px 34px;
     align-items: center;
     gap: 12px;
     min-height: 52px;
@@ -248,10 +262,10 @@
     transition: background var(--dur-fast) var(--ease-standard);
   }
   .row.mixed {
-    grid-template-columns: 44px minmax(0, 1fr) auto 52px 34px;
+    grid-template-columns: 44px minmax(0, 1fr) auto 32px 52px 34px;
   }
   .row.mixed.movable {
-    grid-template-columns: 24px 44px minmax(0, 1fr) auto 52px 34px;
+    grid-template-columns: 24px 44px minmax(0, 1fr) auto 32px 52px 34px;
     padding-left: 2px;
   }
   /* While dragging, rows making room slide and the dragged row follows the pointer. On drop
@@ -398,6 +412,23 @@
     color: var(--ink-2);
     font-family: var(--font-figures);
     font-variant-numeric: tabular-nums;
+  }
+  .fav {
+    width: 30px;
+    height: 30px;
+    opacity: 0;
+    color: var(--ink-2);
+    transition:
+      opacity var(--dur-fast) var(--ease-standard),
+      color var(--dur-fast) var(--ease-standard);
+  }
+  .fav.on {
+    opacity: 1;
+    color: #ff7b89;
+  }
+  .row:hover .fav,
+  .row:focus-within .fav {
+    opacity: 1;
   }
   .row :global(.more) {
     opacity: 0;

@@ -8,8 +8,10 @@ use std::path::Path;
 
 use rusqlite::{Row, params};
 
-use crate::query::{TRACK_COLUMN_COUNT, TRACK_COLUMNS, TRACK_FROM, track_row};
-use crate::{Library, LibraryError, Track};
+use crate::query::{
+    ALBUM_SELECT, TRACK_COLUMN_COUNT, TRACK_COLUMNS, TRACK_FROM, album_row, track_row,
+};
+use crate::{AlbumSummary, Library, LibraryError, Track};
 
 /// The span the stats cover, ending now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,6 +292,27 @@ impl Library {
                     played_at: row.get(TRACK_COLUMN_COUNT)?,
                 })
             })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// The `limit` most recently played albums still in the library, newest play first.
+    pub fn recent_albums(&self, limit: u32) -> Result<Vec<AlbumSummary>, LibraryError> {
+        let sql = format!(
+            "{ALBUM_SELECT}
+             JOIN (
+                 SELECT t.album_id, max(p.played_at) AS last_played, max(p.id) AS last_play_id
+                 FROM plays p
+                 JOIN tracks t ON t.path = p.path
+                 GROUP BY t.album_id
+             ) recent ON recent.album_id = a.id
+             GROUP BY a.id
+             ORDER BY recent.last_played DESC, recent.last_play_id DESC
+             LIMIT ?1"
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let rows = stmt
+            .query_map([limit], album_row)?
             .collect::<Result<_, _>>()?;
         Ok(rows)
     }

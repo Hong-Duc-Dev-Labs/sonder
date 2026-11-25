@@ -18,6 +18,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0004_playlists.sql"),
     include_str!("migrations/0005_quality.sql"),
     include_str!("migrations/0006_history.sql"),
+    include_str!("migrations/0007_favorites.sql"),
 ];
 
 /// Schema version this build creates and understands.

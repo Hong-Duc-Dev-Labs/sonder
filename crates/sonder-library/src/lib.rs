@@ -18,6 +18,7 @@
 //! ```
 
 mod art;
+mod favorites;
 mod group;
 mod history;
 mod loudness;

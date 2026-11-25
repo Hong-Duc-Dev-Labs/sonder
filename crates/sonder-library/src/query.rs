@@ -58,6 +58,8 @@ pub struct Track {
     pub art_colors: Vec<String>,
     /// The cached quality check, when the file has not changed since it ran.
     pub quality: Option<TrackQuality>,
+    /// Whether this track's path is currently marked as favorite.
+    pub favorite: bool,
 }
 
 /// Verdict and confidence words of a quality check, as `sonder-quality` names them.
@@ -96,7 +98,7 @@ pub struct ArtistDetail {
     pub appears_on: Vec<AlbumSummary>,
 }
 
-const ALBUM_SELECT: &str = "
+pub(crate) const ALBUM_SELECT: &str = "
     SELECT a.id, a.title, a.artist, a.artist_id, a.year, count(t.id),
            coalesce(sum(t.duration_ms), 0), art.hash, a.added_at, art.colors
     FROM albums a
@@ -110,7 +112,7 @@ macro_rules! track_columns {
         "t.id, t.path, t.title, t.artist, t.album_artist, t.album_id, a.title, t.track_no,
            t.disc_no, t.year, t.genre, t.codec, t.rate, t.bits, t.channels, t.duration_ms,
            t.rg_track_gain, t.rg_track_peak, t.rg_album_gain, t.rg_album_peak, art.hash,
-           art.colors, q.verdict, q.confidence"
+           art.colors, q.verdict, q.confidence, f.path IS NOT NULL"
     };
 }
 
@@ -120,14 +122,15 @@ macro_rules! track_from {
         "FROM tracks t
     JOIN albums a ON a.id = t.album_id
     LEFT JOIN art ON art.id = coalesce(t.art_id, a.art_id)
-    LEFT JOIN quality_checks q ON q.path = t.path AND q.mtime = t.mtime AND q.size = t.size"
+    LEFT JOIN quality_checks q ON q.path = t.path AND q.mtime = t.mtime AND q.size = t.size
+    LEFT JOIN favorites f ON f.path = t.path"
     };
 }
 
 pub(crate) const TRACK_COLUMNS: &str = track_columns!();
 pub(crate) const TRACK_FROM: &str = track_from!();
 /// Number of columns in [`TRACK_COLUMNS`].
-pub(crate) const TRACK_COLUMN_COUNT: usize = 24;
+pub(crate) const TRACK_COLUMN_COUNT: usize = 25;
 
 const TRACK_SELECT: &str = concat!("SELECT ", track_columns!(), " ", track_from!());
 
@@ -164,7 +167,7 @@ fn colors(stored: Option<String>) -> Vec<String> {
         .collect()
 }
 
-fn album_row(row: &Row) -> rusqlite::Result<AlbumSummary> {
+pub(crate) fn album_row(row: &Row) -> rusqlite::Result<AlbumSummary> {
     Ok(AlbumSummary {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -224,6 +227,7 @@ pub(crate) fn track_row(row: &Row) -> rusqlite::Result<Track> {
             }),
             _ => None,
         },
+        favorite: row.get(24)?,
     })
 }
 
@@ -306,6 +310,17 @@ impl Library {
             .conn
             .prepare_cached(&sql)?
             .query_row([id], track_row)
+            .optional()?)
+    }
+
+    /// Looks up a single indexed track by its canonical file path.
+    pub fn track_by_path(&self, path: &std::path::Path) -> Result<Option<Track>, LibraryError> {
+        let path = crate::path_str(path)?;
+        let sql = format!("{TRACK_SELECT} WHERE t.path = ?1");
+        Ok(self
+            .conn
+            .prepare_cached(&sql)?
+            .query_row([path], track_row)
             .optional()?)
     }
 

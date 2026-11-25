@@ -16,7 +16,7 @@ use crate::format::{DeviceFormat, SampleContainer};
 use crate::render::Renderer;
 use crate::ring::SampleSource;
 use crate::stream::{Stream, StreamOptions, StreamReport};
-use crate::{COMMON_RATES, DeviceId, DeviceInfo, OutputBackend, OutputError};
+use crate::{COMMON_RATES, DeviceId, DeviceInfo, OutputBackend, OutputError, ShareMode};
 
 /// Device buffer and period targets; the driver picks the nearest it supports.
 const BUFFER_US: u32 = 100_000;
@@ -85,6 +85,22 @@ fn set_exact(pcm: &PCM, format: DeviceFormat, commit: bool) -> Result<(), ::alsa
         pcm.hw_params(&hwp)?;
     }
     Ok(())
+}
+
+/// Configures `pcm` for shared OS mixer playback (resampling permitted).
+fn set_shared(pcm: &PCM, format: DeviceFormat) -> Result<(), ::alsa::Error> {
+    let Some(sample) = alsa_format(format.container) else {
+        return Err(::alsa::Error::unsupported("S24_LE is LSB-aligned"));
+    };
+    let hwp = HwParams::any(pcm)?;
+    hwp.set_rate_resample(true)?;
+    hwp.set_access(Access::RWInterleaved)?;
+    hwp.set_format(sample)?;
+    hwp.set_channels(u32::from(format.channels))?;
+    hwp.set_rate(format.rate, ValueOr::Nearest)?;
+    hwp.set_buffer_time_near(BUFFER_US, ValueOr::Nearest)?;
+    hwp.set_period_time_near(PERIOD_US, ValueOr::Nearest)?;
+    pcm.hw_params(&hwp)
 }
 
 fn probe(device: &DeviceId, channels: u16) -> Result<Vec<DeviceFormat>, OutputError> {
@@ -176,6 +192,18 @@ impl OutputBackend for AlsaHw {
         probe(device, channels)
     }
 
+    fn shared_format(
+        &self,
+        _device: &DeviceId,
+        channels: u16,
+    ) -> Result<Option<DeviceFormat>, OutputError> {
+        Ok(Some(DeviceFormat {
+            rate: 48_000,
+            container: SampleContainer::S32,
+            channels,
+        }))
+    }
+
     fn open(
         &mut self,
         device: &DeviceId,
@@ -237,17 +265,28 @@ fn run_stream(
     ready: SyncSender<Result<(), OutputError>>,
 ) -> Result<(), OutputError> {
     let setup = (|| {
-        // Non-blocking: a blocking open of a busy `hw:` device waits in the kernel until the
-        // other application lets go, instead of failing with EBUSY. Writes below wait on
-        // EAGAIN themselves, which also keeps stop requests responsive.
-        let pcm = open_pcm(device, true)?;
-        set_exact(&pcm, format, true).map_err(|e| match classify(&e, device) {
-            OutputError::Backend(_) => OutputError::UnsupportedFormat {
-                requested: format.to_string(),
-                supported: Vec::new(),
-            },
-            other => other,
-        })?;
+        let pcm = match options.share_mode {
+            ShareMode::Exclusive => {
+                // Non-blocking: a blocking open of a busy `hw:` device waits in the kernel until
+                // the other application lets go, instead of failing with EBUSY. Writes below wait
+                // on EAGAIN themselves, which also keeps stop requests responsive.
+                let pcm = open_pcm(device, true)?;
+                set_exact(&pcm, format, true).map_err(|e| match classify(&e, device) {
+                    OutputError::Backend(_) => OutputError::UnsupportedFormat {
+                        requested: format.to_string(),
+                        supported: Vec::new(),
+                    },
+                    other => other,
+                })?;
+                pcm
+            }
+            ShareMode::Shared => {
+                let pcm = PCM::new("default", Direction::Playback, true)
+                    .or_else(|_| open_pcm(device, true))?;
+                set_shared(&pcm, format).map_err(|e| classify(&e, device))?;
+                pcm
+            }
+        };
         let period = pcm
             .hw_params_current()
             .and_then(|h| h.get_period_size())

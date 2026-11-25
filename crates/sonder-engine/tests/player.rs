@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use sonder_decode::Decoder;
 use sonder_engine::{
-    CrossfadeConfig, DsdMode, DsdPcmRate, DspConfig, PlaybackState, Player, PlayerConfig,
-    PlayerEvent, RepeatMode,
+    CrossfadeConfig, DsdMode, DsdPcmRate, DspConfig, OutputMode, PlaybackState, Player,
+    PlayerConfig, PlayerEvent, RepeatMode, ShareMode,
 };
 use sonder_output::format::{pack, unpack};
 use sonder_output::null::{NullBackend, NullControl};
@@ -2692,4 +2692,160 @@ fn repeat_all_over_a_queue_of_unplayable_entries_ends() {
         .filter(|e| matches!(e, PlayerEvent::TrackFailed { .. }))
         .count();
     assert_eq!(failures, 2, "each entry fails once: {seen:#?}");
+}
+
+#[test]
+fn shared_mode_routes_through_os_mixer_and_resamples_to_mixer_rate() {
+    let a = wav("shared-resample.wav", 44_100, 16, 4_000, 70);
+    let backend = NullBackend::new().with_shared_format(Some(DeviceFormat {
+        rate: 48_000,
+        container: SampleContainer::S32,
+        channels: 2,
+    }));
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.share_mode = ShareMode::Shared;
+    let (player, events, control) = start_with(config, backend);
+    player.enqueue(vec![a]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let path = signal_path(&seen);
+    assert_eq!(path.share_mode, ShareMode::Shared);
+    assert!(!path.bit_perfect);
+    assert_eq!(path.output_rate, 48_000);
+    assert!(
+        path.stages.iter().any(|s| s.name == "Resampler"),
+        "{path:#?}"
+    );
+    assert_eq!(
+        path.stages.last().map(|s| s.name.as_str()),
+        Some("OS Mixer"),
+        "{path:#?}"
+    );
+    let sessions = control.sessions();
+    assert_eq!(sessions.last().unwrap().share_mode, ShareMode::Shared);
+    assert_eq!(sessions.last().unwrap().format.rate, 48_000);
+}
+
+#[test]
+fn switching_share_mode_mid_track_restarts_with_updated_signal_path() {
+    let a = wav("switch-share.wav", 44_100, 16, 132_300, 71);
+    let backend = slow().with_shared_format(Some(DeviceFormat {
+        rate: 48_000,
+        container: SampleContainer::S32,
+        channels: 2,
+    }));
+    let (player, events, control) =
+        start_with(PlayerConfig::new(NullBackend::device_id()), backend);
+    player.enqueue(vec![a]);
+    player.play();
+    let (_, before) = wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if !elapsed.is_zero()),
+    );
+    player.set_share_mode(ShareMode::Shared);
+    let after = wait_end(&events);
+
+    let all: Vec<_> = before
+        .into_iter()
+        .chain(after)
+        .filter_map(|e| match e {
+            PlayerEvent::SignalPath(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert!(all[0].bit_perfect && all[0].share_mode == ShareMode::Exclusive);
+    let last = all.last().unwrap();
+    assert!(!last.bit_perfect);
+    assert_eq!(last.share_mode, ShareMode::Shared);
+    assert_eq!(
+        last.stages.last().map(|s| s.name.as_str()),
+        Some("OS Mixer")
+    );
+    let sessions = control.sessions();
+    assert_eq!(sessions.first().unwrap().share_mode, ShareMode::Exclusive);
+    assert_eq!(sessions.last().unwrap().share_mode, ShareMode::Shared);
+}
+
+#[test]
+fn shared_mode_converts_dsd_and_disables_sdm() {
+    let dsd = dsf("shared-dsd.dsf", &dsd_bytes(4_000, 72));
+    let pcm = tone_wav("shared-sdm.wav", 44_100, 16, 4_000);
+    let backend = dsd_device().with_shared_format(Some(DeviceFormat {
+        rate: 48_000,
+        container: SampleContainer::S32,
+        channels: 2,
+    }));
+    let mut config = PlayerConfig::new(NullBackend::device_id());
+    config.share_mode = ShareMode::Shared;
+    config.sdm.mode = sonder_engine::SdmMode::Dsd64;
+    let (player, events, control) = start_with(config, backend);
+    player.enqueue(vec![dsd, pcm]);
+    player.play();
+    let seen = wait_end(&events);
+
+    let modes = dsd_modes(&seen);
+    assert_eq!(modes.len(), 1);
+    assert_eq!(modes[0].0, DsdMode::Pcm);
+    assert!(
+        seen.iter().any(|e| matches!(
+            e,
+            PlayerEvent::Warning(msg) if msg.contains("PCM to DSD is unavailable in shared mode")
+        )),
+        "expected shared-mode SDM warning: {seen:#?}"
+    );
+    for path in paths(&seen) {
+        assert_eq!(path.mode, OutputMode::Pcm);
+        assert_eq!(path.share_mode, ShareMode::Shared);
+        assert!(!path.bit_perfect);
+    }
+    assert!(
+        control.sessions().iter().all(
+            |s| s.share_mode == ShareMode::Shared && s.format.container == SampleContainer::S32
+        )
+    );
+}
+
+#[test]
+fn move_entry_and_reorder_update_upcoming_audio_and_select_resumes_at_position() {
+    let a = wav("mv-a.wav", 44_100, 16, AHEAD_FRAMES, 73);
+    let b = wav("mv-b.wav", 44_100, 16, 4_000, 74);
+    let c = wav("mv-c.wav", 44_100, 16, TAIL_FRAMES, 75);
+    let (player, events, control) = start_decoded_ahead();
+    player.enqueue(vec![a.clone(), b.clone(), c.clone()]);
+    player.play();
+    wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { elapsed, .. } if !elapsed.is_zero()),
+    );
+    // Swap b and c while `b` may already be decoded in the feed/ring after `a`.
+    player.move_entry(2, 1);
+    wait_end(&events);
+
+    let mut expected = packed(SampleContainer::S16, &decoded(&a));
+    expected.extend(packed(SampleContainer::S16, &decoded(&c)));
+    expected.extend(packed(SampleContainer::S16, &decoded(&b)));
+    assert_eq!(control.played_bytes(), expected);
+
+    // Reorder [a, c, b] -> [c, a, b] while stopped, select index 1 at ~50 ms, then play.
+    player.reorder(vec![1, 0, 2]);
+    player.select(1, Duration::from_millis(50));
+    let (_, pos_events) = wait_for(
+        &events,
+        |e| matches!(e, PlayerEvent::Position { index: 1, elapsed } if *elapsed >= Duration::from_millis(45)),
+    );
+    assert!(
+        pos_events
+            .iter()
+            .all(|e| !matches!(e, PlayerEvent::State(PlaybackState::Playing))),
+        "select while stopped must stay stopped"
+    );
+    player.play();
+    wait_end(&events);
+    let sessions = control.sessions();
+    let last_bytes = &sessions.last().unwrap().bytes;
+    let a_bytes = packed(SampleContainer::S16, &decoded(&a));
+    let b_bytes = packed(SampleContainer::S16, &decoded(&b));
+    assert!(last_bytes.len() < a_bytes.len() + b_bytes.len());
+    assert!(last_bytes.ends_with(&b_bytes));
 }

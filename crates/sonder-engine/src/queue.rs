@@ -50,6 +50,34 @@ impl Queue {
         self.items.splice(at..at, paths);
     }
 
+    /// Moves the entry at `from` to `to`. The current index is left for the caller to remap.
+    pub fn move_entry(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.items.len() || to >= self.items.len() || from == to {
+            return false;
+        }
+        let item = self.items.remove(from);
+        self.items.insert(to, item);
+        true
+    }
+
+    /// Reorders entries so `new[i] = old[order[i]]`. Returns `false` if `order` is not a valid
+    /// permutation of `0..self.len()`. The current index is left for the caller to remap.
+    pub fn reorder(&mut self, order: &[usize]) -> bool {
+        if order.len() != self.items.len() {
+            return false;
+        }
+        let mut seen = vec![false; order.len()];
+        for &idx in order {
+            if idx >= order.len() || seen[idx] {
+                return false;
+            }
+            seen[idx] = true;
+        }
+        let mut slots: Vec<Option<PathBuf>> = self.items.drain(..).map(Some).collect();
+        self.items = order.iter().filter_map(|&idx| slots[idx].take()).collect();
+        true
+    }
+
     pub fn clear(&mut self) {
         self.items.clear();
         self.current = None;
@@ -79,5 +107,34 @@ mod tests {
         q.clear();
         assert_eq!(q.current(), None);
         assert!(q.is_empty());
+    }
+
+    #[test]
+    fn move_entry_and_reorder_validate_bounds() {
+        let mut q = Queue::default();
+        q.extend(["a.flac".into(), "b.flac".into(), "c.flac".into()]);
+        assert!(!q.move_entry(1, 1));
+        assert!(!q.move_entry(0, 3));
+        assert!(q.move_entry(2, 0));
+        assert_eq!(
+            q.items(),
+            &[
+                PathBuf::from("c.flac"),
+                PathBuf::from("a.flac"),
+                PathBuf::from("b.flac")
+            ]
+        );
+        assert!(!q.reorder(&[0, 1]));
+        assert!(!q.reorder(&[0, 0, 2]));
+        assert!(!q.reorder(&[0, 1, 3]));
+        assert!(q.reorder(&[1, 2, 0]));
+        assert_eq!(
+            q.items(),
+            &[
+                PathBuf::from("a.flac"),
+                PathBuf::from("b.flac"),
+                PathBuf::from("c.flac")
+            ]
+        );
     }
 }

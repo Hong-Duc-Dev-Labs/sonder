@@ -26,7 +26,7 @@ use crate::format::{DeviceFormat, SampleContainer};
 use crate::render::Renderer;
 use crate::ring::SampleSource;
 use crate::stream::{Stream, StreamOptions, StreamReport};
-use crate::{COMMON_RATES, DeviceId, DeviceInfo, OutputBackend, OutputError};
+use crate::{COMMON_RATES, DeviceId, DeviceInfo, OutputBackend, OutputError, ShareMode};
 
 /// Byte alignment for the device period; Intel HDA devices require 128.
 const PERIOD_ALIGN_BYTES: u32 = 128;
@@ -105,6 +105,22 @@ impl OutputBackend for WasapiExclusive {
     ) -> Result<Vec<DeviceFormat>, OutputError> {
         let _com = ComGuard::new();
         probe_formats(&find_device(device)?, channels)
+    }
+
+    fn shared_format(
+        &self,
+        device: &DeviceId,
+        channels: u16,
+    ) -> Result<Option<DeviceFormat>, OutputError> {
+        let _com = ComGuard::new();
+        let client = find_device(device)?.get_iaudioclient().map_err(backend)?;
+        let mix = client.get_mixformat().map_err(backend)?;
+        let rate = mix.get_samplespersec();
+        Ok((rate > 0).then_some(DeviceFormat {
+            rate,
+            container: SampleContainer::S32,
+            channels,
+        }))
     }
 
     fn open(
@@ -322,6 +338,29 @@ fn init_exclusive(
     }
 }
 
+/// Opens `device` in event-driven shared mode via the Windows audio mixer (with
+/// `autoconvert` so integer PCM works against a float mix format).
+fn init_shared(
+    device: &Device,
+    format: DeviceFormat,
+) -> Result<(AudioClient, WaveFormat), OutputError> {
+    let mut client = device.get_iaudioclient().map_err(backend)?;
+    let wave = wave_format(format).ok_or_else(|| unsupported(device, format))?;
+    let (default_period, _min_period) = client.get_device_period().map_err(backend)?;
+    client
+        .initialize_client(
+            &wave,
+            Direction::Render,
+            StreamMode::EventsShared {
+                autoconvert: true,
+                buffer_duration_hns: default_period,
+            },
+            None,
+        )
+        .map_err(|e| init_error(e, device, format))?;
+    Ok((client, wave))
+}
+
 fn render_thread(
     device_id: DeviceId,
     format: DeviceFormat,
@@ -350,7 +389,10 @@ fn run_stream(
 
     let setup = (|| {
         let device = find_device(&device_id)?;
-        let (client, _wave) = init_exclusive(&device, format)?;
+        let (client, _wave) = match options.share_mode {
+            ShareMode::Exclusive => init_exclusive(&device, format)?,
+            ShareMode::Shared => init_shared(&device, format)?,
+        };
         let event = client.set_get_eventhandle().map_err(backend)?;
         let render_client = client.get_audiorenderclient().map_err(backend)?;
         let buffer_frames = client.get_buffer_size().map_err(backend)? as usize;

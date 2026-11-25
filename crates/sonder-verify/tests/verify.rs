@@ -14,7 +14,7 @@ use sonder_dsp::{
     ImpulseResponse, Peq, PeqBand, PeqStage, Resampler, Sdm, SdmOrder, SdmRate, SonderDesigned,
     Stage, StreamFormat,
 };
-use sonder_engine::{Player, PlayerConfig, PlayerEvent};
+use sonder_engine::{Player, PlayerConfig, PlayerEvent, ShareMode};
 use sonder_output::format::pack;
 use sonder_output::null::{NullBackend, NullControl};
 use sonder_output::{DeviceFormat, SampleContainer, WriteTap};
@@ -688,4 +688,57 @@ fn hardware_fixture_flac_decodes_to_the_written_samples() {
             "{bits}/{rate} does not round-trip"
         );
     }
+}
+
+#[test]
+fn exclusive_default_is_bit_perfect_while_shared_routes_through_os_mixer() {
+    let track = wav("verify-share-mode.wav", 44_100, 16, 4_000);
+    let expected = packed(SampleContainer::S16, &decoded(&track));
+
+    let exclusive_cfg = PlayerConfig::new(NullBackend::device_id());
+    assert_eq!(exclusive_cfg.share_mode, ShareMode::Exclusive);
+    let (player, events, control) = start(exclusive_cfg, NullBackend::new());
+    player.enqueue(vec![track.clone()]);
+    player.play();
+    let seen = wait_end(&events);
+    let exclusive_path = seen
+        .iter()
+        .find_map(|e| match e {
+            PlayerEvent::SignalPath(p) => Some(p.clone()),
+            _ => None,
+        })
+        .expect("exclusive signal path");
+    assert!(exclusive_path.bit_perfect);
+    assert_eq!(exclusive_path.share_mode, ShareMode::Exclusive);
+    assert_eq!(control.played_bytes(), expected);
+
+    let mut shared_cfg = PlayerConfig::new(NullBackend::device_id());
+    shared_cfg.share_mode = ShareMode::Shared;
+    let backend = NullBackend::new().with_shared_format(Some(DeviceFormat {
+        rate: 48_000,
+        container: SampleContainer::S32,
+        channels: 2,
+    }));
+    let (player, events, control) = start(shared_cfg, backend);
+    player.enqueue(vec![track]);
+    player.play();
+    let seen = wait_end(&events);
+    let shared_path = seen
+        .iter()
+        .find_map(|e| match e {
+            PlayerEvent::SignalPath(p) => Some(p.clone()),
+            _ => None,
+        })
+        .expect("shared signal path");
+    assert!(!shared_path.bit_perfect);
+    assert_eq!(shared_path.share_mode, ShareMode::Shared);
+    assert_eq!(shared_path.output_rate, 48_000);
+    assert_eq!(
+        shared_path.stages.last().map(|s| s.name.as_str()),
+        Some("OS Mixer")
+    );
+    assert_eq!(
+        control.sessions().last().unwrap().share_mode,
+        ShareMode::Shared
+    );
 }

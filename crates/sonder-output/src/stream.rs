@@ -161,6 +161,8 @@ pub struct StreamOptions {
     /// The ring carries DoP payload frames: the renderer writes the 0x05/0xFA markers and
     /// uses DoP idle frames for pauses, underruns and drain. Never set for PCM streams.
     pub dop: bool,
+    /// Exclusive hardware access (default) or shared OS audio mixer.
+    pub share_mode: crate::ShareMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

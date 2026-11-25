@@ -21,14 +21,17 @@ use sonder_decode::{
     DSD_SOURCE_BITS, DecodeError, DsdFormat, SourceDecoder, SourceFormat, TrackFormat,
 };
 use sonder_output::{
-    DeviceFormat, DeviceId, OutputBackend, OutputError, SampleContainer, SampleProducer, Stream,
-    StreamHandle, StreamOptions, WriteTap, negotiate, negotiate_dop, negotiate_native, sample_ring,
+    DeviceFormat, DeviceId, OutputBackend, OutputError, SampleContainer, SampleProducer, ShareMode,
+    Stream, StreamHandle, StreamOptions, WriteTap, negotiate, negotiate_dop, negotiate_native,
+    sample_ring,
 };
 
 use crate::crossfade::{self, CrossfadeConfig, Fade, Side, Skip, Transition};
 use crate::dsp::{DspConfig, LoudnessSource, NoLoudness, TrackGain};
 use crate::queue::Queue;
-use crate::rate::{self, DeviceFormats, FilterResolver, SignalStage, SrcConfig, SrcPlan};
+use crate::rate::{
+    self, DeviceFormats, FilterResolver, SignalStage, SrcConfig, SrcPlan, SrcTarget,
+};
 use crate::sdm::SdmConfig;
 use crate::stage::{
     Convolver, Crossfeed, Dither, GainHandle, LevelingStage, Peq, PeqStage, Stage, Volume,
@@ -61,6 +64,11 @@ pub enum Command {
     Previous,
     /// Starts playing the queue entry at this index from its beginning, in any state.
     PlayIndex(usize),
+    /// Selects a queue entry and seeks to a position without starting playback when stopped.
+    Select {
+        index: usize,
+        position: Duration,
+    },
     Enqueue(Vec<PathBuf>),
     /// Inserts entries before this queue index (clamped to the end). Inserting right after
     /// the playing entry makes them play next, gaplessly where the formats allow.
@@ -68,6 +76,13 @@ pub enum Command {
     /// Removes the queue entry at this index. Removing the playing entry moves on to the one
     /// after it.
     Remove(usize),
+    /// Moves the queue entry at `from` to `to`, keeping the current entry selected/playing.
+    Move {
+        from: usize,
+        to: usize,
+    },
+    /// Permutes the queue so `new[i] = old[order[i]]`, remapping the active entry.
+    Reorder(Vec<usize>),
     Clear,
     /// Software volume in dB; `None` removes the stage and restores bit-perfect output.
     SetVolume(Option<f64>),
@@ -80,6 +95,8 @@ pub enum Command {
     /// Plays on another device from now on. Playback continues on it from the current
     /// position; a stopped player just opens it on the next play.
     SetDevice(DeviceId),
+    /// Switches between exclusive bit-perfect access and OS-mixer shared output.
+    SetShareMode(ShareMode),
     /// Replaces the DSD handling (see [`PlayerConfig::default_dsd_mode`],
     /// [`dsd_modes`](PlayerConfig::dsd_modes), [`dsd_pcm_rate`](PlayerConfig::dsd_pcm_rate)).
     /// A playing DSD track switches from its current position; anything else picks it up on
@@ -179,6 +196,7 @@ pub struct SignalPath {
     pub output_bits: u32,
     pub output_channels: u16,
     pub mode: OutputMode,
+    pub share_mode: ShareMode,
     /// In processing order: headroom, SRC, PEQ, levelling, volume, dither.
     pub stages: Vec<SignalStage>,
     /// `true` only when no stage touched the samples and the rate is unchanged. Automatic
@@ -237,6 +255,8 @@ pub struct PlayerConfig {
     pub loudness: Arc<dyn LoudnessSource>,
     /// Equal-power crossfade between entries. Off keeps every transition gapless.
     pub crossfade: CrossfadeConfig,
+    /// Device sharing policy: exclusive bit-perfect (default) or OS mixer shared mode.
+    pub share_mode: ShareMode,
 }
 
 impl PlayerConfig {
@@ -255,6 +275,7 @@ impl PlayerConfig {
             sdm: SdmConfig::default(),
             loudness: Arc::new(NoLoudness),
             crossfade: CrossfadeConfig::default(),
+            share_mode: ShareMode::Exclusive,
         }
     }
 
@@ -326,8 +347,18 @@ impl Player {
         self.send(Command::PlayIndex(index));
     }
 
+    /// Selects `index` and sets the playback position without starting playback when stopped.
+    pub fn select(&self, index: usize, position: Duration) {
+        self.send(Command::Select { index, position });
+    }
+
     pub fn set_device(&self, device: DeviceId) {
         self.send(Command::SetDevice(device));
+    }
+
+    /// Switches between exclusive bit-perfect output and shared OS mixer output.
+    pub fn set_share_mode(&self, mode: ShareMode) {
+        self.send(Command::SetShareMode(mode));
     }
 
     pub fn enqueue(&self, paths: Vec<PathBuf>) {
@@ -340,6 +371,16 @@ impl Player {
 
     pub fn remove(&self, index: usize) {
         self.send(Command::Remove(index));
+    }
+
+    /// Moves the queue entry at `from` to `to`.
+    pub fn move_entry(&self, from: usize, to: usize) {
+        self.send(Command::Move { from, to });
+    }
+
+    /// Permutes the queue so `new[i] = old[order[i]]`.
+    pub fn reorder(&self, order: Vec<usize>) {
+        self.send(Command::Reorder(order));
     }
 
     pub fn clear(&self) {
@@ -907,9 +948,14 @@ impl Engine {
                     self.play();
                 }
             }
+            Command::Select { index, position } => {
+                self.select(index, Pos::from_duration(position));
+            }
             Command::Enqueue(paths) => self.enqueue(paths),
             Command::Insert(index, paths) => self.insert(index, paths),
             Command::Remove(index) => self.remove(index),
+            Command::Move { from, to } => self.move_entry(from, to),
+            Command::Reorder(order) => self.reorder(order),
             Command::Clear => {
                 self.stop();
                 self.queue.clear();
@@ -920,6 +966,7 @@ impl Engine {
             Command::SetDsp(dsp) => self.set_dsp(dsp),
             Command::SetSrc(src) => self.set_src(src),
             Command::SetDevice(device) => self.set_device(device),
+            Command::SetShareMode(mode) => self.set_share_mode(mode),
             Command::SetDsd {
                 default_mode,
                 modes,
@@ -1010,6 +1057,17 @@ impl Engine {
         } else {
             self.restart(index, pos);
         }
+    }
+
+    fn select(&mut self, index: usize, pos: Pos) {
+        if index >= self.queue.len() {
+            return;
+        }
+        self.jump(index, pos);
+        self.emit(PlayerEvent::Position {
+            index,
+            elapsed: pos.duration(),
+        });
     }
 
     fn enqueue(&mut self, paths: Vec<PathBuf>) {
@@ -1139,6 +1197,74 @@ impl Engine {
         {
             // The removed entry is already decoded ahead: rebuild from where we are.
             self.restart_from_heard(cur, pos);
+        }
+        self.report_current();
+    }
+
+    fn move_entry(&mut self, from: usize, to: usize) {
+        if from >= self.queue.len() || to >= self.queue.len() || from == to {
+            return;
+        }
+        self.apply_queue_permutation(|q| q.move_entry(from, to), |i| remap_move(i, from, to));
+    }
+
+    fn reorder(&mut self, order: Vec<usize>) {
+        if order.len() != self.queue.len() {
+            return;
+        }
+        let mut inv = vec![0usize; order.len()];
+        let mut seen = vec![false; order.len()];
+        for (new_idx, &old_idx) in order.iter().enumerate() {
+            if old_idx >= order.len() || seen[old_idx] {
+                return;
+            }
+            seen[old_idx] = true;
+            inv[old_idx] = new_idx;
+        }
+        if order.iter().enumerate().all(|(i, &idx)| i == idx) {
+            return;
+        }
+        self.apply_queue_permutation(|q| q.reorder(&order), |i| inv[i]);
+    }
+
+    fn apply_queue_permutation(
+        &mut self,
+        mutate: impl FnOnce(&mut Queue) -> bool,
+        map_index: impl Fn(usize) -> usize,
+    ) {
+        self.rebuild_after_edit();
+        self.fade_plan = None;
+        self.fade_checked = false;
+        let at = self.current_pos();
+        let reach = self.pipeline_reach();
+        let had_end = self.end_index.is_some();
+        let old_next = at.and_then(|(cur, _)| self.auto_next(cur));
+        let had_ahead_other = at.is_some_and(|(cur, _)| {
+            self.decoding.as_ref().is_some_and(|d| d.index != cur)
+                || self
+                    .feed
+                    .iter()
+                    .any(|item| matches!(item, FeedItem::TrackStart { index, .. } if *index != cur))
+        });
+        if !mutate(&mut self.queue) {
+            return;
+        }
+        self.remap(|i| Some(map_index(i)), |i| i);
+        if let Some((old_cur, pos)) = at
+            && let Some(new_cur) = self.queue.current()
+            && self.state != PlaybackState::Stopped
+            && self.hold.is_none()
+        {
+            let ahead_changed = reach.is_some_and(|r| {
+                r > old_cur
+                    && (1..=(r - old_cur)).any(|step| map_index(old_cur + step) != new_cur + step)
+            });
+            let wrap_changed =
+                had_ahead_other && old_next.map(&map_index) != self.auto_next(new_cur);
+            let end_unlocked = had_end && new_cur + 1 < self.queue.len();
+            if ahead_changed || wrap_changed || end_unlocked {
+                self.restart_from_heard(new_cur, pos);
+            }
         }
         self.report_current();
     }
@@ -1441,6 +1567,15 @@ impl Engine {
 
     /// Valid bits of the widest container the device accepts for `channels`.
     fn max_container_bits(&mut self, channels: u16) -> Option<u32> {
+        if self.config.share_mode == ShareMode::Shared {
+            let width = self
+                .backend
+                .shared_format(&self.config.device, channels)
+                .ok()
+                .flatten()
+                .map_or(32, |f| f.container.valid_bits());
+            return Some(width);
+        }
         self.formats_for(channels)?
             .iter()
             .map(|format| format.container.valid_bits())
@@ -1452,6 +1587,24 @@ impl Engine {
     fn target_for(&mut self, rate: u32, bits: u32, channels: u16) -> Option<u32> {
         if let Some(&target) = self.fallback.get(&(rate, channels)) {
             return (target != rate).then_some(target);
+        }
+        if self.config.share_mode == ShareMode::Shared {
+            let shared = self
+                .backend
+                .shared_format(&self.config.device, channels)
+                .ok()
+                .flatten();
+            if self.config.src.target != SrcTarget::Off {
+                let supported = match shared {
+                    Some(format) => vec![format.rate],
+                    None => self.supported_rates(bits, channels),
+                };
+                return rate::choose_target(&self.config.src, rate, &supported)
+                    .filter(|&target| target != rate);
+            }
+            if let Some(shared) = shared {
+                return (shared.rate != rate).then_some(shared.rate);
+            }
         }
         let supported = self.supported_rates(bits, channels);
         rate::choose_target(&self.config.src, rate, &supported).filter(|&target| target != rate)
@@ -1682,11 +1835,18 @@ impl Engine {
                 detail: format!("{seconds:.1} s, equal power"),
             });
         }
+        if self.config.share_mode == ShareMode::Shared {
+            stages.push(SignalStage {
+                name: "OS Mixer".into(),
+                detail: "Shared mode (not bit-perfect)".into(),
+            });
+        }
         let transition = transition.map(|note| match note {
             TransitionNote::Faded(seconds) => format!("crossfade {seconds:.1} s, equal power"),
             TransitionNote::Skipped(reason) => format!("crossfade skipped: {reason}"),
         });
-        let bit_perfect = stages.is_empty()
+        let bit_perfect = self.config.share_mode == ShareMode::Exclusive
+            && stages.is_empty()
             && (spec.mode != OutputMode::Pcm
                 || (source.bits != DSD_SOURCE_BITS && spec.rate == source.rate));
         SignalPath {
@@ -1695,6 +1855,7 @@ impl Engine {
             output_bits: spec.bits,
             output_channels: spec.channels,
             mode: spec.mode,
+            share_mode: self.config.share_mode,
             stages,
             bit_perfect,
             transition,
@@ -1790,6 +1951,51 @@ impl Engine {
         self.reset_decoding();
         // A hold (device lost or busy) keeps its position and retries on the new device the
         // usual way.
+        if self.hold.is_none()
+            && let Some((index, pos)) = at
+        {
+            self.restart(index, pos);
+        }
+    }
+
+    fn set_share_mode(&mut self, mode: ShareMode) {
+        if mode == self.config.share_mode {
+            return;
+        }
+        self.config.share_mode = mode;
+        self.fallback.clear();
+        self.src_retry = None;
+        self.device_formats.clear();
+        self.sdm_carrier_warned = None;
+        self.chain.plan = None;
+        self.chain.plan_key = None;
+        if self.state == PlaybackState::Stopped {
+            return;
+        }
+        let at = match self.out.take() {
+            Some(out) => {
+                let Output {
+                    stream,
+                    handle,
+                    pushed,
+                    segments,
+                    format,
+                    ..
+                } = out;
+                let _ = stream.stop();
+                self.underruns_base += handle.underruns();
+                now_in(&handle, pushed, &segments, format)
+                    .map(|now| {
+                        (
+                            now.segment.index,
+                            Pos::frames(now.frame, now.segment.source.rate),
+                        )
+                    })
+                    .or_else(|| self.current_pos())
+            }
+            None => self.current_pos(),
+        };
+        self.reset_decoding();
         if self.hold.is_none()
             && let Some((index, pos)) = at
         {
@@ -1916,6 +2122,9 @@ impl Engine {
     /// device assumes the requested carrier; [`open_output`](Self::open_output) re-decides once
     /// the device is free, exactly like [`choose_dsd_mode`](Self::choose_dsd_mode).
     fn choose_sdm(&self, source: SourceFormat) -> Option<(SdmRate, SdmPacking)> {
+        if self.config.share_mode == ShareMode::Shared {
+            return None;
+        }
         let rate = self.config.sdm.mode.rate()?;
         let requested = self.config.dsd_mode_for(&self.config.device);
         let backend = self.backend.as_ref();
@@ -1976,6 +2185,12 @@ impl Engine {
     /// the requested mode is assumed and [`open_output`](Self::open_output) re-decides once
     /// the device is free.
     fn choose_dsd_mode(&self, dsd: DsdFormat) -> (DsdMode, Option<String>) {
+        if self.config.share_mode == ShareMode::Shared {
+            return (
+                DsdMode::Pcm,
+                Some("shared mode uses the OS mixer; converting DSD to PCM".into()),
+            );
+        }
         let requested = self.config.dsd_mode_for(&self.config.device);
         if requested == DsdMode::Pcm {
             return (DsdMode::Pcm, None);
@@ -2091,7 +2306,15 @@ impl Engine {
                                 .mode
                                 .rate()
                                 .map(|rate| (self.config.device.clone(), rate));
-                            if modulation.is_none()
+                            if self.config.share_mode == ShareMode::Shared {
+                                if carrier_key.is_some() && self.sdm_carrier_warned != carrier_key {
+                                    self.sdm_carrier_warned = carrier_key;
+                                    self.emit(PlayerEvent::Warning(
+                                        "PCM to DSD is unavailable in shared mode; playing PCM"
+                                            .into(),
+                                    ));
+                                }
+                            } else if modulation.is_none()
                                 && carrier_key.is_some()
                                 && self.sdm_carrier_warned != carrier_key
                             {
@@ -2875,10 +3098,21 @@ impl Engine {
     ) -> bool {
         let backend = self.backend.as_ref();
         let device = &self.config.device;
-        let format = match spec.mode {
-            OutputMode::Pcm => negotiate(backend, device, spec.rate, spec.bits, spec.channels),
-            OutputMode::Dop => negotiate_dop(backend, device, spec.rate, spec.channels),
-            OutputMode::NativeDsd => negotiate_native(backend, device, spec.rate, spec.channels),
+        let format = if self.config.share_mode == ShareMode::Shared {
+            let shared = backend.shared_format(device, spec.channels).ok().flatten();
+            Ok(DeviceFormat {
+                rate: spec.rate,
+                container: shared.map_or(SampleContainer::S32, |f| f.container),
+                channels: spec.channels,
+            })
+        } else {
+            match spec.mode {
+                OutputMode::Pcm => negotiate(backend, device, spec.rate, spec.bits, spec.channels),
+                OutputMode::Dop => negotiate_dop(backend, device, spec.rate, spec.channels),
+                OutputMode::NativeDsd => {
+                    negotiate_native(backend, device, spec.rate, spec.channels)
+                }
+            }
         };
         let format = match format {
             Ok(format) => format,
@@ -2962,6 +3196,7 @@ impl Engine {
         let options = StreamOptions {
             tap: self.config.tap.as_mut().map(|make| make(format)),
             dop: spec.mode == OutputMode::Dop,
+            share_mode: self.config.share_mode,
         };
         match self
             .backend
@@ -3148,6 +3383,19 @@ impl Engine {
             self.last_retry = Instant::now();
             self.restart(hold.index, hold.pos);
         }
+    }
+}
+
+/// Computes the new index of `index` after moving the entry at `from` to `to`.
+fn remap_move(index: usize, from: usize, to: usize) -> usize {
+    if index == from {
+        to
+    } else if from < to && index > from && index <= to {
+        index - 1
+    } else if from > to && index >= to && index < from {
+        index + 1
+    } else {
+        index
     }
 }
 

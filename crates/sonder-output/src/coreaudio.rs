@@ -43,7 +43,7 @@ use crate::format::{DeviceFormat, SampleContainer, pack, unpack};
 use crate::render::Renderer;
 use crate::ring::SampleSource;
 use crate::stream::{Stream, StreamOptions, StreamReport, WriteTap};
-use crate::{COMMON_RATES, DeviceId, DeviceInfo, OutputBackend, OutputError};
+use crate::{COMMON_RATES, DeviceId, DeviceInfo, OutputBackend, OutputError, ShareMode};
 
 type OSStatus = i32;
 
@@ -518,6 +518,31 @@ impl OutputBackend for CoreAudioHog {
         probe(find_device(device)?, channels)
     }
 
+    fn shared_format(
+        &self,
+        device: &DeviceId,
+        channels: u16,
+    ) -> Result<Option<DeviceFormat>, OutputError> {
+        let device = find_device(device)?;
+        let stream = first_output_stream(device)?;
+        // SAFETY: the virtual format is an ASBD.
+        let virtual_format: AudioStreamBasicDescription = unsafe {
+            get(
+                stream,
+                address(
+                    kAudioStreamPropertyVirtualFormat,
+                    kAudioObjectPropertyScopeGlobal,
+                ),
+            )
+        }?;
+        let rate = virtual_format.mSampleRate.round();
+        Ok((rate.is_finite() && rate > 0.0).then_some(DeviceFormat {
+            rate: rate as u32,
+            container: SampleContainer::S32,
+            channels,
+        }))
+    }
+
     fn open(
         &mut self,
         device: &DeviceId,
@@ -670,11 +695,23 @@ fn run_stream(
 ) -> Result<(), OutputError> {
     let setup = (|| {
         let device = find_device(device_id)?;
-        let guard = HogGuard::acquire(device, format)?;
+        let (guard, stream) = match options.share_mode {
+            ShareMode::Exclusive => {
+                let guard = HogGuard::acquire(device, format)?;
+                let stream = guard.0.stream;
+                (Some(guard), stream)
+            }
+            ShareMode::Shared => {
+                if format.container == SampleContainer::DsdU32Be {
+                    return Err(unsupported(device, format));
+                }
+                (None, first_output_stream(device)?)
+            }
+        };
         // SAFETY: the virtual format is an ASBD.
         let virtual_format: AudioStreamBasicDescription = unsafe {
             get(
-                guard.0.stream,
+                stream,
                 address(
                     kAudioStreamPropertyVirtualFormat,
                     kAudioObjectPropertyScopeGlobal,

@@ -14,7 +14,9 @@ use crate::format::DeviceFormat;
 use crate::render::Renderer;
 use crate::ring::SampleSource;
 use crate::stream::{Stream, StreamOptions, StreamReport};
-use crate::{COMMON_RATES, DeviceId, DeviceInfo, OutputBackend, OutputError, SampleContainer};
+use crate::{
+    COMMON_RATES, DeviceId, DeviceInfo, OutputBackend, OutputError, SampleContainer, ShareMode,
+};
 
 /// Id of the single device the null backend exposes.
 pub const NULL_DEVICE_ID: &str = "null";
@@ -23,6 +25,7 @@ pub const NULL_DEVICE_ID: &str = "null";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NullSession {
     pub format: DeviceFormat,
+    pub share_mode: ShareMode,
     pub bytes: Vec<u8>,
 }
 
@@ -105,6 +108,7 @@ impl NullControl {
 pub struct NullBackend {
     control: NullControl,
     formats: Option<Vec<DeviceFormat>>,
+    shared_format: Option<DeviceFormat>,
     period_frames: usize,
     period: Duration,
     busy_probes: bool,
@@ -122,6 +126,7 @@ impl NullBackend {
         Self {
             control: NullControl::default(),
             formats: None,
+            shared_format: None,
             period_frames: 512,
             period: Duration::from_millis(1),
             busy_probes: false,
@@ -131,6 +136,12 @@ impl NullBackend {
     /// Restricts the device to exactly these formats.
     pub fn with_formats(mut self, formats: Vec<DeviceFormat>) -> Self {
         self.formats = Some(formats);
+        self
+    }
+
+    /// Sets the preferred shared-mode mixer format for tests.
+    pub fn with_shared_format(mut self, format: Option<DeviceFormat>) -> Self {
+        self.shared_format = format;
         self
     }
 
@@ -230,6 +241,15 @@ impl OutputBackend for NullBackend {
         Ok(formats)
     }
 
+    fn shared_format(
+        &self,
+        device: &DeviceId,
+        channels: u16,
+    ) -> Result<Option<DeviceFormat>, OutputError> {
+        self.present(device)?;
+        Ok(self.shared_format.map(|f| DeviceFormat { channels, ..f }))
+    }
+
     fn open(
         &mut self,
         device: &DeviceId,
@@ -249,7 +269,11 @@ impl OutputBackend for NullBackend {
             if state.open_fault.take() == Some(OpenFault::Busy) || state.open_streams > 0 {
                 return Err(OutputError::DeviceInUse);
             }
-            if !self.accepts(format) {
+            let accepted = match options.share_mode {
+                ShareMode::Exclusive => self.accepts(format),
+                ShareMode::Shared => format.container != SampleContainer::DsdU32Be,
+            };
+            if !accepted {
                 return Err(OutputError::UnsupportedFormat {
                     requested: format.to_string(),
                     supported: Vec::new(),
@@ -259,6 +283,7 @@ impl OutputBackend for NullBackend {
             state.stream_fault = None;
             state.sessions.push(NullSession {
                 format,
+                share_mode: options.share_mode,
                 bytes: Vec::new(),
             });
         }

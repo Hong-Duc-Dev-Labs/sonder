@@ -22,6 +22,17 @@ pub use format::{DeviceFormat, SampleContainer};
 pub use ring::{SampleProducer, SampleSource, sample_ring};
 pub use stream::{Stream, StreamHandle, StreamOptions, StreamReport, WriteTap};
 
+/// Whether the output stream takes exclusive hardware control or goes through the OS mixer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ShareMode {
+    /// Exclusive hardware access (WASAPI exclusive, CoreAudio hog, ALSA `hw:`).
+    #[default]
+    Exclusive,
+    /// OS audio mixer (WASAPI shared, CoreAudio non-hog, ALSA `default`).
+    /// Lets other apps play concurrently; not bit-perfect.
+    Shared,
+}
+
 /// Sample rates probed when listing what a device supports.
 pub const COMMON_RATES: [u32; 10] = [
     44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000, 705_600, 768_000,
@@ -71,6 +82,16 @@ pub trait OutputBackend: Send {
         device: &DeviceId,
         channels: u16,
     ) -> Result<Vec<DeviceFormat>, OutputError>;
+
+    /// Preferred PCM format when opening in [`ShareMode::Shared`] (typically the OS mixer's
+    /// current sample rate in a 32-bit integer container), or `None` when unknown.
+    fn shared_format(
+        &self,
+        _device: &DeviceId,
+        _channels: u16,
+    ) -> Result<Option<DeviceFormat>, OutputError> {
+        Ok(None)
+    }
 
     /// Starts a stream that plays everything pushed into the producer paired with `source`.
     fn open(

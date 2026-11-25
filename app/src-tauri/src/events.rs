@@ -22,6 +22,7 @@ use crate::sleep;
 use crate::state::{AppState, lock};
 
 const POSITION_INTERVAL: Duration = Duration::from_millis(100);
+const SESSION_SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct PlayerStateEvent(pub PlayerSnapshot);
@@ -87,6 +88,10 @@ pub struct LoudnessFinishedEvent {
 /// The index changed (scan, watcher, root removed): reload what is on screen.
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct LibraryChangedEvent;
+
+/// The set of favorited tracks changed.
+#[derive(Debug, Clone, Serialize, Type, Event)]
+pub struct FavoritesChangedEvent;
 
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct DevicesChangedEvent(pub Vec<Device>);
@@ -182,15 +187,19 @@ fn file_name(path: &Path) -> String {
 pub fn run_bridge(app: AppHandle, events: Receiver<PlayerEvent>) {
     let mut last_emitted: Option<PlayerSnapshot> = None;
     let mut last_emit = Instant::now() - POSITION_INTERVAL;
+    let mut last_session_save = Instant::now();
     let mut last_now_playing: Option<NowPlaying> = None;
     let mut urgent = false;
+    let mut session_dirty = false;
     let mut tracker = PlayTracker::default();
     loop {
         match events.recv_timeout(POSITION_INTERVAL) {
             Ok(event) => {
+                session_dirty |= should_save_session(&event);
                 urgent |= handle(&app, &event, &mut tracker);
                 // Fold everything already queued before emitting once.
                 while let Ok(event) = events.try_recv() {
+                    session_dirty |= should_save_session(&event);
                     urgent |= handle(&app, &event, &mut tracker);
                 }
             }
@@ -209,6 +218,14 @@ pub fn run_bridge(app: AppHandle, events: Receiver<PlayerEvent>) {
             urgent = false;
             last_emitted = Some(snap.clone());
         }
+        if session_dirty
+            || (snap.state == PlayState::Playing
+                && last_session_save.elapsed() >= SESSION_SAVE_INTERVAL)
+        {
+            crate::session::capture_and_save(&state);
+            session_dirty = false;
+            last_session_save = Instant::now();
+        }
         let now = now_playing(&state, &snap);
         if last_now_playing
             .as_ref()
@@ -218,6 +235,15 @@ pub fn run_bridge(app: AppHandle, events: Receiver<PlayerEvent>) {
             last_now_playing = Some(now);
         }
     }
+}
+
+fn should_save_session(event: &PlayerEvent) -> bool {
+    matches!(
+        event,
+        PlayerEvent::TrackChanged { .. }
+            | PlayerEvent::State(PlaybackState::Paused | PlaybackState::Stopped)
+            | PlayerEvent::EndOfQueue
+    )
 }
 
 /// Folds `event` into the snapshot and reports what needs the user's attention.

@@ -454,6 +454,8 @@ pub struct TrackItem {
     pub art_colors: Vec<String>,
     /// The cached quality check, when the file has not changed since it ran.
     pub quality: Option<QualityBadge>,
+    /// Whether this track is marked as favorite.
+    pub favorite: bool,
 }
 
 /// A track's cached quality verdict, for the badge in track lists.
@@ -491,6 +493,7 @@ impl From<Track> for TrackItem {
                     confidence: sonder_quality::Confidence::parse(&q.confidence)?,
                 })
             }),
+            favorite: t.favorite,
         }
     }
 }
@@ -882,6 +885,7 @@ pub struct QueueItem {
     /// Stable for the life of this entry, unlike its position: a track queued twice gets two.
     pub entry_id: u32,
     pub track_id: i64,
+    pub path: String,
     pub title: String,
     pub artist: Option<String>,
     pub album: String,
@@ -896,6 +900,7 @@ impl QueueItem {
         QueueItem {
             entry_id,
             track_id: t.id,
+            path: t.path.clone(),
             title: t.title.clone(),
             artist: t.artist.clone().or_else(|| t.album_artist.clone()),
             album: t.album.clone(),
@@ -903,6 +908,47 @@ impl QueueItem {
             art: t.art.clone(),
             art_colors: t.art_colors.clone(),
             duration_ms: t.duration_ms,
+        }
+    }
+
+    /// Builds a queue entry for an audio file outside the library index (`track_id = 0`).
+    pub fn from_external(entry_id: u32, path: &Path) -> Self {
+        let path_str = path.to_string_lossy().into_owned();
+        let fallback_title = path
+            .file_stem()
+            .or_else(|| path.file_name())
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| path_str.clone());
+        let meta = sonder_library::read_file(path).ok();
+        let title = meta
+            .as_ref()
+            .and_then(|m| m.tags.title.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(fallback_title);
+        let artist = meta.as_ref().and_then(|m| {
+            if m.tags.artists.is_empty() {
+                (!m.tags.album_artists.is_empty()).then(|| m.tags.album_artists.join("; "))
+            } else {
+                Some(m.tags.artists.join("; "))
+            }
+        });
+        let album = meta
+            .as_ref()
+            .and_then(|m| m.tags.album.clone())
+            .unwrap_or_default();
+        let duration_ms = meta.as_ref().map_or(0, |m| m.audio.duration_ms);
+        QueueItem {
+            entry_id,
+            track_id: 0,
+            path: path_str,
+            title,
+            artist,
+            album,
+            album_id: 0,
+            art: None,
+            art_colors: Vec::new(),
+            duration_ms,
         }
     }
 }
@@ -936,6 +982,8 @@ pub struct SignalPathInfo {
     pub stages: Vec<SignalPathStage>,
     /// `true` only when nothing touched the samples and the rate is unchanged.
     pub bit_perfect: bool,
+    /// `true` when playing through the OS shared mixer rather than exclusive mode.
+    pub shared: bool,
     /// How the track joined the previous one: the crossfade length, or why it stayed gapless.
     pub transition: Option<String>,
 }
@@ -962,6 +1010,7 @@ impl From<sonder_engine::SignalPath> for SignalPathInfo {
                 })
                 .collect(),
             bit_perfect: path.bit_perfect,
+            shared: path.share_mode == sonder_engine::ShareMode::Shared,
             transition: path.transition,
         }
     }

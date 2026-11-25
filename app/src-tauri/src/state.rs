@@ -11,8 +11,9 @@ use sonder_engine::{Player, PlayerConfig, PlayerEvent};
 use sonder_library::{Library, LibraryWatcher};
 use sonder_output::{DeviceFormat, DeviceId, DeviceInfo, OutputBackend};
 
-use crate::dto::{AppResult, Device, PlayState, PlayerSnapshot, QueueItem};
+use crate::dto::{AppResult, Device, PlayState, PlayerSnapshot, QueueItem, TrackItem};
 use crate::loudness::LibraryLoudness;
+use crate::session::{SessionStore, restore_index};
 use crate::settings::{Settings, SettingsStore};
 
 /// Where Sonder keeps its files.
@@ -21,6 +22,7 @@ pub struct AppPaths {
     pub db: PathBuf,
     pub art: PathBuf,
     pub settings: PathBuf,
+    pub session: PathBuf,
     /// The downloaded AutoEQ headphone index.
     pub autoeq: PathBuf,
     /// Cached online lyrics lookups.
@@ -35,6 +37,7 @@ impl AppPaths {
             db: dirs.data_dir().join("library.db"),
             art: dirs.data_dir().join("art"),
             settings: dirs.config_dir().join("settings.toml"),
+            session: dirs.data_dir().join("session.json"),
             lyrics: dirs.data_dir().join("lyrics"),
             autoeq: dirs.data_dir().join("autoeq"),
         })
@@ -121,6 +124,7 @@ pub struct AppState {
     pub devices: Mutex<DeviceList>,
     pub settings: Mutex<Settings>,
     pub store: SettingsStore,
+    pub session_store: SessionStore,
     pub watcher: Mutex<Option<LibraryWatcher>>,
     pub scan: ScanControl,
     /// Quality checks: the batch queue and cancel flags.
@@ -149,6 +153,7 @@ impl AppState {
         let device = resolve_device(settings.output_device.as_deref(), &found);
 
         let mut config = PlayerConfig::new(device.clone());
+        config.share_mode = settings.output_mode.into();
         config.dsd_modes = settings.engine_dsd_modes();
         config.dsd_pcm_rate = settings.dsd_pcm_rate.into();
         config.sdm = settings.engine_sdm();
@@ -160,10 +165,56 @@ impl AppState {
         if settings.volume_db.is_some() {
             player.set_volume(settings.volume_db);
         }
-        let snapshot = PlayerSnapshot {
+
+        let session_store = SessionStore::new(paths.session.clone());
+        let entry_ids = AtomicU32::new(1);
+        let mut restored_queue = Vec::new();
+        let mut snapshot = PlayerSnapshot {
             volume_db: settings.volume_db,
             ..PlayerSnapshot::default()
         };
+        if let Some(saved) = session_store.load() {
+            snapshot.repeat = saved.repeat;
+            player.set_repeat(saved.repeat.into());
+            let mut restored_paths = Vec::new();
+            for raw in &saved.paths {
+                let path = PathBuf::from(raw);
+                if !path.is_file() {
+                    continue;
+                }
+                let entry_id = entry_ids.fetch_add(1, Ordering::Relaxed);
+                let item = match library.track_by_path(&path).ok().flatten() {
+                    Some(track) => QueueItem::new(entry_id, &TrackItem::from(track)),
+                    None => QueueItem::from_external(entry_id, &path),
+                };
+                restored_queue.push(item);
+                restored_paths.push(path);
+            }
+            if !restored_paths.is_empty() {
+                player.enqueue(restored_paths.clone());
+                if let Some(idx) = restore_index(&saved.paths, &restored_paths, saved.index) {
+                    let same_track =
+                        saved
+                            .index
+                            .and_then(|i| saved.paths.get(i))
+                            .is_some_and(|old| {
+                                restored_paths[idx].as_os_str() == std::ffi::OsStr::new(old)
+                            });
+                    let dur = restored_queue[idx].duration_ms;
+                    let elapsed_ms = if !same_track {
+                        0
+                    } else if dur > 0 {
+                        saved.elapsed_ms.min(dur)
+                    } else {
+                        saved.elapsed_ms
+                    };
+                    player.select(idx, Duration::from_millis(elapsed_ms));
+                    snapshot.index = Some(idx as u32);
+                    snapshot.elapsed_ms = elapsed_ms;
+                    snapshot.duration_ms = (dur > 0).then_some(dur);
+                }
+            }
+        }
         Ok((
             AppState {
                 paths,
@@ -171,13 +222,14 @@ impl AppState {
                 loudness,
                 analysis: ScanControl::default(),
                 player,
-                queue: Mutex::new(Vec::new()),
-                entry_ids: AtomicU32::new(1),
+                queue: Mutex::new(restored_queue),
+                entry_ids,
                 snapshot: Mutex::new(snapshot),
                 device: Mutex::new(device),
                 devices: Mutex::new(devices),
                 settings: Mutex::new(settings),
                 store,
+                session_store,
                 watcher: Mutex::new(None),
                 scan: ScanControl::default(),
                 quality: crate::quality::QualityControl::default(),

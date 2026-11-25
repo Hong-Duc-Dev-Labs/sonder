@@ -14,6 +14,7 @@ mod media;
 mod mini;
 mod quality;
 mod scan;
+mod session;
 mod settings;
 mod sleep;
 mod state;
@@ -111,10 +112,21 @@ fn bindings() -> Builder<tauri::Wry> {
             sleep::sleep_timer_get,
             commands::playlist_import_m3u,
             commands::playlist_export_m3u,
+            commands::queue_move,
+            commands::queue_shuffle,
+            commands::playlist_create_from_queue,
+            commands::library_toggle_favorite,
+            commands::library_favorites,
+            commands::library_favorite_paths,
+            commands::library_recent_albums,
+            commands::lyrics_get_path,
+            commands::player_open_paths,
+            commands::reveal_in_folder,
         ])
         .events(collect_events![
             events::PlayerStateEvent,
             events::QueueChangedEvent,
+            events::FavoritesChangedEvent,
             events::ScanProgressEvent,
             events::ScanFinishedEvent,
             events::LoudnessProgressEvent,
@@ -227,14 +239,24 @@ fn main() {
             }
             let window = main_builder.build()?;
             media::init(app.handle(), &window);
+            let startup_paths: Vec<String> = std::env::args()
+                .skip(1)
+                .filter(|arg| !arg.starts_with('-'))
+                .filter(|arg| std::path::Path::new(arg).exists())
+                .collect();
+            if !startup_paths.is_empty() {
+                let _ = commands::open_paths_sync(app.handle(), startup_paths);
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("cannot start Sonder")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                let state = app.state::<AppState>();
+                session::capture_and_save(&state);
                 // Release the exclusive device before the process goes away.
-                app.state::<AppState>().player.stop();
+                state.player.stop();
             }
         });
 }

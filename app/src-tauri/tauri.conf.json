@@ -49,6 +49,13 @@
     "targets": "all",
     "category": "Music",
     "shortDescription": "Bit-perfect lossless music player",
+    "fileAssociations": [
+      {
+        "name": "Lossless Audio",
+        "role": "Viewer",
+        "ext": ["flac", "m4a", "wav", "aiff", "aif", "dsf", "dff"]
+      }
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

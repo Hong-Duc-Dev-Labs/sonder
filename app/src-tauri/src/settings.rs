@@ -196,11 +196,33 @@ impl Default for SrcSetting {
     }
 }
 
+/// How the player opens the audio output device.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum OutputShareMode {
+    /// Exclusive hardware access (WASAPI Exclusive / CoreAudio Hog / ALSA hw), bit-perfect by default.
+    #[default]
+    Exclusive,
+    /// OS mixer shared mode so other applications can play audio concurrently (not bit-perfect).
+    Shared,
+}
+
+impl From<OutputShareMode> for sonder_engine::ShareMode {
+    fn from(mode: OutputShareMode) -> Self {
+        match mode {
+            OutputShareMode::Exclusive => sonder_engine::ShareMode::Exclusive,
+            OutputShareMode::Shared => sonder_engine::ShareMode::Shared,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     /// Backend id of the output device; `None` uses the system default device.
     pub output_device: Option<String>,
+    /// Device sharing policy: exclusive bit-perfect (default) or shared OS mixer.
+    pub output_mode: OutputShareMode,
     /// Software volume in dB; `None` keeps output bit-perfect.
     pub volume_db: Option<f64>,
     pub album_sort: SortOrder,
@@ -256,6 +278,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             output_device: None,
+            output_mode: OutputShareMode::default(),
             volume_db: None,
             album_sort: SortOrder::default(),
             cover_style: CoverStyle::default(),
@@ -366,6 +389,11 @@ impl Settings {
     /// Applies the crossfade settings to the running engine.
     pub fn apply_crossfade(&self, player: &sonder_engine::Player) {
         player.set_crossfade(self.engine_crossfade());
+    }
+
+    /// Applies the output sharing policy (exclusive vs shared) to the running engine.
+    pub fn apply_share_mode(&self, player: &sonder_engine::Player) {
+        player.set_share_mode(self.output_mode.into());
     }
 }
 
@@ -784,5 +812,21 @@ mod dsp_settings_tests {
         let back = PeqSetting::from(sonder_dsp::Peq::from(preset.clone()));
         assert_eq!(back, preset);
         assert_eq!(sanitized_peq(preset).preamp_db, -6.0);
+    }
+
+    #[test]
+    fn output_share_mode_defaults_exclusive_and_round_trips_shared() {
+        let legacy: Settings = toml::from_str("dither = true\n").unwrap();
+        assert_eq!(legacy.output_mode, OutputShareMode::Exclusive);
+
+        let dir = std::env::temp_dir().join(format!("sonder-share-mode-{}", std::process::id()));
+        let store = SettingsStore::new(dir.join("settings.toml"));
+        let settings = Settings {
+            output_mode: OutputShareMode::Shared,
+            ..Settings::default()
+        };
+        store.save(&settings).unwrap();
+        assert_eq!(store.load().output_mode, OutputShareMode::Shared);
+        let _ = fs::remove_dir_all(dir);
     }
 }

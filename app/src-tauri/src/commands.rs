@@ -4,9 +4,10 @@
 //! Every command is `async` so it runs on the async runtime's threads, never on the main
 //! (UI) thread: library queries, device probing and dialogs must not freeze the window.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sonder_output::DeviceId;
 use tauri::{AppHandle, Manager, State};
@@ -19,7 +20,7 @@ use crate::dto::{
     PeqImport, PlayerSnapshot, Playlist, PlaylistInfo, QueueItem, RepeatMode, RootFolder,
     SortOrder, TrackEdit, TrackItem, TrackTagsInfo, export_file_name, safe_file_stem,
 };
-use crate::events::{LibraryChangedEvent, QueueChangedEvent};
+use crate::events::{FavoritesChangedEvent, LibraryChangedEvent, QueueChangedEvent};
 use crate::settings::{PeqSetting, Settings};
 use crate::state::{AppState, lock};
 
@@ -209,6 +210,29 @@ pub async fn playlist_create(state: State<'_, AppState>, name: String) -> AppRes
     Ok(lock(&state.library).create_playlist(&name)?.into())
 }
 
+/// Creates a new playlist populated with every path currently in the play queue.
+#[tauri::command]
+#[specta::specta]
+pub async fn playlist_create_from_queue(
+    state: State<'_, AppState>,
+    name: String,
+) -> AppResult<Playlist> {
+    let paths: Vec<PathBuf> = {
+        let queue = lock(&state.queue);
+        queue.iter().map(|item| PathBuf::from(&item.path)).collect()
+    };
+    let mut library = lock(&state.library);
+    let created = library.create_playlist(&name)?;
+    if !paths.is_empty() {
+        library.add_paths_to_playlist(created.id, &paths)?;
+    }
+    let summary = library
+        .playlist(created.id)?
+        .map(|detail| detail.playlist)
+        .unwrap_or(created);
+    Ok(summary.into())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn playlist_rename(state: State<'_, AppState>, id: i64, name: String) -> AppResult<()> {
@@ -379,24 +403,27 @@ fn tracks_by_id(state: &AppState, ids: &[i64]) -> AppResult<Vec<TrackItem>> {
 /// starting playback at `play_at` (an index into `tracks`).
 fn enqueue(app: &AppHandle, tracks: Vec<TrackItem>, replace: bool, play_at: Option<u32>) {
     let state = app.state::<AppState>();
-    let mut queue = lock(&state.queue);
-    if replace {
-        state.player.clear();
-        queue.clear();
+    {
+        let mut queue = lock(&state.queue);
+        if replace {
+            state.player.clear();
+            queue.clear();
+        }
+        let base = queue.len();
+        queue.extend(
+            tracks
+                .iter()
+                .map(|t| QueueItem::new(state.next_entry_id(), t)),
+        );
+        state
+            .player
+            .enqueue(tracks.iter().map(|t| PathBuf::from(&t.path)).collect());
+        if let Some(at) = play_at.filter(|&i| (i as usize) < tracks.len()) {
+            state.player.play_index(base + at as usize);
+        }
+        let _ = QueueChangedEvent(queue.clone()).emit(app);
     }
-    let base = queue.len();
-    queue.extend(
-        tracks
-            .iter()
-            .map(|t| QueueItem::new(state.next_entry_id(), t)),
-    );
-    state
-        .player
-        .enqueue(tracks.iter().map(|t| PathBuf::from(&t.path)).collect());
-    if let Some(at) = play_at.filter(|&i| (i as usize) < tracks.len()) {
-        state.player.play_index(base + at as usize);
-    }
-    let _ = QueueChangedEvent(queue.clone()).emit(app);
+    crate::session::capture_and_save(&state);
 }
 
 /// Replaces the queue with the album and plays from track `start`.
@@ -455,21 +482,21 @@ pub async fn player_enqueue_tracks(
 /// they play next.
 fn play_next(app: &AppHandle, tracks: Vec<TrackItem>) {
     let state = app.state::<AppState>();
-    let mut queue = lock(&state.queue);
-    let at = state
-        .snapshot()
-        .index
-        .map_or(queue.len(), |i| i as usize + 1)
-        .min(queue.len());
-    let items: Vec<QueueItem> = tracks
-        .iter()
-        .map(|t| QueueItem::new(state.next_entry_id(), t))
-        .collect();
-    queue.splice(at..at, items);
-    state
-        .player
-        .insert(at, tracks.iter().map(|t| PathBuf::from(&t.path)).collect());
-    let _ = QueueChangedEvent(queue.clone()).emit(app);
+    let at = state.snapshot().index;
+    {
+        let mut queue = lock(&state.queue);
+        let at = at.map_or(queue.len(), |i| i as usize + 1).min(queue.len());
+        let items: Vec<QueueItem> = tracks
+            .iter()
+            .map(|t| QueueItem::new(state.next_entry_id(), t))
+            .collect();
+        queue.splice(at..at, items);
+        state
+            .player
+            .insert(at, tracks.iter().map(|t| PathBuf::from(&t.path)).collect());
+        let _ = QueueChangedEvent(queue.clone()).emit(app);
+    }
+    crate::session::capture_and_save(&state);
 }
 
 #[tauri::command]
@@ -504,15 +531,105 @@ pub async fn queue_remove(
     state: State<'_, AppState>,
     entry_id: u32,
 ) -> AppResult<()> {
-    let mut queue = lock(&state.queue);
-    let Some(index) = queue.iter().position(|q| q.entry_id == entry_id) else {
-        // Already gone (a double click, or the queue was replaced meanwhile).
-        return Ok(());
+    let removed = {
+        let mut queue = lock(&state.queue);
+        let Some(index) = queue.iter().position(|q| q.entry_id == entry_id) else {
+            // Already gone (a double click, or the queue was replaced meanwhile).
+            return Ok(());
+        };
+        queue.remove(index);
+        state.player.remove(index);
+        let _ = QueueChangedEvent(queue.clone()).emit(&app);
+        true
     };
-    queue.remove(index);
-    state.player.remove(index);
-    let _ = QueueChangedEvent(queue.clone()).emit(&app);
+    if removed {
+        crate::session::capture_and_save(&state);
+    }
     Ok(())
+}
+
+/// Moves the queue entry at `from` to `to` and keeps playback synced.
+#[tauri::command]
+#[specta::specta]
+pub async fn queue_move(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    from: u32,
+    to: u32,
+) -> AppResult<()> {
+    let (from, to) = (from as usize, to as usize);
+    let moved = {
+        let mut queue = lock(&state.queue);
+        if from >= queue.len() || to >= queue.len() || from == to {
+            return Ok(());
+        }
+        let item = queue.remove(from);
+        queue.insert(to, item);
+        state.player.move_entry(from, to);
+        let _ = QueueChangedEvent(queue.clone()).emit(&app);
+        true
+    };
+    if moved {
+        crate::session::capture_and_save(&state);
+    }
+    Ok(())
+}
+
+/// Shuffles all entries after the current track (or the full queue when idle).
+#[tauri::command]
+#[specta::specta]
+pub async fn queue_shuffle(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
+    let current = state.snapshot().index.map(|i| i as usize);
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(1, |d| d.as_nanos() as u64);
+    let shuffled = {
+        let mut queue = lock(&state.queue);
+        let current = current.filter(|&i| i < queue.len());
+        let Some(order) = shuffle_order(queue.len(), current, seed) else {
+            return Ok(());
+        };
+        let mut slots: Vec<Option<QueueItem>> = queue.drain(..).map(Some).collect();
+        *queue = order.iter().filter_map(|&idx| slots[idx].take()).collect();
+        state.player.reorder(order);
+        let _ = QueueChangedEvent(queue.clone()).emit(&app);
+        true
+    };
+    if shuffled {
+        crate::session::capture_and_save(&state);
+    }
+    Ok(())
+}
+
+/// Builds a permutation keeping `0..=current` in place and shuffling everything after.
+fn shuffle_order(len: usize, current: Option<usize>, seed: u64) -> Option<Vec<usize>> {
+    let start = match current {
+        Some(cur) if cur + 1 < len => cur + 1,
+        Some(_) => return None,
+        None => 0,
+    };
+    let tail_len = len.saturating_sub(start);
+    if tail_len < 2 {
+        return None;
+    }
+    let mut order: Vec<usize> = (0..len).collect();
+    let mut rng = if seed == 0 {
+        0x9e37_79b9_7f4a_7c15
+    } else {
+        seed
+    };
+    for i in (start + 1..len).rev() {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        let span = i - start + 1;
+        let j = start + (rng as usize % span);
+        order.swap(i, j);
+    }
+    if (start..len).all(|i| order[i] == i) {
+        order.swap(start, start + 1);
+    }
+    Some(order)
 }
 
 #[tauri::command]
@@ -705,10 +822,13 @@ pub async fn queue_items(state: State<'_, AppState>) -> AppResult<Vec<QueueItem>
 #[tauri::command]
 #[specta::specta]
 pub async fn queue_clear(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
-    let mut queue = lock(&state.queue);
-    state.player.clear();
-    queue.clear();
-    let _ = QueueChangedEvent(Vec::new()).emit(&app);
+    {
+        let mut queue = lock(&state.queue);
+        state.player.clear();
+        queue.clear();
+        let _ = QueueChangedEvent(Vec::new()).emit(&app);
+    }
+    crate::session::capture_and_save(&state);
     Ok(())
 }
 
@@ -784,8 +904,11 @@ fn apply_volume(state: &AppState, db: Option<f64>) {
 #[tauri::command]
 #[specta::specta]
 pub async fn player_set_repeat(state: State<'_, AppState>, mode: RepeatMode) -> AppResult<()> {
-    state.snapshot().repeat = mode;
-    state.player.set_repeat(mode.into());
+    {
+        state.snapshot().repeat = mode;
+        state.player.set_repeat(mode.into());
+    }
+    crate::session::capture_and_save(&state);
     Ok(())
 }
 
@@ -834,6 +957,7 @@ pub async fn settings_get(state: State<'_, AppState>) -> AppResult<Settings> {
 #[specta::specta]
 pub async fn settings_set(state: State<'_, AppState>, settings: Settings) -> AppResult<Settings> {
     let saved = state.update_settings(|s| *s = settings)?;
+    saved.apply_share_mode(&state.player);
     // DSD first: a device switch then opens the new device with the new DSD mode.
     saved.apply_dsd(&state.player);
     if let Some(device) = &saved.output_device {
@@ -857,19 +981,94 @@ pub async fn lyrics_get(state: State<'_, AppState>, track_id: i64) -> AppResult<
     let Some(track) = lock(&state.library).track(track_id)? else {
         return Ok(None);
     };
-    let online = lock(&state.settings).lyrics_online;
-    let cache = sonder_lyrics::Cache::new(state.paths.lyrics.clone());
-    let found = tauri::async_runtime::spawn_blocking(move || {
-        let embedded = sonder_library::read_file(&track.path)
-            .ok()
-            .and_then(|m| m.tags.lyrics);
-        let local = sonder_lyrics::local(&track.path, embedded.as_deref());
+    let query = sonder_lyrics::Query {
+        title: track.title,
+        artist: track.artist.or(track.album_artist),
+        album: Some(track.album).filter(|a| !a.is_empty()),
+        duration_ms: track.audio.duration_ms,
+    };
+    load_lyrics_for(&state, track.path, query).await
+}
+
+/// Lyrics for any local audio path (including files played directly outside the library).
+#[tauri::command]
+#[specta::specta]
+pub async fn lyrics_get_path(
+    state: State<'_, AppState>,
+    path: String,
+) -> AppResult<Option<Lyrics>> {
+    let path_buf = PathBuf::from(&path);
+    if !path_buf.is_file() {
+        return Ok(None);
+    }
+    let maybe_track = lock(&state.library).track_by_path(&path_buf)?;
+    if let Some(track) = maybe_track {
         let query = sonder_lyrics::Query {
             title: track.title,
             artist: track.artist.or(track.album_artist),
             album: Some(track.album).filter(|a| !a.is_empty()),
             duration_ms: track.audio.duration_ms,
         };
+        return load_lyrics_for(&state, track.path, query).await;
+    }
+    let fallback_title = path_buf
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let online = lock(&state.settings).lyrics_online;
+    let cache = sonder_lyrics::Cache::new(state.paths.lyrics.clone());
+    let found = tauri::async_runtime::spawn_blocking(move || {
+        let meta = sonder_library::read_file(&path_buf).ok();
+        let embedded = meta.as_ref().and_then(|m| m.tags.lyrics.clone());
+        let local = sonder_lyrics::local(&path_buf, embedded.as_deref());
+        let title = meta
+            .as_ref()
+            .and_then(|m| m.tags.title.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(fallback_title);
+        if title.trim().is_empty() {
+            return local;
+        }
+        let artist = meta.as_ref().and_then(|m| m.tags.artists.first().cloned());
+        let album = meta
+            .as_ref()
+            .and_then(|m| m.tags.album.clone())
+            .filter(|a| !a.is_empty());
+        let duration_ms = meta.as_ref().map_or(0, |m| m.audio.duration_ms);
+        let query = sonder_lyrics::Query {
+            title,
+            artist,
+            album,
+            duration_ms,
+        };
+        sonder_lyrics::choose(local, || {
+            if let Some(cached) = cache.get(&query) {
+                return cached;
+            }
+            if !online {
+                return None;
+            }
+            let found = LYRICS_ONLINE.find(&query);
+            cache.put(&query, found.as_ref());
+            found
+        })
+    })
+    .await?;
+    Ok(found.map(Into::into))
+}
+
+async fn load_lyrics_for(
+    state: &AppState,
+    path: PathBuf,
+    query: sonder_lyrics::Query,
+) -> AppResult<Option<Lyrics>> {
+    let online = lock(&state.settings).lyrics_online;
+    let cache = sonder_lyrics::Cache::new(state.paths.lyrics.clone());
+    let found = tauri::async_runtime::spawn_blocking(move || {
+        let embedded = sonder_library::read_file(&path)
+            .ok()
+            .and_then(|m| m.tags.lyrics);
+        let local = sonder_lyrics::local(&path, embedded.as_deref());
         sonder_lyrics::choose(local, || {
             // A cached answer is used even with lookups off: it sends nothing.
             if let Some(cached) = cache.get(&query) {
@@ -1038,4 +1237,233 @@ pub async fn library_is_analyzing(state: State<'_, AppState>) -> AppResult<bool>
         .analysis
         .running
         .load(std::sync::atomic::Ordering::SeqCst))
+}
+
+// ----- favorites & recent albums -----
+
+#[tauri::command]
+#[specta::specta]
+pub async fn library_toggle_favorite(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> AppResult<bool> {
+    let favorite = lock(&state.library).toggle_favorite(Path::new(&path))?;
+    let _ = FavoritesChangedEvent.emit(&app);
+    Ok(favorite)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn library_favorites(state: State<'_, AppState>) -> AppResult<Vec<TrackItem>> {
+    Ok(lock(&state.library)
+        .favorite_tracks()?
+        .into_iter()
+        .map(Into::into)
+        .collect())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn library_favorite_paths(state: State<'_, AppState>) -> AppResult<Vec<String>> {
+    Ok(lock(&state.library).favorite_paths()?)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn library_recent_albums(
+    state: State<'_, AppState>,
+    limit: u32,
+) -> AppResult<Vec<Album>> {
+    Ok(lock(&state.library)
+        .recent_albums(limit.clamp(1, 100))?
+        .into_iter()
+        .map(Album::from)
+        .collect())
+}
+
+// ----- OS file open & folder reveal -----
+
+const MAX_OPEN_PATHS: usize = 5_000;
+
+/// Replaces the queue with external audio files or folders (dropped or opened from OS) and starts playback.
+#[tauri::command]
+#[specta::specta]
+pub async fn player_open_paths(app: AppHandle, paths: Vec<String>) -> AppResult<u32> {
+    tauri::async_runtime::spawn_blocking(move || open_paths_sync(&app, paths)).await?
+}
+
+/// Synchronously expands `raw_paths` into playable audio files, replaces the queue, and plays index 0.
+pub fn open_paths_sync(app: &AppHandle, raw_paths: Vec<String>) -> AppResult<u32> {
+    let inputs: Vec<PathBuf> = raw_paths.into_iter().map(PathBuf::from).collect();
+    let files = collect_audio_paths(&inputs, MAX_OPEN_PATHS);
+    if files.is_empty() {
+        return Ok(0);
+    }
+    let state = app.state::<AppState>();
+    let resolved: Vec<(PathBuf, Option<TrackItem>)> = {
+        let library = lock(&state.library);
+        files
+            .into_iter()
+            .map(|p| {
+                let indexed = library
+                    .track_by_path(&p)
+                    .ok()
+                    .flatten()
+                    .map(TrackItem::from);
+                (p, indexed)
+            })
+            .collect()
+    };
+    let count = resolved.len();
+    {
+        let mut queue = lock(&state.queue);
+        state.player.clear();
+        queue.clear();
+        let mut engine_paths = Vec::with_capacity(count);
+        for (path, maybe_track) in resolved {
+            let entry_id = state.next_entry_id();
+            let item = match maybe_track {
+                Some(t) => QueueItem::new(entry_id, &t),
+                None => QueueItem::from_external(entry_id, &path),
+            };
+            queue.push(item);
+            engine_paths.push(path);
+        }
+        state.player.enqueue(engine_paths);
+        state.player.play_index(0);
+        let _ = QueueChangedEvent(queue.clone()).emit(app);
+    }
+    crate::session::capture_and_save(&state);
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
+}
+
+/// Recursively collects supported audio files from files and directories, skipping symlinked directories.
+fn collect_audio_paths(inputs: &[PathBuf], limit: usize) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for input in inputs {
+        if out.len() >= limit {
+            break;
+        }
+        collect_one(input, &mut out, &mut seen, limit);
+    }
+    out
+}
+
+fn collect_one(path: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, limit: usize) {
+    if out.len() >= limit {
+        return;
+    }
+    if path.is_file() {
+        if sonder_library::is_audio_file(path) && seen.insert(path.to_path_buf()) {
+            out.push(path.to_path_buf());
+        }
+        return;
+    }
+    if !path.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    let mut children = Vec::new();
+    for entry in entries.flatten() {
+        let is_symlink = entry.file_type().is_ok_and(|t| t.is_symlink());
+        if !is_symlink {
+            children.push(entry.path());
+        }
+    }
+    children.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+    for child in children {
+        if out.len() >= limit {
+            break;
+        }
+        collect_one(&child, out, seen, limit);
+    }
+}
+
+/// Opens the system file manager highlighting `path`.
+#[tauri::command]
+#[specta::specta]
+pub async fn reveal_in_folder(path: String) -> AppResult<()> {
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(AppError(format!(
+            "file does not exist: {}",
+            target.display()
+        )));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("explorer");
+        if target.is_dir() {
+            cmd.arg(&target);
+        } else {
+            cmd.arg("/select,").arg(&target);
+        }
+        cmd.spawn()
+            .map_err(|e| AppError(format!("cannot open Explorer: {e}")))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        if !target.is_dir() {
+            cmd.arg("-R");
+        }
+        cmd.arg(&target)
+            .spawn()
+            .map_err(|e| AppError(format!("cannot open Finder: {e}")))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let folder = if target.is_dir() {
+            target.as_path()
+        } else {
+            target.parent().unwrap_or(target.as_path())
+        };
+        std::process::Command::new("xdg-open")
+            .arg(folder)
+            .spawn()
+            .map_err(|e| AppError(format!("cannot open file manager: {e}")))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shuffle_order_keeps_played_prefix_and_permutes_upcoming() {
+        assert_eq!(shuffle_order(0, None, 123), None);
+        assert_eq!(shuffle_order(1, None, 123), None);
+        assert_eq!(shuffle_order(3, Some(2), 123), None);
+        assert_eq!(shuffle_order(3, Some(1), 123), None);
+
+        let order = shuffle_order(6, Some(2), 42).expect("permutation");
+        assert_eq!(&order[..=2], &[0, 1, 2]);
+        let mut tail = order[3..].to_vec();
+        assert_ne!(tail, vec![3, 4, 5]);
+        tail.sort_unstable();
+        assert_eq!(tail, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn collect_audio_paths_expands_dirs_filters_non_audio_and_deduplicates() {
+        let dir = std::env::temp_dir().join(format!("sonder-open-paths-{}", std::process::id()));
+        let sub = dir.join("album");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&sub).unwrap();
+        let f1 = sub.join("01.flac");
+        let f2 = sub.join("02.wav");
+        let txt = sub.join("notes.txt");
+        std::fs::write(&f1, b"flac").unwrap();
+        std::fs::write(&f2, b"wav").unwrap();
+        std::fs::write(&txt, b"txt").unwrap();
+
+        let collected = collect_audio_paths(&[f1.clone(), dir.clone(), txt], 10);
+        assert_eq!(collected, vec![f1, f2]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

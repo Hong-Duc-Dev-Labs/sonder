@@ -20,6 +20,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0006_history.sql"),
     include_str!("migrations/0007_favorites.sql"),
     include_str!("migrations/0008_gdrive.sql"),
+    include_str!("migrations/0009_gdrive_public.sql"),
 ];
 
 /// Schema version this build creates and understands.
@@ -219,5 +220,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn upgrade_from_v8_gdrive_schema_adds_public_link_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("library.db");
+        {
+            // Simulate a v8 database created by 0001..0008 before 0009_gdrive_public existed.
+            let conn = Connection::open(&path).unwrap();
+            for script in &MIGRATIONS[..8] {
+                conn.execute_batch(script).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 8).unwrap();
+            conn.execute_batch(
+                "INSERT INTO roots (id, path, added_at, source_kind, remote_folder_id, display_name)
+                 VALUES (1, 'gdrive://folder/abc', 0, 'gdrive', 'abc', 'Private Drive');",
+            )
+            .unwrap();
+        }
+
+        let conn = open(&path).unwrap();
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(backup_path(&path, 8).exists());
+
+        let (auth_mode, remote_kind): (String, String) = conn
+            .query_row(
+                "SELECT auth_mode, remote_kind FROM roots WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((auth_mode.as_str(), remote_kind.as_str()), ("oauth", "folder"));
+
+        // Verify tracks.remote_auth_mode is also present and queryable.
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM tracks WHERE remote_auth_mode IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
     }
 }

@@ -125,6 +125,8 @@ fn bindings() -> Builder<tauri::Wry> {
             commands::reveal_in_folder,
             gdrive::gdrive_status,
             gdrive::gdrive_save_config,
+            gdrive::gdrive_save_api_key,
+            gdrive::gdrive_add_public_link,
             gdrive::gdrive_sign_in,
             gdrive::gdrive_cancel_sign_in,
             gdrive::gdrive_sign_out,

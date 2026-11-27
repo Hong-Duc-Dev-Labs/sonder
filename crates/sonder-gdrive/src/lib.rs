@@ -5,6 +5,8 @@ pub mod api;
 pub mod auth;
 pub mod cache;
 pub mod error;
+pub mod link;
+pub mod public;
 pub mod reader;
 
 use std::path::{Path, PathBuf};
@@ -16,7 +18,12 @@ pub use auth::{
 };
 pub use cache::{BlockCache, CacheStats, DEFAULT_CHUNK_SIZE, DEFAULT_MAX_CACHE_BYTES};
 pub use error::GdriveError;
-pub use reader::RangeCachedReader;
+pub use link::{DriveLinkKind, ParsedDriveLink, parse_drive_link};
+pub use public::{
+    ENV_API_KEY, PublicDriveClient, PublicHtmlEntry, ResolvedPublicLink, env_api_key_present,
+    parse_embedded_folder_html, resolve_api_key,
+};
+pub use reader::{RangeCachedReader, RangeFetcher};
 
 /// URI scheme prefix used for Google Drive tracks in Sonder's library and play queue.
 pub const GDRIVE_SCHEME: &str = "gdrive://";

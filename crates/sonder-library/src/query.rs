@@ -90,6 +90,8 @@ pub struct Track {
     pub remote_file_id: Option<String>,
     /// Remote file size in bytes when `source == TrackSource::Gdrive`.
     pub remote_size: Option<u64>,
+    /// Auth mode for remote tracks (`"public"` or `"oauth"`).
+    pub remote_auth_mode: Option<String>,
 }
 
 /// Verdict and confidence words of a quality check, as `sonder-quality` names them.
@@ -143,7 +145,7 @@ macro_rules! track_columns {
            t.disc_no, t.year, t.genre, t.codec, t.rate, t.bits, t.channels, t.duration_ms,
            t.rg_track_gain, t.rg_track_peak, t.rg_album_gain, t.rg_album_peak, art.hash,
            art.colors, q.verdict, q.confidence, f.path IS NOT NULL,
-           t.source_kind, t.remote_file_id, t.remote_size"
+           t.source_kind, t.remote_file_id, t.remote_size, t.remote_auth_mode"
     };
 }
 
@@ -161,7 +163,7 @@ macro_rules! track_from {
 pub(crate) const TRACK_COLUMNS: &str = track_columns!();
 pub(crate) const TRACK_FROM: &str = track_from!();
 /// Number of columns in [`TRACK_COLUMNS`].
-pub(crate) const TRACK_COLUMN_COUNT: usize = 28;
+pub(crate) const TRACK_COLUMN_COUNT: usize = 29;
 
 const TRACK_SELECT: &str = concat!("SELECT ", track_columns!(), " ", track_from!());
 
@@ -262,6 +264,7 @@ pub(crate) fn track_row(row: &Row) -> rusqlite::Result<Track> {
         source: TrackSource::parse(&row.get::<_, String>(25)?),
         remote_file_id: row.get(26)?,
         remote_size: row.get::<_, Option<i64>>(27)?.map(|s| s.max(0) as u64),
+        remote_auth_mode: row.get(28)?,
     })
 }
 

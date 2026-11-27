@@ -133,6 +133,7 @@ pub struct AuthStatus {
 pub struct PersistedGdriveConfig {
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
+    pub api_key: Option<String>,
     pub cache_max_mb: Option<u32>,
 }
 
@@ -144,6 +145,7 @@ impl fmt::Debug for PersistedGdriveConfig {
                 "client_secret",
                 &self.client_secret.as_ref().map(|_| "<redacted>"),
             )
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("cache_max_mb", &self.cache_max_mb)
             .finish()
     }

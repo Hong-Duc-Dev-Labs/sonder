@@ -8,6 +8,29 @@ use std::thread::{self, JoinHandle};
 
 use crate::api::DriveClient;
 use crate::cache::BlockCache;
+use crate::error::GdriveError;
+
+/// Abstraction over OAuth (`DriveClient`) and public (`PublicDriveClient`) Range downloaders so
+/// both modes share the exact same [`RangeCachedReader`] and [`BlockCache`] pipeline.
+pub trait RangeFetcher: Send + Sync {
+    fn fetch_range(
+        &self,
+        file_id: &str,
+        start: u64,
+        end_inclusive: u64,
+    ) -> Result<Vec<u8>, GdriveError>;
+}
+
+impl RangeFetcher for DriveClient {
+    fn fetch_range(
+        &self,
+        file_id: &str,
+        start: u64,
+        end_inclusive: u64,
+    ) -> Result<Vec<u8>, GdriveError> {
+        DriveClient::fetch_range(self, file_id, start, end_inclusive)
+    }
+}
 
 /// Number of chunks to prefetch ahead during continuous playback.
 const READ_AHEAD_CHUNKS: u64 = 2;
@@ -22,7 +45,7 @@ impl Prefetcher {
     fn spawn(
         file_id: String,
         file_size: u64,
-        client: Arc<DriveClient>,
+        client: Arc<dyn RangeFetcher>,
         cache: Arc<BlockCache>,
     ) -> Self {
         let (tx, rx) = mpsc::channel::<u64>();
@@ -94,7 +117,7 @@ pub struct RangeCachedReader {
     file_id: String,
     file_size: u64,
     pos: u64,
-    client: Arc<DriveClient>,
+    client: Arc<dyn RangeFetcher>,
     cache: Arc<BlockCache>,
     /// In-memory copy of the most recently read chunk so small sequential reads avoid disk I/O.
     current_chunk: Option<(u64, Vec<u8>)>,
@@ -109,7 +132,7 @@ impl RangeCachedReader {
     pub fn new(
         file_id: impl Into<String>,
         file_size: u64,
-        client: Arc<DriveClient>,
+        client: Arc<dyn RangeFetcher>,
         cache: Arc<BlockCache>,
         read_ahead: bool,
     ) -> Self {

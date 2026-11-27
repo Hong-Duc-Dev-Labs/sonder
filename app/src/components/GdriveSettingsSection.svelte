@@ -16,6 +16,13 @@
   const CACHE_PRESETS_MB = [512, 1024, 2048, 4096, 8192] as const;
 
   let status = $state<GdriveStatus | null>(null);
+  let linkDraft = $state("");
+  let addingLink = $state(false);
+  let advancedOpen = $state(false);
+
+  let apiKeyDraft = $state("");
+  let savingApiKey = $state(false);
+
   let clientIdDraft = $state("");
   let clientIdDirty = $state(false);
   let clientSecretDraft = $state("");
@@ -82,6 +89,43 @@
     unlistenProgress.then((f) => f());
     unlistenFinished.then((f) => f());
   });
+
+  async function addPublicLink(e?: SubmitEvent) {
+    e?.preventDefault();
+    const raw = linkDraft.trim();
+    if (!raw || addingLink) return;
+    addingLink = true;
+    syncSummary = null;
+    const added = await app.run(commands.gdriveAddPublicLink(raw));
+    addingLink = false;
+    if (added) {
+      linkDraft = "";
+      app.notify("info", t("settings.gdrive.linkAdded", { name: added.name }));
+      syncedFolders = (await app.run(commands.gdriveSyncedFolders())) ?? syncedFolders;
+    }
+  }
+
+  async function saveApiKey() {
+    savingApiKey = true;
+    const next = await app.run(commands.gdriveSaveApiKey(apiKeyDraft.trim()));
+    savingApiKey = false;
+    if (next) {
+      status = next;
+      apiKeyDraft = "";
+      app.notify("info", t("settings.gdrive.apiKeyUpdated"));
+    }
+  }
+
+  async function clearApiKey() {
+    savingApiKey = true;
+    const next = await app.run(commands.gdriveSaveApiKey(""));
+    savingApiKey = false;
+    if (next) {
+      status = next;
+      apiKeyDraft = "";
+      app.notify("info", t("settings.gdrive.apiKeyUpdated"));
+    }
+  }
 
   async function saveConfig() {
     savingConfig = true;
@@ -229,165 +273,87 @@
     <h3 id="gdrive-title">{t("settings.gdrive.title")}</h3>
   </div>
   <div class="card soft">
-    <div class="row">
-      <span class="icon"><Icon name="cloud" size={18} /></span>
-      <span class="info">
-        <span class="name">{t("settings.gdrive.account")}</span>
-        <span class="dim small">
-          {#if status?.authenticated}
-            {status.accountEmail
-              ? t("settings.gdrive.connectedAs", { email: status.accountEmail })
-              : t("settings.gdrive.connected")}
-          {:else}
-            {t("settings.gdrive.subtitle")}
-          {/if}
+    <!-- Primary zero-config paste-link flow -->
+    <form class="paste-block" onsubmit={addPublicLink}>
+      <div class="paste-head">
+        <span class="icon"><Icon name="cloud" size={18} /></span>
+        <span class="info">
+          <span class="name">{t("settings.gdrive.pasteTitle")}</span>
+          <span class="dim small">{t("settings.gdrive.pasteHint")}</span>
         </span>
-      </span>
-      {#if status?.authenticated}
-        <button class="btn small" onclick={signOut}>{t("settings.gdrive.signOut")}</button>
-      {:else if signingIn}
-        <div class="btn-group">
-          <span class="dim small">{t("settings.gdrive.signingIn")}</span>
-          <button class="btn small" onclick={cancelSignIn}>{t("settings.gdrive.cancelSignIn")}</button>
-        </div>
-      {:else}
-        <button class="btn primary small" disabled={!status?.configured} onclick={signIn}>
-          {t("settings.gdrive.signIn")}
-        </button>
-      {/if}
-    </div>
-
-    <div class="cred-block">
-      <div class="cred-fields">
-        <label class="field">
-          <span class="field-label">{t("settings.gdrive.clientId")}</span>
-          <input
-            type="text"
-            class="text-input"
-            bind:value={clientIdDraft}
-            oninput={() => (clientIdDirty = true)}
-            placeholder={t("settings.gdrive.clientIdPlaceholder")}
-            autocomplete="off"
-            spellcheck="false"
-          />
-        </label>
-        <label class="field">
-          <span class="field-label">{t("settings.gdrive.clientSecret")}</span>
-          <input
-            type="password"
-            class="text-input"
-            bind:value={clientSecretDraft}
-            placeholder={status?.hasClientSecret
-              ? t("settings.gdrive.clientSecretSaved")
-              : t("settings.gdrive.clientSecretPlaceholder")}
-            autocomplete="off"
-          />
-        </label>
       </div>
-      <div class="cred-foot">
-        <span class="dim small">
-          {status?.envOverride ? t("settings.gdrive.envHint") : t("settings.gdrive.oauthHint")}
-        </span>
-        <div class="btn-group">
-          {#if status?.hasClientSecret}
-            <button class="btn small" disabled={savingConfig} onclick={clearSecret}>
-              {t("settings.gdrive.clearSecret")}
-            </button>
-          {/if}
-          <button class="btn small" disabled={savingConfig} onclick={saveConfig}>
-            {t("settings.gdrive.saveConfig")}
-          </button>
-        </div>
-      </div>
-    </div>
-
-    {#if status?.authenticated}
-      {#each syncedFolders as folder (folder.folderId)}
-        <div class="row">
-          <span class="icon"><Icon name="folder" size={18} /></span>
-          <span class="info">
-            <span class="name">{folder.name}</span>
-            <span class="dim small">{t("tracks.gdriveBadge")}</span>
-          </span>
-          <button class="btn small" onclick={() => removeFolder(folder.folderId)}>
-            {t("common.remove")}
-          </button>
-        </div>
-      {:else}
-        <p class="dim pad">{t("settings.gdrive.foldersEmpty")}</p>
-      {/each}
-
-      <div class="row actions">
-        <button class="btn primary small" onclick={openBrowser}>
-          <Icon name={browserOpen ? "close" : "add"} size={16} />
-          {browserOpen ? t("settings.gdrive.closeBrowser") : t("settings.gdrive.addFolder")}
-        </button>
-        <span class="grow"></span>
+      <div class="paste-row">
+        <input
+          type="text"
+          class="text-input"
+          bind:value={linkDraft}
+          placeholder={t("settings.gdrive.pastePlaceholder")}
+          autocomplete="off"
+          spellcheck="false"
+        />
         <button
-          class="btn small"
-          disabled={syncing || !syncedFolders.length}
-          onclick={syncNow}
+          type="submit"
+          class="btn primary small"
+          disabled={addingLink || !linkDraft.trim()}
         >
+          <Icon name="add" size={16} />
+          {addingLink ? t("settings.gdrive.addingLink") : t("settings.gdrive.addAndSync")}
+        </button>
+      </div>
+    </form>
+
+    <!-- Synced Google Drive sources (public links & OAuth folders) -->
+    {#each syncedFolders as folder (folder.folderId)}
+      <div class="row">
+        <span class="icon">
+          <Icon name={folder.remoteKind === "file" ? "note" : "folder"} size={18} />
+        </span>
+        <span class="info">
+          <span class="name-line">
+            <span class="name">{folder.name}</span>
+            <span class="mode-pill">
+              {folder.authMode === "public"
+                ? t("settings.gdrive.modePublic")
+                : t("settings.gdrive.modeOauth")}
+            </span>
+          </span>
+          <span class="dim small">
+            {t("settings.gdrive.trackCount", { count: folder.trackCount })}
+          </span>
+        </span>
+        <button class="btn small" onclick={() => removeFolder(folder.folderId)}>
+          {t("common.remove")}
+        </button>
+      </div>
+    {:else}
+      <p class="dim pad">{t("settings.gdrive.foldersEmpty")}</p>
+    {/each}
+
+    {#if syncedFolders.length}
+      <div class="row actions">
+        <span class="grow"></span>
+        <button class="btn small" disabled={syncing} onclick={syncNow}>
           <Icon name="refresh" size={16} /> {t("settings.gdrive.syncNow")}
         </button>
       </div>
-
-      {#if browserOpen}
-        <div class="browser">
-          <div class="crumbs">
-            {#each browserStack as crumb, i (crumb.id ?? "root")}
-              {#if i > 0}<span class="sep">/</span>{/if}
-              <button
-                class="crumb"
-                class:current={i === browserStack.length - 1}
-                onclick={() => goToCrumb(i)}
-              >
-                {crumb.name || t("settings.gdrive.myDrive")}
-              </button>
-            {/each}
-          </div>
-          {#if browserLoading}
-            <p class="dim small pad-sm">{t("settings.gdrive.loadingFolders")}</p>
-          {:else if !browserEntries.length}
-            <p class="dim small pad-sm">{t("settings.gdrive.noSubfolders")}</p>
-          {:else}
-            <div class="folder-list">
-              {#each browserEntries as entry (entry.id)}
-                <div class="folder-item">
-                  <button class="folder-open" onclick={() => enterFolder(entry)}>
-                    <Icon name="folder" size={16} />
-                    <span class="folder-name">{entry.name}</span>
-                  </button>
-                  <button
-                    class="btn small"
-                    disabled={syncedIds.has(entry.id)}
-                    onclick={() => addFolder(entry)}
-                  >
-                    {syncedIds.has(entry.id) ? "✓" : t("settings.gdrive.selectFolder")}
-                  </button>
-                </div>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {/if}
-
-      {#if syncText}
-        <div class="scan" aria-live="polite">
-          {#if syncing}
-            <div class="progress">
-              <div
-                class="fill"
-                class:indeterminate={syncPhase !== "reading" || !syncTotal}
-                style:width={syncTotal ? `${(100 * syncDone) / syncTotal}%` : "30%"}
-              ></div>
-            </div>
-          {/if}
-          <span class="dim small">{syncText}</span>
-        </div>
-      {/if}
     {/if}
 
+    {#if syncText}
+      <div class="scan" aria-live="polite">
+        {#if syncing}
+          <div class="progress">
+            <div
+              class="fill"
+              class:indeterminate={syncPhase !== "reading" || !syncTotal}
+              style:width={syncTotal ? `${(100 * syncDone) / syncTotal}%` : "30%"}
+            ></div>
+          </div>
+        {/if}
+        <span class="dim small">{syncText}</span>
+      </div>
+    {/if}
+
+    <!-- Stream cache controls -->
     <div class="row">
       <span class="icon"><Icon name="disc" size={18} /></span>
       <span class="info">
@@ -426,6 +392,184 @@
         </button>
       </div>
     </div>
+
+    <!-- Collapsible Advanced section: Optional API Key + Private Drive OAuth2 PKCE -->
+    <div class="advanced-wrap">
+      <button
+        type="button"
+        class="advanced-toggle"
+        aria-expanded={advancedOpen}
+        onclick={() => (advancedOpen = !advancedOpen)}
+      >
+        <span class="advanced-title">{t("settings.gdrive.advancedTitle")}</span>
+        <span class="chevron" class:open={advancedOpen}><Icon name="chevron" size={16} /></span>
+      </button>
+
+      {#if advancedOpen}
+        <div class="advanced-body">
+          <!-- Optional Drive API Key -->
+          <div class="cred-block">
+            <label class="field">
+              <span class="field-label">{t("settings.gdrive.apiKey")}</span>
+              <input
+                type="password"
+                class="text-input"
+                bind:value={apiKeyDraft}
+                placeholder={status?.hasApiKey
+                  ? t("settings.gdrive.apiKeySaved")
+                  : t("settings.gdrive.apiKeyPlaceholder")}
+                autocomplete="off"
+              />
+            </label>
+            <div class="cred-foot">
+              <span class="dim small">
+                {status?.envApiKey
+                  ? t("settings.gdrive.apiKeyEnvHint")
+                  : t("settings.gdrive.apiKeyHint")}
+              </span>
+              <div class="btn-group">
+                {#if status?.hasApiKey}
+                  <button class="btn small" disabled={savingApiKey} onclick={clearApiKey}>
+                    {t("settings.gdrive.clearApiKey")}
+                  </button>
+                {/if}
+                <button
+                  class="btn small"
+                  disabled={savingApiKey || !apiKeyDraft.trim()}
+                  onclick={saveApiKey}
+                >
+                  {t("settings.gdrive.saveApiKey")}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Private Drive (OAuth2 PKCE) -->
+          <div class="row">
+            <span class="icon"><Icon name="cloud" size={18} /></span>
+            <span class="info">
+              <span class="name">{t("settings.gdrive.account")}</span>
+              <span class="dim small">
+                {#if status?.authenticated}
+                  {status.accountEmail
+                    ? t("settings.gdrive.connectedAs", { email: status.accountEmail })
+                    : t("settings.gdrive.connected")}
+                {:else}
+                  {t("settings.gdrive.notConnected")}
+                {/if}
+              </span>
+            </span>
+            {#if status?.authenticated}
+              <button class="btn small" onclick={signOut}>{t("settings.gdrive.signOut")}</button>
+            {:else if signingIn}
+              <div class="btn-group">
+                <span class="dim small">{t("settings.gdrive.signingIn")}</span>
+                <button class="btn small" onclick={cancelSignIn}>
+                  {t("settings.gdrive.cancelSignIn")}
+                </button>
+              </div>
+            {:else}
+              <button class="btn primary small" disabled={!status?.configured} onclick={signIn}>
+                {t("settings.gdrive.signIn")}
+              </button>
+            {/if}
+          </div>
+
+          <div class="cred-block">
+            <div class="cred-fields">
+              <label class="field">
+                <span class="field-label">{t("settings.gdrive.clientId")}</span>
+                <input
+                  type="text"
+                  class="text-input"
+                  bind:value={clientIdDraft}
+                  oninput={() => (clientIdDirty = true)}
+                  placeholder={t("settings.gdrive.clientIdPlaceholder")}
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <label class="field">
+                <span class="field-label">{t("settings.gdrive.clientSecret")}</span>
+                <input
+                  type="password"
+                  class="text-input"
+                  bind:value={clientSecretDraft}
+                  placeholder={status?.hasClientSecret
+                    ? t("settings.gdrive.clientSecretSaved")
+                    : t("settings.gdrive.clientSecretPlaceholder")}
+                  autocomplete="off"
+                />
+              </label>
+            </div>
+            <div class="cred-foot">
+              <span class="dim small">
+                {status?.envOverride ? t("settings.gdrive.envHint") : t("settings.gdrive.oauthHint")}
+              </span>
+              <div class="btn-group">
+                {#if status?.hasClientSecret}
+                  <button class="btn small" disabled={savingConfig} onclick={clearSecret}>
+                    {t("settings.gdrive.clearSecret")}
+                  </button>
+                {/if}
+                <button class="btn small" disabled={savingConfig} onclick={saveConfig}>
+                  {t("settings.gdrive.saveConfig")}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {#if status?.authenticated}
+            <div class="row actions">
+              <button class="btn small" onclick={openBrowser}>
+                <Icon name={browserOpen ? "close" : "add"} size={16} />
+                {browserOpen ? t("settings.gdrive.closeBrowser") : t("settings.gdrive.addFolder")}
+              </button>
+            </div>
+
+            {#if browserOpen}
+              <div class="browser">
+                <div class="crumbs">
+                  {#each browserStack as crumb, i (crumb.id ?? "root")}
+                    {#if i > 0}<span class="sep">/</span>{/if}
+                    <button
+                      class="crumb"
+                      class:current={i === browserStack.length - 1}
+                      onclick={() => goToCrumb(i)}
+                    >
+                      {crumb.name || t("settings.gdrive.myDrive")}
+                    </button>
+                  {/each}
+                </div>
+                {#if browserLoading}
+                  <p class="dim small pad-sm">{t("settings.gdrive.loadingFolders")}</p>
+                {:else if !browserEntries.length}
+                  <p class="dim small pad-sm">{t("settings.gdrive.noSubfolders")}</p>
+                {:else}
+                  <div class="folder-list">
+                    {#each browserEntries as entry (entry.id)}
+                      <div class="folder-item">
+                        <button class="folder-open" onclick={() => enterFolder(entry)}>
+                          <Icon name="folder" size={16} />
+                          <span class="folder-name">{entry.name}</span>
+                        </button>
+                        <button
+                          class="btn small"
+                          disabled={syncedIds.has(entry.id)}
+                          onclick={() => addFolder(entry)}
+                        >
+                          {syncedIds.has(entry.id) ? "✓" : t("settings.gdrive.selectFolder")}
+                        </button>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          {/if}
+        </div>
+      {/if}
+    </div>
   </div>
 </section>
 
@@ -448,15 +592,33 @@
     border-radius: var(--r-md);
     overflow: hidden;
   }
+  .paste-block {
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .paste-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .paste-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .paste-row .text-input {
+    flex: 1;
+    min-width: 220px;
+  }
   .row {
     display: flex;
     align-items: center;
     gap: 14px;
     padding: 14px 18px;
     border-top: 1px solid var(--hairline);
-  }
-  .row:first-child {
-    border-top: none;
   }
   .row.actions {
     flex-wrap: wrap;
@@ -482,10 +644,25 @@
     flex-direction: column;
     gap: 2px;
   }
+  .name-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
   .name {
     font-size: var(--fs-body);
     font-weight: 600;
     color: var(--ink);
+  }
+  .mode-pill {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: var(--r-pill);
+    background: var(--soft);
+    color: var(--ink-2);
+    border: 1px solid var(--hairline);
   }
   .dim {
     color: var(--ink-2);
@@ -551,6 +728,35 @@
     justify-content: space-between;
     gap: 12px;
     flex-wrap: wrap;
+  }
+  .advanced-wrap {
+    border-top: 1px solid var(--hairline);
+  }
+  .advanced-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 18px;
+    color: var(--ink-2);
+    font-size: var(--fs-small);
+    font-weight: 600;
+    text-align: left;
+    transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+  }
+  .advanced-toggle:hover {
+    background: var(--soft-hover);
+    color: var(--ink);
+  }
+  .chevron {
+    display: inline-flex;
+    transition: transform var(--dur-fast) var(--ease-standard);
+  }
+  .chevron.open {
+    transform: rotate(90deg);
+  }
+  .advanced-body {
+    background: rgb(0 0 0 / 0.16);
   }
   .browser {
     border-top: 1px solid var(--hairline);

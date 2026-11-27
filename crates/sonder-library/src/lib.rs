@@ -85,12 +85,17 @@ pub enum LibraryError {
     Tags(#[from] TagError),
 }
 
-/// A Google Drive folder synced into the library.
+/// A Google Drive folder or shared single file synced into the library.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteRoot {
     pub id: i64,
     pub folder_id: String,
     pub name: String,
+    /// `"public"` (zero-config or API key) or `"oauth"` (private Drive).
+    pub auth_mode: String,
+    /// `"folder"` or `"file"`.
+    pub remote_kind: String,
+    pub track_count: u32,
     pub added_at: i64,
 }
 
@@ -216,27 +221,53 @@ impl Library {
         Ok(roots)
     }
 
-    /// Adds a Google Drive folder to sync into the library. Adding an already-registered folder
-    /// updates its display name.
+    /// Adds an OAuth Google Drive folder to sync into the library. Adding an already-registered
+    /// folder updates its display name.
     pub fn add_gdrive_root(
         &mut self,
         folder_id: &str,
         name: &str,
     ) -> Result<RemoteRoot, LibraryError> {
-        let virtual_root = format!("gdrive://folder/{folder_id}");
+        self.add_gdrive_source(folder_id, name, "oauth", "folder")
+    }
+
+    /// Adds a Google Drive folder or shared single file with the specified auth mode
+    /// (`"public"` or `"oauth"`) and remote kind (`"folder"` or `"file"`).
+    pub fn add_gdrive_source(
+        &mut self,
+        remote_id: &str,
+        name: &str,
+        auth_mode: &str,
+        remote_kind: &str,
+    ) -> Result<RemoteRoot, LibraryError> {
+        let virtual_root = format!("gdrive://folder/{remote_id}");
         let now = unix_now();
         let id: i64 = self.conn.query_row(
-            "INSERT INTO roots (path, follow_symlinks, added_at, source_kind, remote_folder_id, display_name)
-             VALUES (?1, 0, ?2, 'gdrive', ?3, ?4)
-             ON CONFLICT (path) DO UPDATE SET display_name = excluded.display_name
+            "INSERT INTO roots (path, follow_symlinks, added_at, source_kind, remote_folder_id, display_name, auth_mode, remote_kind)
+             VALUES (?1, 0, ?2, 'gdrive', ?3, ?4, ?5, ?6)
+             ON CONFLICT (path) DO UPDATE SET
+               display_name = excluded.display_name,
+               auth_mode = excluded.auth_mode,
+               remote_kind = excluded.remote_kind
              RETURNING id",
-            params![virtual_root, now, folder_id, name],
+            params![virtual_root, now, remote_id, name, auth_mode, remote_kind],
             |row| row.get(0),
         )?;
+        let track_count: u32 = self
+            .conn
+            .query_row(
+                "SELECT count(*) FROM tracks WHERE root_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
         Ok(RemoteRoot {
             id,
-            folder_id: folder_id.to_owned(),
+            folder_id: remote_id.to_owned(),
             name: name.to_owned(),
+            auth_mode: auth_mode.to_owned(),
+            remote_kind: remote_kind.to_owned(),
+            track_count,
             added_at: now,
         })
     }
@@ -271,13 +302,16 @@ impl Library {
         Ok(true)
     }
 
-    /// Lists all Google Drive folders registered in the library.
+    /// Lists all Google Drive folders/files registered in the library.
     pub fn gdrive_roots(&self) -> Result<Vec<RemoteRoot>, LibraryError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, remote_folder_id, coalesce(display_name, remote_folder_id), added_at
-             FROM roots
-             WHERE source_kind = 'gdrive' AND remote_folder_id IS NOT NULL
-             ORDER BY lower(coalesce(display_name, remote_folder_id))",
+            "SELECT r.id, r.remote_folder_id, coalesce(r.display_name, r.remote_folder_id),
+                    r.auth_mode, r.remote_kind,
+                    (SELECT count(*) FROM tracks t WHERE t.root_id = r.id),
+                    r.added_at
+             FROM roots r
+             WHERE r.source_kind = 'gdrive' AND r.remote_folder_id IS NOT NULL
+             ORDER BY lower(coalesce(r.display_name, r.remote_folder_id))",
         )?;
         let roots = stmt
             .query_map([], |row| {
@@ -285,7 +319,10 @@ impl Library {
                     id: row.get(0)?,
                     folder_id: row.get(1)?,
                     name: row.get(2)?,
-                    added_at: row.get(3)?,
+                    auth_mode: row.get(3)?,
+                    remote_kind: row.get(4)?,
+                    track_count: row.get(5)?,
+                    added_at: row.get(6)?,
                 })
             })?
             .collect::<Result<_, _>>()?;

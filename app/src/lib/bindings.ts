@@ -227,6 +227,12 @@ export const commands = {
 	revealInFolder: (path: string) => __TAURI_INVOKE<null>("reveal_in_folder", { path }),
 	gdriveStatus: () => __TAURI_INVOKE<GdriveStatus>("gdrive_status"),
 	gdriveSaveConfig: (clientId: string, clientSecret: string | null) => __TAURI_INVOKE<GdriveStatus>("gdrive_save_config", { clientId, clientSecret }),
+	gdriveSaveApiKey: (apiKey: string) => __TAURI_INVOKE<GdriveStatus>("gdrive_save_api_key", { apiKey }),
+	/**
+	 *  Adds a public ("Anyone with the link") Google Drive folder or single audio file URL with
+	 *  zero OAuth setup, registers it in the library, and starts syncing immediately.
+	 */
+	gdriveAddPublicLink: (url: string) => __TAURI_INVOKE<GdriveSyncedFolder>("gdrive_add_public_link", { url }),
 	gdriveSignIn: () => __TAURI_INVOKE<GdriveStatus>("gdrive_sign_in"),
 	gdriveCancelSignIn: () => __TAURI_INVOKE<null>("gdrive_cancel_sign_in"),
 	gdriveSignOut: () => __TAURI_INVOKE<GdriveStatus>("gdrive_sign_out"),
@@ -443,6 +449,8 @@ export type GdriveStatus = {
 	clientId: string,
 	hasClientSecret: boolean,
 	envOverride: boolean,
+	hasApiKey: boolean,
+	envApiKey: boolean,
 	authenticated: boolean,
 	accountEmail: string | null,
 	syncing: boolean,
@@ -470,6 +478,9 @@ export type GdriveSyncedFolder = {
 	id: number,
 	folderId: string,
 	name: string,
+	authMode: string,
+	remoteKind: string,
+	trackCount: number,
 	addedAt: number,
 };
 

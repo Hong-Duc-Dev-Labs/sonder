@@ -143,11 +143,14 @@ fn opening_v6_database_creates_backup_and_migrates_to_v7() {
              ALTER TABLE roots DROP COLUMN source_kind;
              ALTER TABLE roots DROP COLUMN remote_folder_id;
              ALTER TABLE roots DROP COLUMN display_name;
+             ALTER TABLE roots DROP COLUMN auth_mode;
+             ALTER TABLE roots DROP COLUMN remote_kind;
              ALTER TABLE tracks DROP COLUMN source_kind;
              ALTER TABLE tracks DROP COLUMN remote_file_id;
              ALTER TABLE tracks DROP COLUMN remote_folder_id;
              ALTER TABLE tracks DROP COLUMN remote_modified_time;
-             ALTER TABLE tracks DROP COLUMN remote_size;",
+             ALTER TABLE tracks DROP COLUMN remote_size;
+             ALTER TABLE tracks DROP COLUMN remote_auth_mode;",
         )
         .unwrap();
         conn.pragma_update(None, "user_version", 6).unwrap();

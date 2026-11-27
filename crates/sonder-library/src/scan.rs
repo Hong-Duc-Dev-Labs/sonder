@@ -426,12 +426,12 @@ impl Library {
         let start = Instant::now();
         let mut report = ScanReport::default();
 
-        let Some(root_id): Option<i64> = self
+        let Some((root_id, auth_mode)): Option<(i64, String)> = self
             .conn
             .query_row(
-                "SELECT id FROM roots WHERE source_kind = 'gdrive' AND remote_folder_id = ?1",
+                "SELECT id, auth_mode FROM roots WHERE source_kind = 'gdrive' AND remote_folder_id = ?1",
                 [folder_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?
         else {
@@ -569,7 +569,8 @@ impl Library {
         for (p, result) in read {
             match result {
                 Ok((meta, art)) => {
-                    let album_id = write_remote_track(&tx, &p, &meta, art.as_ref(), now)?;
+                    let album_id =
+                        write_remote_track(&tx, &p, &meta, art.as_ref(), &auth_mode, now)?;
                     touched.insert(album_id);
                     match &p.indexed {
                         Some(old) => {
@@ -990,6 +991,7 @@ fn write_remote_track(
     p: &PendingRemote<'_>,
     meta: &FileMeta,
     art: Option<&ArtImage>,
+    auth_mode: &str,
     now: i64,
 ) -> Result<i64, LibraryError> {
     let tags = &meta.tags;
@@ -1036,9 +1038,9 @@ fn write_remote_track(
                  channels = ?17, duration_ms = ?18, rg_track_gain = ?19, rg_track_peak = ?20,
                  rg_album_gain = ?21, rg_album_peak = ?22, art_id = ?23,
                  source_kind = 'gdrive', remote_file_id = ?24, remote_folder_id = ?25,
-                 remote_modified_time = ?26, remote_size = ?27,
+                 remote_modified_time = ?26, remote_size = ?27, remote_auth_mode = ?28,
                  loudness_lufs = NULL, loudness_peak = NULL, album_lufs = NULL, album_peak = NULL
-                 WHERE id = ?28",
+                 WHERE id = ?29",
             )?
             .execute(params![
                 p.root_id,
@@ -1068,6 +1070,7 @@ fn write_remote_track(
                 p.file.remote_folder_id,
                 p.file.remote_modified_time,
                 size,
+                auth_mode,
                 old.id,
             ])?;
             if old.path != key {
@@ -1085,9 +1088,9 @@ fn write_remote_track(
                  album_artist, compilation, track_no, disc_no, year, genre, codec, rate, bits,
                  channels, duration_ms, rg_track_gain, rg_track_peak, rg_album_gain,
                  rg_album_peak, art_id, added_at, source_kind, remote_file_id, remote_folder_id,
-                 remote_modified_time, remote_size)
+                 remote_modified_time, remote_size, remote_auth_mode)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, 'gdrive', ?25, ?26, ?27, ?28)
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, 'gdrive', ?25, ?26, ?27, ?28, ?29)
                  RETURNING id",
             )?
             .query_row(
@@ -1120,6 +1123,7 @@ fn write_remote_track(
                     p.file.remote_folder_id,
                     p.file.remote_modified_time,
                     size,
+                    auth_mode,
                 ],
                 |r| r.get(0),
             )?,
@@ -1470,5 +1474,65 @@ mod tests {
         assert!(library.remove_gdrive_root("folder_1").unwrap());
         assert!(library.tracks().unwrap().is_empty());
         assert!(library.albums(AlbumSort::Artist).unwrap().is_empty());
+    }
+
+    #[test]
+    fn public_gdrive_source_syncs_without_oauth_and_tracks_count() {
+        use crate::query::TrackSource;
+        use crate::tags::{AudioInfo, Codec, TrackTags};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut library =
+            Library::open(dir.path().join("library.db"), dir.path().join("art")).unwrap();
+        let root = library
+            .add_gdrive_source("pub_folder_1", "Shared Hi-Res", "public", "folder")
+            .unwrap();
+        assert_eq!(root.auth_mode, "public");
+        assert_eq!(root.remote_kind, "folder");
+        assert_eq!(root.track_count, 0);
+
+        let file = RemoteAudioFile {
+            virtual_path: PathBuf::from("gdrive://pub_file_1/01 - Open Sky.flac"),
+            grouping_path: PathBuf::from("gdrive://folder/pub_folder_1/01 - Open Sky.flac"),
+            remote_file_id: "pub_file_1".into(),
+            remote_folder_id: "pub_folder_1".into(),
+            remote_modified_time: 0,
+            remote_size: 42_000,
+        };
+        let report = library
+            .sync_gdrive_folder(
+                "pub_folder_1",
+                &[file],
+                &|_| {
+                    Ok(FileMeta {
+                        tags: TrackTags {
+                            title: Some("Open Sky".into()),
+                            artists: vec!["Public Artist".into()],
+                            album: Some("Public Album".into()),
+                            ..Default::default()
+                        },
+                        audio: AudioInfo {
+                            codec: Codec::Flac,
+                            rate: 44_100,
+                            bits: Some(16),
+                            channels: 2,
+                            duration_ms: 120_000,
+                        },
+                    })
+                },
+                &|_| {},
+            )
+            .unwrap();
+        assert_eq!(report.added, 1);
+
+        let roots = library.gdrive_roots().unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].auth_mode, "public");
+        assert_eq!(roots[0].track_count, 1);
+
+        let tracks = library.tracks().unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].source, TrackSource::Gdrive);
+        assert_eq!(tracks[0].remote_auth_mode.as_deref(), Some("public"));
     }
 }

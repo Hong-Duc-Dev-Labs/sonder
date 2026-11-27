@@ -9,8 +9,9 @@ use sonder_decode::{DecodeError, SourceDecoder};
 use sonder_engine::SourceOpener;
 use sonder_gdrive::{
     AuthManager, BlockCache, DEFAULT_CHUNK_SIZE, DriveClient, OAuthConfig, OAuthConfigStore,
-    PersistedGdriveConfig, RangeCachedReader, TokenStore, gdrive_virtual_path, is_gdrive_path,
-    parse_gdrive_path,
+    PersistedGdriveConfig, PublicDriveClient, RangeCachedReader, RangeFetcher, ResolvedPublicLink,
+    TokenStore, env_api_key_present, gdrive_virtual_path, is_gdrive_path, parse_drive_link,
+    parse_gdrive_path, resolve_api_key,
 };
 use sonder_library::{Library, RemoteAudioFile, ScanProgress, TagError, fallback_meta, read_stream};
 use specta::Type;
@@ -33,6 +34,8 @@ pub struct GdriveStatus {
     pub client_id: String,
     pub has_client_secret: bool,
     pub env_override: bool,
+    pub has_api_key: bool,
+    pub env_api_key: bool,
     pub authenticated: bool,
     pub account_email: Option<String>,
     pub syncing: bool,
@@ -51,6 +54,9 @@ pub struct GdriveSyncedFolder {
     pub id: i64,
     pub folder_id: String,
     pub name: String,
+    pub auth_mode: String,
+    pub remote_kind: String,
+    pub track_count: u32,
     pub added_at: i64,
 }
 
@@ -95,6 +101,7 @@ pub struct GdriveSyncFinishedEvent {
 pub struct GdriveService {
     pub auth: Arc<AuthManager>,
     pub client: Arc<DriveClient>,
+    pub public_client: Arc<PublicDriveClient>,
     pub cache: Arc<BlockCache>,
     pub syncing: AtomicBool,
     config_store: OAuthConfigStore,
@@ -116,6 +123,11 @@ impl GdriveService {
             crate::commands::USER_AGENT,
         ));
         let client = Arc::new(DriveClient::new(auth.clone(), crate::commands::USER_AGENT));
+        let api_key = resolve_api_key(persisted.api_key.as_deref());
+        let public_client = Arc::new(PublicDriveClient::new(
+            api_key,
+            crate::commands::USER_AGENT,
+        ));
         let cache_max_mb = persisted
             .cache_max_mb
             .unwrap_or(DEFAULT_CACHE_MAX_MB)
@@ -125,6 +137,7 @@ impl GdriveService {
         Self {
             auth,
             client,
+            public_client,
             cache,
             syncing: AtomicBool::new(false),
             config_store,
@@ -175,15 +188,24 @@ impl SourceOpener for HybridSourceOpener {
             )));
         };
 
-        // Resolve file size from the library index first to avoid an extra metadata round-trip.
-        let cached_size = lock(&self.library)
-            .track_by_path(path)
-            .ok()
-            .flatten()
+        // Resolve file size and auth mode from the library index first to avoid extra metadata calls.
+        let indexed = lock(&self.library).track_by_path(path).ok().flatten();
+        let is_public = indexed
+            .as_ref()
+            .and_then(|t| t.remote_auth_mode.as_deref())
+            == Some("public");
+        let cached_size = indexed
+            .as_ref()
             .and_then(|t| t.remote_size)
             .filter(|&s| s > 0);
         let file_size = match cached_size {
             Some(size) => size,
+            None if is_public => self
+                .gdrive
+                .public_client
+                .file_metadata(file_id)
+                .map_err(|e| DecodeError::Decode(format!("Google Drive metadata failed: {e}")))?
+                .size,
             None => self
                 .gdrive
                 .client
@@ -197,10 +219,15 @@ impl SourceOpener for HybridSourceOpener {
             ));
         }
 
+        let fetcher: Arc<dyn RangeFetcher> = if is_public {
+            self.gdrive.public_client.clone()
+        } else {
+            self.gdrive.client.clone()
+        };
         let reader = RangeCachedReader::new(
             file_id,
             file_size,
-            self.gdrive.client.clone(),
+            fetcher,
             self.gdrive.cache.clone(),
             true,
         );
@@ -214,6 +241,11 @@ fn build_status(state: &AppState) -> GdriveStatus {
     let auth = state.gdrive.auth.status();
     let saved_id = persisted.client_id.unwrap_or_default();
     let env_override = saved_id.trim().is_empty() && OAuthConfig::env_client_id_present();
+    let has_api_key = persisted
+        .api_key
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty());
+    let env_api_key = !has_api_key && env_api_key_present();
     GdriveStatus {
         configured: auth.configured,
         client_id: saved_id,
@@ -222,6 +254,8 @@ fn build_status(state: &AppState) -> GdriveStatus {
             .as_deref()
             .is_some_and(|s| !s.trim().is_empty()),
         env_override,
+        has_api_key,
+        env_api_key,
         authenticated: auth.authenticated,
         account_email: auth.account_email,
         syncing: state.gdrive.syncing.load(Ordering::SeqCst),
@@ -324,6 +358,57 @@ pub async fn gdrive_list_folders(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn gdrive_save_api_key(
+    state: State<'_, AppState>,
+    api_key: String,
+) -> AppResult<GdriveStatus> {
+    let trimmed = api_key.trim().to_owned();
+    let saved_key = {
+        let mut cfg = lock(&state.gdrive.config);
+        cfg.api_key = (!trimmed.is_empty()).then_some(trimmed);
+        state.gdrive.config_store.save(&cfg)?;
+        cfg.api_key.clone()
+    };
+    state
+        .gdrive
+        .public_client
+        .set_api_key(resolve_api_key(saved_key.as_deref()));
+    Ok(build_status(&state))
+}
+
+/// Adds a public ("Anyone with the link") Google Drive folder or single audio file URL with
+/// zero OAuth setup, registers it in the library, and starts syncing immediately.
+#[tauri::command]
+#[specta::specta]
+pub async fn gdrive_add_public_link(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    url: String,
+) -> AppResult<GdriveSyncedFolder> {
+    let parsed = parse_drive_link(&url)?;
+    let public_client = state.gdrive.public_client.clone();
+    let resolved = tauri::async_runtime::spawn_blocking(move || public_client.resolve_link(&parsed))
+        .await
+        .map_err(|e| AppError(e.to_string()))??;
+    let (remote_id, name, remote_kind) = match resolved {
+        ResolvedPublicLink::Folder { id, name } => (id, name, "folder"),
+        ResolvedPublicLink::File(file) => (file.id, file.name, "file"),
+    };
+    let root = lock(&state.library).add_gdrive_source(&remote_id, &name, "public", remote_kind)?;
+    start_sync(&app);
+    Ok(GdriveSyncedFolder {
+        id: root.id,
+        folder_id: root.folder_id,
+        name: root.name,
+        auth_mode: root.auth_mode,
+        remote_kind: root.remote_kind,
+        track_count: root.track_count,
+        added_at: root.added_at,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn gdrive_synced_folders(state: State<'_, AppState>) -> AppResult<Vec<GdriveSyncedFolder>> {
     let roots = lock(&state.library).gdrive_roots()?;
     Ok(roots
@@ -332,6 +417,9 @@ pub async fn gdrive_synced_folders(state: State<'_, AppState>) -> AppResult<Vec<
             id: r.id,
             folder_id: r.folder_id,
             name: r.name,
+            auth_mode: r.auth_mode,
+            remote_kind: r.remote_kind,
+            track_count: r.track_count,
             added_at: r.added_at,
         })
         .collect())
@@ -351,6 +439,9 @@ pub async fn gdrive_add_folder(
         id: root.id,
         folder_id: root.folder_id,
         name: root.name,
+        auth_mode: root.auth_mode,
+        remote_kind: root.remote_kind,
+        track_count: root.track_count,
         added_at: root.added_at,
     })
 }
@@ -483,10 +574,17 @@ fn sync_all_folders(app: &AppHandle, state: &AppState) -> AppResult<(u32, u32, u
 
     // Open a dedicated SQLite connection so UI queries are not blocked during network probing.
     let mut library = Library::open(&state.paths.db, &state.paths.art)?;
-    let client = state.gdrive.client.clone();
+    let oauth_client = state.gdrive.client.clone();
+    let public_client = state.gdrive.public_client.clone();
+    let oauth_authed = state.gdrive.auth.status().authenticated;
     let cache = state.gdrive.cache.clone();
 
     for root in roots {
+        let is_public = root.auth_mode == "public";
+        if !is_public && !oauth_authed {
+            // Do not fail public link syncs when OAuth is not signed in.
+            continue;
+        }
         let folder_name = root.name.clone();
         let _ = GdriveSyncProgressEvent {
             phase: GdriveSyncPhase::Listing,
@@ -496,7 +594,15 @@ fn sync_all_folders(app: &AppHandle, state: &AppState) -> AppResult<(u32, u32, u
         }
         .emit(app);
 
-        let drive_files = client.scan_audio_files(&root.folder_id, &root.name)?;
+        let drive_files = if is_public {
+            if root.remote_kind == "file" {
+                vec![public_client.file_metadata(&root.folder_id)?]
+            } else {
+                public_client.scan_folder(&root.folder_id, &root.name)?
+            }
+        } else {
+            oauth_client.scan_audio_files(&root.folder_id, &root.name)?
+        };
         let remote_files: Vec<RemoteAudioFile> = drive_files
             .into_iter()
             .map(|f| {
@@ -516,6 +622,11 @@ fn sync_all_folders(app: &AppHandle, state: &AppState) -> AppResult<(u32, u32, u
             })
             .collect();
 
+        let fetcher: Arc<dyn RangeFetcher> = if is_public {
+            public_client.clone()
+        } else {
+            oauth_client.clone()
+        };
         let report = library.sync_gdrive_folder(
             &root.folder_id,
             &remote_files,
@@ -524,7 +635,7 @@ fn sync_all_folders(app: &AppHandle, state: &AppState) -> AppResult<(u32, u32, u
                 let reader = RangeCachedReader::new(
                     &file.remote_file_id,
                     file.remote_size,
-                    client.clone(),
+                    fetcher.clone(),
                     cache.clone(),
                     false,
                 );

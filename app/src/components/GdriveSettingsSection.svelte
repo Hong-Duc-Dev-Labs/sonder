@@ -17,6 +17,7 @@
 
   let status = $state<GdriveStatus | null>(null);
   let clientIdDraft = $state("");
+  let clientIdDirty = $state(false);
   let clientSecretDraft = $state("");
   let savingConfig = $state(false);
   let signingIn = $state(false);
@@ -44,7 +45,7 @@
     ]);
     if (st) {
       status = st;
-      clientIdDraft = st.clientId;
+      if (!clientIdDirty) clientIdDraft = st.clientId;
       if (st.syncing && syncPhase === "idle") syncPhase = "listing";
     }
     if (folders) syncedFolders = folders;
@@ -90,6 +91,20 @@
     if (next) {
       status = next;
       clientIdDraft = next.clientId;
+      clientIdDirty = false;
+      clientSecretDraft = "";
+      app.notify("info", t("settings.gdrive.configSaved"));
+    }
+  }
+
+  async function clearSecret() {
+    savingConfig = true;
+    const next = await app.run(commands.gdriveSaveConfig(clientIdDraft.trim(), ""));
+    savingConfig = false;
+    if (next) {
+      status = next;
+      clientIdDraft = next.clientId;
+      clientIdDirty = false;
       clientSecretDraft = "";
       app.notify("info", t("settings.gdrive.configSaved"));
     }
@@ -250,6 +265,7 @@
             type="text"
             class="text-input"
             bind:value={clientIdDraft}
+            oninput={() => (clientIdDirty = true)}
             placeholder={t("settings.gdrive.clientIdPlaceholder")}
             autocomplete="off"
             spellcheck="false"
@@ -272,9 +288,16 @@
         <span class="dim small">
           {status?.envOverride ? t("settings.gdrive.envHint") : t("settings.gdrive.oauthHint")}
         </span>
-        <button class="btn small" disabled={savingConfig} onclick={saveConfig}>
-          {t("settings.gdrive.saveConfig")}
-        </button>
+        <div class="btn-group">
+          {#if status?.hasClientSecret}
+            <button class="btn small" disabled={savingConfig} onclick={clearSecret}>
+              {t("settings.gdrive.clearSecret")}
+            </button>
+          {/if}
+          <button class="btn small" disabled={savingConfig} onclick={saveConfig}>
+            {t("settings.gdrive.saveConfig")}
+          </button>
+        </div>
       </div>
     </div>
 

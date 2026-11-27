@@ -27,6 +27,8 @@ pub struct AppPaths {
     pub autoeq: PathBuf,
     /// Cached online lyrics lookups.
     pub lyrics: PathBuf,
+    /// Restricted-permission Google Drive OAuth & cache configuration.
+    pub gdrive_config: PathBuf,
     /// Persisted Google Drive OAuth tokens.
     pub gdrive_tokens: PathBuf,
     /// Progressive Range chunk cache for Google Drive streams.
@@ -44,6 +46,7 @@ impl AppPaths {
             session: dirs.data_dir().join("session.json"),
             lyrics: dirs.data_dir().join("lyrics"),
             autoeq: dirs.data_dir().join("autoeq"),
+            gdrive_config: dirs.config_dir().join("gdrive_config.json"),
             gdrive_tokens: dirs.config_dir().join("gdrive_tokens.json"),
             gdrive_cache: dirs.cache_dir().join("gdrive"),
         })
@@ -156,11 +159,9 @@ impl AppState {
         ));
         let loudness = Arc::new(Mutex::new(Library::open(&paths.db, &paths.art)?));
         let gdrive = Arc::new(crate::gdrive::GdriveService::new(
+            paths.gdrive_config.clone(),
             paths.gdrive_tokens.clone(),
             paths.gdrive_cache.clone(),
-            settings.gdrive_client_id.as_deref(),
-            settings.gdrive_client_secret.as_deref(),
-            settings.gdrive_cache_max_mb,
         ));
 
         let mut devices = DeviceList::new(backend());
@@ -198,12 +199,14 @@ impl AppState {
             let mut restored_paths = Vec::new();
             for raw in &saved.paths {
                 let path = PathBuf::from(raw);
-                if !path.is_file() && !sonder_gdrive::is_gdrive_path(&path) {
+                let is_remote = sonder_gdrive::is_gdrive_path(&path);
+                if !is_remote && !path.is_file() {
                     continue;
                 }
                 let entry_id = entry_ids.fetch_add(1, Ordering::Relaxed);
                 let item = match library.track_by_path(&path).ok().flatten() {
                     Some(track) => QueueItem::new(entry_id, &TrackItem::from(track)),
+                    None if is_remote => continue,
                     None => QueueItem::from_external(entry_id, &path),
                 };
                 restored_queue.push(item);

@@ -153,7 +153,8 @@ impl SourceDecoder {
         let mut magic = [0u8; 4];
         let is_dsd = match source.read_exact(&mut magic) {
             Ok(()) => &magic == b"DSD " || &magic == b"FRM8",
-            Err(_) => false,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => false,
+            Err(e) => return Err(DecodeError::Open(e)),
         };
         source.seek(SeekFrom::Start(0))?;
         if is_dsd {

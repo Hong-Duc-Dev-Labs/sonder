@@ -87,6 +87,14 @@ struct DriveErrorEnvelope {
 #[derive(Debug, Deserialize)]
 struct DriveErrorDetail {
     message: Option<String>,
+    #[serde(default)]
+    errors: Vec<DriveErrorReason>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DriveErrorReason {
+    #[serde(default)]
+    reason: String,
 }
 
 /// Client for Google Drive API v3 backed by [`AuthManager`].
@@ -331,9 +339,17 @@ impl DriveClient {
             }
 
             let mut body = resp.into_body();
-            let bytes = body
-                .read_to_vec()
-                .map_err(|e| GdriveError::Http(e.to_string()))?;
+            let bytes = match body.read_to_vec() {
+                Ok(b) => b,
+                Err(e) => {
+                    if attempt < MAX_TRANSIENT_RETRIES {
+                        attempt += 1;
+                        std::thread::sleep(backoff(attempt));
+                        continue;
+                    }
+                    return Err(GdriveError::Http(e.to_string()));
+                }
+            };
 
             if status == 206 {
                 return Ok(bytes);
@@ -353,8 +369,26 @@ impl DriveClient {
                 return Ok(bytes);
             }
 
-            let message = serde_json::from_slice::<DriveErrorEnvelope>(&bytes)
-                .ok()
+            let envelope = serde_json::from_slice::<DriveErrorEnvelope>(&bytes).ok();
+            let is_rate_limit_403 = status == 403
+                && envelope
+                    .as_ref()
+                    .and_then(|e| e.error.as_ref())
+                    .is_some_and(|d| {
+                        d.errors.iter().any(|r| {
+                            matches!(
+                                r.reason.as_str(),
+                                "userRateLimitExceeded" | "rateLimitExceeded" | "quotaExceeded"
+                            )
+                        })
+                    });
+            if is_rate_limit_403 && attempt < MAX_TRANSIENT_RETRIES {
+                attempt += 1;
+                std::thread::sleep(backoff(attempt));
+                continue;
+            }
+
+            let message = envelope
                 .and_then(|e| e.error)
                 .and_then(|e| e.message)
                 .unwrap_or_else(|| format!("HTTP {status}"));

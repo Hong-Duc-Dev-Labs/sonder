@@ -951,12 +951,6 @@ export type Settings = {
 	dither?: boolean,
 	/**  Rate-conversion policy, filter source and headroom. */
 	src?: SrcSetting,
-	/**  User-configured Google OAuth Desktop Client ID for Google Drive streaming. */
-	gdriveClientId?: string | null,
-	/**  Optional Google OAuth Desktop Client Secret. */
-	gdriveClientSecret?: string | null,
-	/**  Maximum disk cache size for Google Drive audio chunks, in MiB. */
-	gdriveCacheMaxMb?: number,
 };
 
 /**  The stages a track passes through, in processing order. */

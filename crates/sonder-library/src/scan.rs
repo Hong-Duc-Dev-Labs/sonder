@@ -42,6 +42,9 @@ pub struct ScanReport {
     /// Files and folders that could not be read; their previous index state is kept for
     /// unreadable folders and dropped for unreadable files.
     pub failed: Vec<ScanFailure>,
+    /// Google Drive `remote_file_id`s whose audio bytes changed or were removed (used to
+    /// invalidate stale chunks in the disk stream cache).
+    pub invalidated_remote_ids: Vec<String>,
     pub elapsed: Duration,
 }
 
@@ -131,10 +134,26 @@ pub struct RemoteAudioFile {
     pub remote_size: u64,
 }
 
+#[derive(Debug, Clone)]
+struct IndexedRemote {
+    id: i64,
+    path: String,
+    remote_file_id: String,
+    mtime: i64,
+    size: i64,
+    album_id: i64,
+}
+
 struct PendingRemote<'a> {
     root_id: i64,
     file: &'a RemoteAudioFile,
-    indexed: Option<Indexed>,
+    indexed: Option<IndexedRemote>,
+}
+
+struct RenamedRemote<'a> {
+    old: IndexedRemote,
+    new_path: String,
+    file: &'a RemoteAudioFile,
 }
 
 struct Pending {
@@ -421,49 +440,103 @@ impl Library {
         };
 
         let mut indexed = self.indexed_under_root(root_id)?;
+        let other_root_ids = self.other_gdrive_remote_ids(root_id)?;
+        let mut seen_in_batch = std::collections::HashSet::new();
         let mut pending: Vec<PendingRemote<'_>> = Vec::new();
+        let mut renamed: Vec<RenamedRemote<'_>> = Vec::new();
+
         for file in files {
+            if !seen_in_batch.insert(file.remote_file_id.as_str()) {
+                continue;
+            }
             let key = path_str(&file.virtual_path)?.to_owned();
             let size = file.remote_size as i64;
-            match indexed.remove(&key) {
+            match indexed.remove(&file.remote_file_id) {
                 Some(old) if old.mtime == file.remote_modified_time && old.size == size => {
-                    report.unchanged += 1;
+                    if old.path != key {
+                        renamed.push(RenamedRemote {
+                            old,
+                            new_path: key,
+                            file,
+                        });
+                    } else {
+                        report.unchanged += 1;
+                    }
                 }
-                old => pending.push(PendingRemote {
+                Some(old) => pending.push(PendingRemote {
                     root_id,
                     file,
-                    indexed: old,
+                    indexed: Some(old),
                 }),
+                None => {
+                    // Overlapping Drive roots: skip files already indexed under another Drive root
+                    // so `tracks.path` UNIQUE constraint is never violated.
+                    if other_root_ids.contains(&file.remote_file_id) {
+                        report.unchanged += 1;
+                        continue;
+                    }
+                    pending.push(PendingRemote {
+                        root_id,
+                        file,
+                        indexed: None,
+                    });
+                }
             }
         }
-        let removed: Vec<Indexed> = indexed.into_values().collect();
+        let removed: Vec<IndexedRemote> = indexed.into_values().collect();
 
-        // Probe metadata and cover art for new/changed remote files.
+        // Probe metadata and cover art for new/changed remote files using a bounded pool (4
+        // concurrent requests) so Google Drive rate limits are respected.
         let resolver = ArtResolver::new(&self.art, self.known_art()?);
         let total = pending.len();
         let done = AtomicUsize::new(0);
         progress(ScanProgress::Reading { done: 0, total });
-        let read: Vec<(PendingRemote<'_>, ReadResult)> = pending
-            .into_par_iter()
-            .map(|p| {
-                let _done = CountDone {
-                    done: &done,
-                    total,
-                    progress,
-                };
-                let result = probe(p.file).map(|mut meta| {
-                    let cover = meta.tags.cover.take();
-                    let art = cover
-                        .as_deref()
-                        .and_then(|bytes| resolver.resolve(Some(bytes), &p.file.virtual_path));
-                    (meta, art)
-                });
-                (p, result)
-            })
-            .collect();
+        let read: Vec<(PendingRemote<'_>, ReadResult)> = match rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+        {
+            Ok(pool) => pool.install(|| {
+                pending
+                    .into_par_iter()
+                    .map(|p| {
+                        let _done = CountDone {
+                            done: &done,
+                            total,
+                            progress,
+                        };
+                        let result = probe(p.file).map(|mut meta| {
+                            let cover = meta.tags.cover.take();
+                            let art = cover.as_deref().and_then(|bytes| {
+                                resolver.resolve(Some(bytes), &p.file.virtual_path)
+                            });
+                            (meta, art)
+                        });
+                        (p, result)
+                    })
+                    .collect()
+            }),
+            Err(_) => pending
+                .into_iter()
+                .map(|p| {
+                    let _done = CountDone {
+                        done: &done,
+                        total,
+                        progress,
+                    };
+                    let result = probe(p.file).map(|mut meta| {
+                        let cover = meta.tags.cover.take();
+                        let art = cover.as_deref().and_then(|bytes| {
+                            resolver.resolve(Some(bytes), &p.file.virtual_path)
+                        });
+                        (meta, art)
+                    });
+                    (p, result)
+                })
+                .collect(),
+        };
         drop(resolver);
 
-        if read.is_empty() && removed.is_empty() {
+        if read.is_empty() && removed.is_empty() && renamed.is_empty() {
             report.elapsed = start.elapsed();
             return Ok(report);
         }
@@ -474,21 +547,37 @@ impl Library {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut touched: BTreeSet<i64> = BTreeSet::new();
+
         for old in &removed {
             tx.execute("DELETE FROM tracks WHERE id = ?1", [old.id])?;
             touched.insert(old.album_id);
+            report
+                .invalidated_remote_ids
+                .push(old.remote_file_id.clone());
         }
         report.removed += removed.len();
+
+        for r in renamed {
+            tx.prepare_cached(
+                "UPDATE tracks SET path = ?1, remote_folder_id = ?2 WHERE id = ?3",
+            )?
+            .execute(params![r.new_path, r.file.remote_folder_id, r.old.id])?;
+            cascade_track_path_rename(&tx, &r.old.path, &r.new_path)?;
+            report.updated += 1;
+        }
 
         for (p, result) in read {
             match result {
                 Ok((meta, art)) => {
                     let album_id = write_remote_track(&tx, &p, &meta, art.as_ref(), now)?;
                     touched.insert(album_id);
-                    match p.indexed {
+                    match &p.indexed {
                         Some(old) => {
                             touched.insert(old.album_id);
                             report.updated += 1;
+                            report
+                                .invalidated_remote_ids
+                                .push(old.remote_file_id.clone());
                         }
                         None => report.added += 1,
                     }
@@ -498,11 +587,8 @@ impl Library {
                         path: p.file.virtual_path.clone(),
                         reason: err.to_string(),
                     });
-                    if let Some(old) = p.indexed {
-                        tx.execute("DELETE FROM tracks WHERE id = ?1", [old.id])?;
-                        touched.insert(old.album_id);
-                        report.removed += 1;
-                    }
+                    // Keep previously indexed track intact on transient failure so a network
+                    // hiccup does not delete a working library entry.
                 }
             }
         }
@@ -519,21 +605,40 @@ impl Library {
         Ok(report)
     }
 
-    fn indexed_under_root(&self, root_id: i64) -> Result<HashMap<String, Indexed>, LibraryError> {
+    fn indexed_under_root(
+        &self,
+        root_id: i64,
+    ) -> Result<HashMap<String, IndexedRemote>, LibraryError> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT path, id, mtime, size, album_id FROM tracks WHERE root_id = ?1",
+            "SELECT remote_file_id, path, id, mtime, size, album_id FROM tracks
+             WHERE root_id = ?1 AND remote_file_id IS NOT NULL",
         )?;
         let rows = stmt.query_map([root_id], |row| {
+            let remote_file_id: String = row.get(0)?;
             Ok((
-                row.get::<_, String>(0)?,
-                Indexed {
-                    id: row.get(1)?,
-                    mtime: row.get(2)?,
-                    size: row.get(3)?,
-                    album_id: row.get(4)?,
+                remote_file_id.clone(),
+                IndexedRemote {
+                    remote_file_id,
+                    path: row.get(1)?,
+                    id: row.get(2)?,
+                    mtime: row.get(3)?,
+                    size: row.get(4)?,
+                    album_id: row.get(5)?,
                 },
             ))
         })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    fn other_gdrive_remote_ids(
+        &self,
+        root_id: i64,
+    ) -> Result<std::collections::HashSet<String>, LibraryError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT remote_file_id FROM tracks
+             WHERE source_kind = 'gdrive' AND root_id != ?1 AND remote_file_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([root_id], |row| row.get::<_, String>(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -922,7 +1027,7 @@ fn write_remote_track(
     let rg = &tags.replay_gain;
     let key = path_str(&p.file.virtual_path)?;
     let size = p.file.remote_size as i64;
-    let track_id: i64 = match p.indexed {
+    let track_id: i64 = match &p.indexed {
         Some(old) => {
             tx.prepare_cached(
                 "UPDATE tracks SET root_id = ?1, path = ?2, mtime = ?3, size = ?4, album_id = ?5,
@@ -965,6 +1070,9 @@ fn write_remote_track(
                 size,
                 old.id,
             ])?;
+            if old.path != key {
+                cascade_track_path_rename(tx, &old.path, key)?;
+            }
             tx.prepare_cached("DELETE FROM track_artists WHERE track_id = ?1")?
                 .execute([old.id])?;
             tx.prepare_cached("DELETE FROM track_search WHERE rowid = ?1")?
@@ -1040,6 +1148,22 @@ fn write_remote_track(
     )?
     .execute(params![track_id, title, identity.title, search_artists])?;
     Ok(album_id)
+}
+
+/// Keeps `favorites` and `playlist_items` pointing at a Drive track when its filename changes
+/// on Google Drive (same `remote_file_id`, updated `gdrive://<id>/<new_name>` path).
+fn cascade_track_path_rename(
+    tx: &Transaction,
+    old_path: &str,
+    new_path: &str,
+) -> Result<(), LibraryError> {
+    tx.prepare_cached("UPDATE OR IGNORE favorites SET path = ?1 WHERE path = ?2")?
+        .execute(params![new_path, old_path])?;
+    tx.prepare_cached("DELETE FROM favorites WHERE path = ?1")?
+        .execute([old_path])?;
+    tx.prepare_cached("UPDATE playlist_items SET path = ?1 WHERE path = ?2")?
+        .execute(params![new_path, old_path])?;
+    Ok(())
 }
 
 fn artist_id(tx: &Transaction, name: &str) -> Result<i64, LibraryError> {
@@ -1306,7 +1430,7 @@ mod tests {
 
         // 3. Re-sync unchanged: 0 probes.
         let r3 = library
-            .sync_gdrive_folder("folder_1", &[f1_mod], &probe, &|_| {})
+            .sync_gdrive_folder("folder_1", &[f1_mod.clone()], &probe, &|_| {})
             .unwrap();
         assert_eq!((r3.added, r3.updated, r3.removed, r3.unchanged), (0, 0, 0, 1));
         assert_eq!(probe_calls.load(Ordering::SeqCst), 3);
@@ -1314,7 +1438,35 @@ mod tests {
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].title, "Dawn (Remaster)");
 
-        // 4. Removing the Drive root removes all its tracks and empties the album.
+        // 4. Renaming a Drive file (same remote_file_id, new filename) preserves favorites & playlists without re-probing.
+        let mut f1_renamed = f1_mod.clone();
+        f1_renamed.virtual_path = PathBuf::from("gdrive://file_a/01 - Dawn Renamed.flac");
+        library.toggle_favorite(&f1_mod.virtual_path).unwrap();
+        let pl = library.create_playlist("Cloud Mix").unwrap();
+        library
+            .add_paths_to_playlist(pl.id, &[f1_mod.virtual_path.clone()])
+            .unwrap();
+        let r_ren = library
+            .sync_gdrive_folder("folder_1", &[f1_renamed.clone()], &probe, &|_| {})
+            .unwrap();
+        assert_eq!((r_ren.added, r_ren.updated, r_ren.removed), (0, 1, 0));
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 3, "rename must not re-probe");
+        assert!(library.track_by_path(&f1_renamed.virtual_path).unwrap().unwrap().favorite);
+        let pl_detail = library.playlist(pl.id).unwrap().unwrap();
+        assert_eq!(pl_detail.missing, 0);
+        assert_eq!(pl_detail.items.len(), 1);
+        assert_eq!(pl_detail.items[0].track.path, f1_renamed.virtual_path);
+
+        // 5. Overlapping second Drive root containing the same remote_file_id must not crash with UNIQUE constraint.
+        library.add_gdrive_root("folder_2", "Nested Drive").unwrap();
+        let mut f1_overlap = f1_renamed.clone();
+        f1_overlap.remote_folder_id = "folder_2".into();
+        let r_ov = library
+            .sync_gdrive_folder("folder_2", &[f1_overlap], &probe, &|_| {})
+            .unwrap();
+        assert_eq!((r_ov.added, r_ov.updated, r_ov.removed), (0, 0, 0));
+
+        // 6. Removing the Drive root removes all its tracks and empties the album.
         assert!(library.remove_gdrive_root("folder_1").unwrap());
         assert!(library.tracks().unwrap().is_empty());
         assert!(library.albums(AlbumSort::Artist).unwrap().is_empty());

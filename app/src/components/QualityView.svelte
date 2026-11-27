@@ -52,7 +52,7 @@
     app.pageWash = null;
     void app.libraryVersion;
     app.run(commands.libraryTracks()).then((r) => {
-      if (r) tracks = r;
+      if (r) tracks = r.filter((tr) => tr.source !== "gdrive");
     });
   });
 
@@ -292,15 +292,17 @@
             {/if}
           </div>
           <div class="subject-actions">
-            <button
-              type="button"
-              class="btn small"
-              aria-label={t("menu.revealInFolder")}
-              title={revealPath}
-              onclick={() => void app.revealInFolder(revealPath)}
-            >
-              <Icon name="folder-open" size={16} /> {t("menu.revealInFolder")}
-            </button>
+            {#if target.kind !== "track" || target.track.source !== "gdrive"}
+              <button
+                type="button"
+                class="btn small"
+                aria-label={t("menu.revealInFolder")}
+                title={revealPath}
+                onclick={() => void app.revealInFolder(revealPath)}
+              >
+                <Icon name="folder-open" size={16} /> {t("menu.revealInFolder")}
+              </button>
+            {/if}
             {#if running}
               <button type="button" class="btn small" onclick={() => commands.qualityCancelCheck()}>{t("quality.cancel")}</button>
             {:else}

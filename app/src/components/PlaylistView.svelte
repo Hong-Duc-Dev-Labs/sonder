@@ -167,10 +167,14 @@
           <Popover anchor={menuButton} bind:open={menuOpen} menu label={t("playlist.actions")}>
             <button
               role="menuitem"
-              disabled={!ids.length}
+              disabled={!info.entries.some((e) => e.track.source !== "gdrive")}
               onclick={() => {
                 menuOpen = false;
-                void app.checkQualityBatch(ids);
+                if (info) {
+                  void app.checkQualityBatch(
+                    info.entries.filter((e) => e.track.source !== "gdrive").map((e) => e.track.id),
+                  );
+                }
               }}
             >
               <Icon name="spectrum" size={18} /> {t("quality.checkPlaylist")}

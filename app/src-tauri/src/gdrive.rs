@@ -8,10 +8,11 @@ use serde::Serialize;
 use sonder_decode::{DecodeError, SourceDecoder};
 use sonder_engine::SourceOpener;
 use sonder_gdrive::{
-    AuthManager, BlockCache, DEFAULT_CHUNK_SIZE, DriveClient, OAuthConfig, RangeCachedReader,
-    TokenStore, gdrive_virtual_path, is_gdrive_path, parse_gdrive_path,
+    AuthManager, BlockCache, DEFAULT_CHUNK_SIZE, DriveClient, OAuthConfig, OAuthConfigStore,
+    PersistedGdriveConfig, RangeCachedReader, TokenStore, gdrive_virtual_path, is_gdrive_path,
+    parse_gdrive_path,
 };
-use sonder_library::{Library, RemoteAudioFile, ScanProgress, fallback_meta, read_stream};
+use sonder_library::{Library, RemoteAudioFile, ScanProgress, TagError, fallback_meta, read_stream};
 use specta::Type;
 use tauri::{AppHandle, Manager, State};
 use tauri_specta::Event;
@@ -96,31 +97,38 @@ pub struct GdriveService {
     pub client: Arc<DriveClient>,
     pub cache: Arc<BlockCache>,
     pub syncing: AtomicBool,
+    config_store: OAuthConfigStore,
+    config: Mutex<PersistedGdriveConfig>,
     auth_cancel: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl GdriveService {
-    pub fn new(
-        tokens_path: PathBuf,
-        cache_dir: PathBuf,
-        saved_client_id: Option<&str>,
-        saved_client_secret: Option<&str>,
-        cache_max_mb: u32,
-    ) -> Self {
-        let config = OAuthConfig::resolve(saved_client_id, saved_client_secret);
+    pub fn new(config_path: PathBuf, tokens_path: PathBuf, cache_dir: PathBuf) -> Self {
+        let config_store = OAuthConfigStore::new(config_path);
+        let persisted = config_store.load();
+        let oauth = OAuthConfig::resolve(
+            persisted.client_id.as_deref(),
+            persisted.client_secret.as_deref(),
+        );
         let auth = Arc::new(AuthManager::new(
             TokenStore::new(tokens_path),
-            config,
+            oauth,
             crate::commands::USER_AGENT,
         ));
         let client = Arc::new(DriveClient::new(auth.clone(), crate::commands::USER_AGENT));
-        let max_bytes = u64::from(cache_max_mb.clamp(MIN_CACHE_MAX_MB, MAX_CACHE_MAX_MB)) * 1024 * 1024;
+        let cache_max_mb = persisted
+            .cache_max_mb
+            .unwrap_or(DEFAULT_CACHE_MAX_MB)
+            .clamp(MIN_CACHE_MAX_MB, MAX_CACHE_MAX_MB);
+        let max_bytes = u64::from(cache_max_mb) * 1024 * 1024;
         let cache = Arc::new(BlockCache::open(cache_dir, max_bytes, DEFAULT_CHUNK_SIZE));
         Self {
             auth,
             client,
             cache,
             syncing: AtomicBool::new(false),
+            config_store,
+            config: Mutex::new(persisted),
             auth_cancel: Mutex::new(None),
         }
     }
@@ -202,15 +210,15 @@ impl SourceOpener for HybridSourceOpener {
 }
 
 fn build_status(state: &AppState) -> GdriveStatus {
-    let settings = lock(&state.settings).clone();
+    let persisted = lock(&state.gdrive.config).clone();
     let auth = state.gdrive.auth.status();
-    let saved_id = settings.gdrive_client_id.unwrap_or_default();
+    let saved_id = persisted.client_id.unwrap_or_default();
     let env_override = saved_id.trim().is_empty() && OAuthConfig::env_client_id_present();
     GdriveStatus {
         configured: auth.configured,
         client_id: saved_id,
-        has_client_secret: settings
-            .gdrive_client_secret
+        has_client_secret: persisted
+            .client_secret
             .as_deref()
             .is_some_and(|s| !s.trim().is_empty()),
         env_override,
@@ -234,17 +242,20 @@ pub async fn gdrive_save_config(
     client_secret: Option<String>,
 ) -> AppResult<GdriveStatus> {
     let clean_id = client_id.trim().to_owned();
-    let settings = state.update_settings(|s| {
-        s.gdrive_client_id = (!clean_id.is_empty()).then_some(clean_id.clone());
-        // None means "keep existing secret"; Some("") clears it.
+    let updated = {
+        let mut cfg = lock(&state.gdrive.config);
+        cfg.client_id = (!clean_id.is_empty()).then_some(clean_id);
+        // None keeps the existing secret; Some("") clears it.
         if let Some(secret) = client_secret {
             let trimmed = secret.trim().to_owned();
-            s.gdrive_client_secret = (!trimmed.is_empty()).then_some(trimmed);
+            cfg.client_secret = (!trimmed.is_empty()).then_some(trimmed);
         }
-    })?;
+        state.gdrive.config_store.save(&cfg)?;
+        cfg.clone()
+    };
     let resolved = OAuthConfig::resolve(
-        settings.gdrive_client_id.as_deref(),
-        settings.gdrive_client_secret.as_deref(),
+        updated.client_id.as_deref(),
+        updated.client_secret.as_deref(),
     );
     state.gdrive.auth.set_config(resolved);
     Ok(build_status(&state))
@@ -259,11 +270,15 @@ pub async fn gdrive_sign_in(state: State<'_, AppState>) -> AppResult<GdriveStatu
         *lock(&state.gdrive.auth_cancel) = Some(cancel.clone());
     }
     let auth = state.gdrive.auth.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || auth.sign_in_interactive(cancel))
+    let cancel_bg = cancel.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || auth.sign_in_interactive(cancel_bg))
         .await
         .map_err(|e| AppError(e.to_string()))?;
     {
-        *lock(&state.gdrive.auth_cancel) = None;
+        let mut slot = lock(&state.gdrive.auth_cancel);
+        if slot.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, &cancel)) {
+            *slot = None;
+        }
     }
     result.map_err(AppError::from)?;
     Ok(build_status(&state))
@@ -373,7 +388,11 @@ pub async fn gdrive_set_cache_limit(
     max_mb: u32,
 ) -> AppResult<GdriveCacheStats> {
     let clamped = max_mb.clamp(MIN_CACHE_MAX_MB, MAX_CACHE_MAX_MB);
-    state.update_settings(|s| s.gdrive_cache_max_mb = clamped)?;
+    {
+        let mut cfg = lock(&state.gdrive.config);
+        cfg.cache_max_mb = Some(clamped);
+        state.gdrive.config_store.save(&cfg)?;
+    }
     state
         .gdrive
         .cache
@@ -511,6 +530,10 @@ fn sync_all_folders(app: &AppHandle, state: &AppState) -> AppResult<(u32, u32, u
                 );
                 match read_stream(reader, file.remote_size, &file.virtual_path) {
                     Ok(meta) => Ok(meta),
+                    // Never swallow transient network/auth I/O errors into fallback metadata, or
+                    // the track would be permanently indexed as 44.1 kHz / 0:00 and skipped on
+                    // future syncs. Only fall back on container/tag parse failures.
+                    Err(TagError::Io(io_err)) => Err(TagError::Io(io_err)),
                     Err(err) => {
                         let folder_hint = file
                             .grouping_path
@@ -538,6 +561,10 @@ fn sync_all_folders(app: &AppHandle, state: &AppState) -> AppResult<(u32, u32, u
                 .emit(app);
             },
         )?;
+
+        for remote_id in &report.invalidated_remote_ids {
+            cache.invalidate_file(remote_id);
+        }
 
         total_added += report.added as u32;
         total_updated += report.updated as u32;

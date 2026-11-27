@@ -722,6 +722,7 @@ export const vi: Record<MessageKey, Message> = {
   "settings.gdrive.oauthHint":
     "Tạo OAuth 2.0 Client ID loại Desktop App trong Google Cloud Console (quyền chỉ đọc Drive), hoặc đặt biến SONDER_GDRIVE_CLIENT_ID.",
   "settings.gdrive.saveConfig": "Lưu thông tin",
+  "settings.gdrive.clearSecret": "Xoá secret",
   "settings.gdrive.configSaved": "Đã lưu thông tin Google Drive.",
   "settings.gdrive.account": "Tài khoản",
   "settings.gdrive.connectedAs": "Đã kết nối: {email}",

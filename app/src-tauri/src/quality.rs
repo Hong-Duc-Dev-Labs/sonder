@@ -320,6 +320,9 @@ fn check_one(
         Ok(Some(subject)) => subject,
         _ => return Err(QualityFailure::Other),
     };
+    if sonder_gdrive::is_gdrive_path(&subject.path) {
+        return Ok(());
+    }
     let report = analyze(app, &subject.path, subject.track_id, options, cancel).map_err(|e| {
         if cancel.load(Ordering::SeqCst) {
             QualityFailure::Cancelled

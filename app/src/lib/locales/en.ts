@@ -721,6 +721,7 @@ export const en = {
   "settings.gdrive.oauthHint":
     "Create a Desktop App OAuth 2.0 Client ID in Google Cloud Console (read-only Drive scope). Or set SONDER_GDRIVE_CLIENT_ID.",
   "settings.gdrive.saveConfig": "Save credentials",
+  "settings.gdrive.clearSecret": "Clear secret",
   "settings.gdrive.configSaved": "Google Drive credentials saved.",
   "settings.gdrive.account": "Account",
   "settings.gdrive.connectedAs": "Connected as {email}",

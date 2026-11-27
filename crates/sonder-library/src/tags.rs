@@ -1178,7 +1178,13 @@ mod dsd {
         }
         let mut head = [0u8; 12];
         f.seek(SeekFrom::Start(start))?;
-        let n = f.read(&mut head)?;
+        let mut n = 0usize;
+        while n < head.len() {
+            match f.read(&mut head[n..])? {
+                0 => break,
+                got => n += got,
+            }
+        }
         let head = &head[..n];
         if n >= 12 && head.starts_with(b"ID3 ") {
             let size = u64::from_be_bytes(head[4..12].try_into().unwrap());

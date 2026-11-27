@@ -1013,9 +1013,6 @@ pub async fn lyrics_get_path(
     path: String,
 ) -> AppResult<Option<Lyrics>> {
     let path_buf = PathBuf::from(&path);
-    if !path_buf.is_file() {
-        return Ok(None);
-    }
     let maybe_track = lock(&state.library).track_by_path(&path_buf)?;
     if let Some(track) = maybe_track {
         let query = sonder_lyrics::Query {
@@ -1025,6 +1022,9 @@ pub async fn lyrics_get_path(
             duration_ms: track.audio.duration_ms,
         };
         return load_lyrics_for(&state, track.path, query).await;
+    }
+    if !path_buf.is_file() {
+        return Ok(None);
     }
     let fallback_title = path_buf
         .file_stem()

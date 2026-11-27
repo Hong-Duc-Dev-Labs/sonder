@@ -6,9 +6,11 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -124,6 +126,65 @@ pub struct AuthStatus {
     pub account_email: Option<String>,
 }
 
+/// Non-public Google Drive configuration persisted separately from `settings.toml` with
+/// restricted file permissions (`0o600` on Unix), never serialized to the webview.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PersistedGdriveConfig {
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub cache_max_mb: Option<u32>,
+}
+
+impl fmt::Debug for PersistedGdriveConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PersistedGdriveConfig")
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field("cache_max_mb", &self.cache_max_mb)
+            .finish()
+    }
+}
+
+/// Persists [`PersistedGdriveConfig`] to a restricted-permission JSON file.
+#[derive(Debug, Clone)]
+pub struct OAuthConfigStore {
+    path: PathBuf,
+}
+
+impl OAuthConfigStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn load(&self) -> PersistedGdriveConfig {
+        match fs::read_to_string(&self.path) {
+            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+            Err(_) => PersistedGdriveConfig::default(),
+        }
+    }
+
+    pub fn save(&self, cfg: &PersistedGdriveConfig) -> Result<(), GdriveError> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(cfg)?;
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = self
+            .path
+            .with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
+        write_restricted(&tmp, json.as_bytes())?;
+        if let Err(err) = fs::rename(&tmp, &self.path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(GdriveError::Io(err));
+        }
+        Ok(())
+    }
+}
+
 /// Persists [`TokenSet`] to a JSON file with restricted permissions.
 #[derive(Debug, Clone)]
 pub struct TokenStore {
@@ -155,9 +216,15 @@ impl TokenStore {
             fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(tokens)?;
-        let tmp = self.path.with_extension("json.tmp");
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = self
+            .path
+            .with_extension(format!("json.{}.{seq}.tmp", std::process::id()));
         write_restricted(&tmp, json.as_bytes())?;
-        fs::rename(&tmp, &self.path)?;
+        if let Err(err) = fs::rename(&tmp, &self.path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(GdriveError::Io(err));
+        }
         Ok(())
     }
 
@@ -292,8 +359,8 @@ impl AuthManager {
 
     /// Injects a token set directly (primarily useful for tests).
     pub fn set_tokens(&self, tokens: TokenSet) -> Result<(), GdriveError> {
-        self.store.save(&tokens)?;
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        self.store.save(&tokens)?;
         inner.tokens = Some(tokens);
         Ok(())
     }
@@ -541,18 +608,33 @@ fn wait_for_loopback_code(
                 let mut request_line = String::new();
                 {
                     let mut reader = BufReader::new(&stream);
-                    let _ = reader.read_line(&mut request_line);
+                    if reader.read_line(&mut request_line).is_err() || request_line.trim().is_empty() {
+                        // Browser speculative preconnect or closed socket; keep waiting.
+                        continue;
+                    }
+                    // Drain remaining HTTP request headers so browsers do not see a TCP RST.
+                    let mut header = String::new();
+                    for _ in 0..64 {
+                        header.clear();
+                        match reader.read_line(&mut header) {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) if header == "\r\n" || header == "\n" => break,
+                            Ok(_) => {}
+                        }
+                    }
                 }
                 let path = request_line
                     .split_whitespace()
                     .nth(1)
                     .unwrap_or("/");
-                if path == "/favicon.ico" {
+                let Ok(parsed) = Url::parse(&format!("http://127.0.0.1{path}")) else {
+                    let _ = write_http_response(&mut stream, "400 Bad Request", "Invalid request.");
+                    continue;
+                };
+                if parsed.path() != "/callback" {
                     let _ = write_http_response(&mut stream, "404 Not Found", "Not found");
                     continue;
                 }
-                let parsed = Url::parse(&format!("http://127.0.0.1{path}"))
-                    .map_err(|e| GdriveError::AuthFailed(format!("malformed callback: {e}")))?;
                 let mut code = None;
                 let mut state = None;
                 let mut error = None;
@@ -576,9 +658,10 @@ fn wait_for_loopback_code(
                     let _ = write_http_response(
                         &mut stream,
                         "400 Bad Request",
-                        "State mismatch. Please try signing in from Sonder again.",
+                        "State mismatch. Please return to Sonder.",
                     );
-                    return Err(GdriveError::AuthFailed("OAuth state mismatch".into()));
+                    // Ignore stray/CSRF requests without aborting the user's in-progress login.
+                    continue;
                 }
                 let Some(code) = code.filter(|c| !c.is_empty()) else {
                     let _ = write_http_response(
@@ -586,7 +669,7 @@ fn wait_for_loopback_code(
                         "400 Bad Request",
                         "Missing authorization code.",
                     );
-                    return Err(GdriveError::AuthFailed("missing authorization code".into()));
+                    continue;
                 };
                 let _ = write_http_response(
                     &mut stream,

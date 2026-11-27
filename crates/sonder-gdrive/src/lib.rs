@@ -10,7 +10,10 @@ pub mod reader;
 use std::path::{Path, PathBuf};
 
 pub use api::{DriveClient, DriveFile, DriveFolder, SUPPORTED_AUDIO_EXTENSIONS, is_supported_audio_name};
-pub use auth::{AuthManager, AuthStatus, ENV_CLIENT_ID, ENV_CLIENT_SECRET, OAuthConfig, TokenSet, TokenStore};
+pub use auth::{
+    AuthManager, AuthStatus, ENV_CLIENT_ID, ENV_CLIENT_SECRET, OAuthConfig, OAuthConfigStore,
+    PersistedGdriveConfig, TokenSet, TokenStore,
+};
 pub use cache::{BlockCache, CacheStats, DEFAULT_CHUNK_SIZE, DEFAULT_MAX_CACHE_BYTES};
 pub use error::GdriveError;
 pub use reader::RangeCachedReader;

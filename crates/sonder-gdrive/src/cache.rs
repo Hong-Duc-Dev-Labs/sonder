@@ -4,10 +4,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::UNIX_EPOCH;
 
+use sha2::{Digest, Sha256};
+
 use crate::error::GdriveError;
+
+static CACHE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Default chunk size: 512 KiB (good balance between HTTP round-trips and instant seek latency).
 pub const DEFAULT_CHUNK_SIZE: u64 = 512 * 1024;
@@ -40,6 +45,9 @@ struct CacheIndex {
     total_bytes: u64,
     max_bytes: u64,
     clock: u64,
+    /// Bumped on `clear()` and `invalidate_file()` so stale in-flight writes never resurrect
+    /// invalidated chunks.
+    generation: u64,
 }
 
 impl CacheIndex {
@@ -122,6 +130,7 @@ impl BlockCache {
             total_bytes: 0,
             max_bytes,
             clock: 0,
+            generation: 0,
         };
         scan_existing(&root, &mut index);
         let to_remove = index.evict_over_limit();
@@ -160,6 +169,7 @@ impl BlockCache {
 
     pub fn clear(&self) -> Result<(), GdriveError> {
         let mut idx = self.index.lock().unwrap_or_else(|e| e.into_inner());
+        idx.generation = idx.generation.saturating_add(1);
         idx.entries.clear();
         idx.total_bytes = 0;
         let files_dir = self.root.join("files");
@@ -169,10 +179,44 @@ impl BlockCache {
         Ok(())
     }
 
+    /// Evicts all cached chunks for a single Drive file (called when a remote file is modified
+    /// or removed during library sync so stale chunks are never mixed with new bytes).
+    pub fn invalidate_file(&self, file_id: &str) {
+        let Some(dir_key) = dir_key_for(file_id) else {
+            return;
+        };
+        let removed_paths: Vec<PathBuf> = {
+            let mut idx = self.index.lock().unwrap_or_else(|e| e.into_inner());
+            idx.generation = idx.generation.saturating_add(1);
+            let keys: Vec<ChunkKey> = idx
+                .entries
+                .keys()
+                .filter(|k| k.file_id == dir_key)
+                .cloned()
+                .collect();
+            let mut paths = Vec::with_capacity(keys.len());
+            for k in keys {
+                if let Some(entry) = idx.entries.remove(&k) {
+                    idx.total_bytes = idx.total_bytes.saturating_sub(entry.size);
+                    paths.push(entry.path);
+                }
+            }
+            paths
+        };
+        for p in removed_paths {
+            let _ = fs::remove_file(p);
+        }
+        let dir = self.root.join("files").join(&dir_key);
+        let _ = fs::remove_dir_all(dir);
+    }
+
     /// Returns `true` if the chunk is already cached on disk.
     pub fn contains(&self, file_id: &str, chunk_index: u64) -> bool {
+        let Some(dir_key) = dir_key_for(file_id) else {
+            return false;
+        };
         let key = ChunkKey {
-            file_id: file_id.to_owned(),
+            file_id: dir_key,
             chunk_index,
         };
         self.index
@@ -189,8 +233,10 @@ impl BlockCache {
         chunk_index: u64,
         fetch: impl FnOnce() -> Result<Vec<u8>, GdriveError>,
     ) -> Result<Vec<u8>, GdriveError> {
+        let dir_key = dir_key_for(file_id)
+            .ok_or_else(|| GdriveError::Protocol("empty Google Drive file id".into()))?;
         let key = ChunkKey {
-            file_id: file_id.to_owned(),
+            file_id: dir_key,
             chunk_index,
         };
 
@@ -198,6 +244,14 @@ impl BlockCache {
         if let Some(bytes) = self.read_cached(&key) {
             return Ok(bytes);
         }
+
+        // Capture cache generation before fetching so a concurrent `clear()`/`invalidate_file()`
+        // prevents storing stale bytes.
+        let gen_before = self
+            .index
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .generation;
 
         // Deduplicate concurrent fetches for the same chunk (e.g. prefetcher + reader).
         let (slot, is_leader) = {
@@ -227,7 +281,7 @@ impl BlockCache {
         let result = fetch();
         let outcome_for_waiters = match &result {
             Ok(bytes) => {
-                let _ = self.store_chunk(&key, bytes);
+                let _ = self.store_chunk(&key, bytes, gen_before);
                 Ok(bytes.clone())
             }
             Err(e) => Err(e.to_string()),
@@ -265,16 +319,36 @@ impl BlockCache {
         }
     }
 
-    fn store_chunk(&self, key: &ChunkKey, bytes: &[u8]) -> std::io::Result<()> {
-        let dir = self.root.join("files").join(sanitize_id(&key.file_id));
+    fn store_chunk(
+        &self,
+        key: &ChunkKey,
+        bytes: &[u8],
+        expected_generation: u64,
+    ) -> std::io::Result<()> {
+        let dir = self.root.join("files").join(&key.file_id);
         fs::create_dir_all(&dir)?;
         let path = dir.join(format!("c_{}.bin", key.chunk_index));
-        let tmp = dir.join(format!("c_{}.{}.tmp", key.chunk_index, std::process::id()));
+        let seq = CACHE_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = dir.join(format!(
+            "c_{}.{}.{seq}.tmp",
+            key.chunk_index,
+            std::process::id()
+        ));
         fs::write(&tmp, bytes)?;
-        fs::rename(&tmp, &path)?;
+        if let Err(err) = fs::rename(&tmp, &path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(err);
+        }
 
         let to_remove = {
             let mut idx = self.index.lock().unwrap_or_else(|e| e.into_inner());
+            if idx.generation != expected_generation {
+                // Cache was cleared or this file was invalidated while we were fetching.
+                drop(idx);
+                let _ = fs::remove_file(&path);
+                let _ = fs::remove_dir(&dir);
+                return Ok(());
+            }
             idx.insert(key.clone(), path, bytes.len() as u64)
         };
         for victim in to_remove {
@@ -287,17 +361,20 @@ impl BlockCache {
     }
 }
 
-fn sanitize_id(file_id: &str) -> String {
-    file_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+/// Deterministic, fixed-length, path-safe directory key (`d_<sha256_hex>`) immune to path
+/// traversal, Windows reserved names, and restart-time mismatch.
+fn dir_key_for(file_id: &str) -> Option<String> {
+    if file_id.trim().is_empty() {
+        return None;
+    }
+    let digest = Sha256::digest(file_id.as_bytes());
+    let mut hex = String::with_capacity(2 + 64);
+    hex.push_str("d_");
+    for b in digest {
+        use std::fmt::Write;
+        let _ = write!(&mut hex, "{b:02x}");
+    }
+    Some(hex)
 }
 
 fn scan_existing(root: &Path, index: &mut CacheIndex) {
@@ -359,5 +436,45 @@ fn scan_existing(root: &Path, index: &mut CacheIndex) {
                 last_access: index.clock,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dir_key_rejects_empty_and_neutralizes_traversal_and_reserved_names() {
+        assert_eq!(dir_key_for(""), None);
+        assert_eq!(dir_key_for("   "), None);
+        for dangerous in ["..", "../etc/passwd", "CON", "NUL", "a/b\\c"] {
+            let key = dir_key_for(dangerous).unwrap();
+            assert!(key.starts_with("d_"));
+            assert_eq!(key.len(), 66);
+            assert!(key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        }
+    }
+
+    #[test]
+    fn invalidate_file_and_restart_reload_match_hashed_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = BlockCache::open(dir.path(), 1024 * 1024, 4096);
+        let bytes = cache
+            .get_or_fetch("file/with:special", 0, || Ok(vec![42u8; 1024]))
+            .unwrap();
+        assert_eq!(bytes.len(), 1024);
+        assert!(cache.contains("file/with:special", 0));
+
+        // Reopening cache from disk must still recognize the cached chunk.
+        drop(cache);
+        let reopened = BlockCache::open(dir.path(), 1024 * 1024, 4096);
+        assert!(reopened.contains("file/with:special", 0));
+        assert_eq!(reopened.stats().chunk_count, 1);
+
+        // Invalidating removes chunks from memory and disk.
+        reopened.invalidate_file("file/with:special");
+        assert!(!reopened.contains("file/with:special", 0));
+        assert_eq!(reopened.stats().chunk_count, 0);
+        assert_eq!(reopened.stats().total_bytes, 0);
     }
 }

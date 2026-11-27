@@ -1,0 +1,21 @@
+[package]
+name = "sonder-gdrive"
+description = "Google Drive OAuth2 PKCE authentication, Drive v3 client, and progressive Range-cached streaming"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64 = "0.22.1"
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+getrandom = "0.4.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2.workspace = true
+thiserror.workspace = true
+ureq = { version = "3.5.1", features = ["json"] }
+url = "2.5.8"
+
+[dev-dependencies]
+tempfile.workspace = true

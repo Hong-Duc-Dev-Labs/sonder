@@ -272,6 +272,12 @@ pub struct Settings {
     pub dither: bool,
     /// Rate-conversion policy, filter source and headroom.
     pub src: SrcSetting,
+    /// User-configured Google OAuth Desktop Client ID for Google Drive streaming.
+    pub gdrive_client_id: Option<String>,
+    /// Optional Google OAuth Desktop Client Secret.
+    pub gdrive_client_secret: Option<String>,
+    /// Maximum disk cache size for Google Drive audio chunks, in MiB.
+    pub gdrive_cache_max_mb: u32,
 }
 
 impl Default for Settings {
@@ -303,6 +309,9 @@ impl Default for Settings {
             leveling_target_lufs: -18.0,
             dither: true,
             src: SrcSetting::default(),
+            gdrive_client_id: None,
+            gdrive_client_secret: None,
+            gdrive_cache_max_mb: crate::gdrive::DEFAULT_CACHE_MAX_MB,
         }
     }
 }
@@ -344,6 +353,18 @@ impl Settings {
         }
         .sanitized()
         .seconds;
+        self.gdrive_client_id = self
+            .gdrive_client_id
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        self.gdrive_client_secret = self
+            .gdrive_client_secret
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        self.gdrive_cache_max_mb = self.gdrive_cache_max_mb.clamp(
+            crate::gdrive::MIN_CACHE_MAX_MB,
+            crate::gdrive::MAX_CACHE_MAX_MB,
+        );
         self
     }
 

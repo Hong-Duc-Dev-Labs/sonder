@@ -8,6 +8,7 @@ mod art;
 mod commands;
 mod dto;
 mod events;
+mod gdrive;
 mod history;
 mod loudness;
 mod media;
@@ -122,6 +123,19 @@ fn bindings() -> Builder<tauri::Wry> {
             commands::lyrics_get_path,
             commands::player_open_paths,
             commands::reveal_in_folder,
+            gdrive::gdrive_status,
+            gdrive::gdrive_save_config,
+            gdrive::gdrive_sign_in,
+            gdrive::gdrive_cancel_sign_in,
+            gdrive::gdrive_sign_out,
+            gdrive::gdrive_list_folders,
+            gdrive::gdrive_synced_folders,
+            gdrive::gdrive_add_folder,
+            gdrive::gdrive_remove_folder,
+            gdrive::gdrive_sync_now,
+            gdrive::gdrive_cache_stats,
+            gdrive::gdrive_set_cache_limit,
+            gdrive::gdrive_clear_cache,
         ])
         .events(collect_events![
             events::PlayerStateEvent,
@@ -141,6 +155,8 @@ fn bindings() -> Builder<tauri::Wry> {
             quality::QualityBatchEvent,
             history::HistoryChangedEvent,
             sleep::SleepTimerEvent,
+            gdrive::GdriveSyncProgressEvent,
+            gdrive::GdriveSyncFinishedEvent,
         ])
         // Ids and millisecond counts stay far below 2^53.
         .dangerously_cast_bigints_to_number()

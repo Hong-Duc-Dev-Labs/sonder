@@ -15,10 +15,11 @@ mod dff;
 mod dsf;
 
 use std::fs::File;
+use std::io::{Seek, SeekFrom};
 use std::path::Path;
 use std::time::Duration;
 
-use crate::DecodeError;
+use crate::{DecodeError, ReadSeek};
 
 /// DSD sample rates the player supports, in bits per second per channel.
 pub const DSD_RATES: [u32; 3] = [2_822_400, 5_644_800, 11_289_600];
@@ -72,21 +73,30 @@ enum Inner {
 impl DsdDecoder {
     /// Opens `path`, choosing the container its header declares.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DecodeError> {
-        let path = path.as_ref();
-        // The first four bytes tell the two containers apart; the rest of the header is
-        // parsed by the specific reader.
-        let mut head = [0u8; 4];
-        let magic = {
-            use std::io::Read;
-            let mut file = File::open(path)?;
-            file.read_exact(&mut head)
-                .map_err(|e| DecodeError::Decode(format!("truncated DSD header: {e}")))?;
-            head
+        let file = File::open(path.as_ref())?;
+        let file_len = file.metadata()?.len();
+        Self::open_source(Box::new(file), Some(file_len))
+    }
+
+    /// Opens any seekable byte stream, choosing DSF or DSDIFF from its 4-byte magic header.
+    pub fn open_source(
+        mut source: Box<dyn ReadSeek>,
+        byte_len: Option<u64>,
+    ) -> Result<Self, DecodeError> {
+        let file_len = match byte_len {
+            Some(len) => len,
+            None => source.seek(SeekFrom::End(0))?,
         };
+        source.seek(SeekFrom::Start(0))?;
+        let mut head = [0u8; 4];
+        source
+            .read_exact(&mut head)
+            .map_err(|e| DecodeError::Decode(format!("truncated DSD header: {e}")))?;
+        source.seek(SeekFrom::Start(0))?;
         Ok(Self {
-            inner: match &magic {
-                b"DSD " => Inner::Dsf(dsf::Dsf::open(path)?),
-                b"FRM8" => Inner::Dff(dff::Dff::open(path)?),
+            inner: match &head {
+                b"DSD " => Inner::Dsf(dsf::Dsf::open_source(source, file_len)?),
+                b"FRM8" => Inner::Dff(dff::Dff::open_source(source, file_len)?),
                 other => {
                     return Err(DecodeError::Unsupported(format!(
                         "not a DSF or DSDIFF file (magic {:?})",
@@ -161,21 +171,18 @@ fn valid_channels(channels: u32) -> Result<u16, DecodeError> {
 /// Largest block/chunk the readers allocate from an untrusted header.
 const MAX_ALLOC: u64 = 1 << 24;
 
-fn read_exact(file: &mut File, buf: &mut [u8]) -> Result<(), DecodeError> {
-    use std::io::Read;
+fn read_exact(file: &mut dyn ReadSeek, buf: &mut [u8]) -> Result<(), DecodeError> {
     file.read_exact(buf)
         .map_err(|e| DecodeError::Decode(format!("truncated DSD file: {e}")))
 }
 
-fn seek_to(file: &mut File, at: u64) -> Result<(), DecodeError> {
-    use std::io::{Seek, SeekFrom};
+fn seek_to(file: &mut dyn ReadSeek, at: u64) -> Result<(), DecodeError> {
     file.seek(SeekFrom::Start(at))
         .map(|_| ())
         .map_err(|e| DecodeError::Decode(format!("DSD seek failed: {e}")))
 }
 
-fn skip(file: &mut File, bytes: u64) -> Result<(), DecodeError> {
-    use std::io::{Seek, SeekFrom};
+fn skip(file: &mut dyn ReadSeek, bytes: u64) -> Result<(), DecodeError> {
     if bytes > 0 {
         file.seek(SeekFrom::Current(i64::try_from(bytes).unwrap_or(i64::MAX)))
             .map_err(|e| DecodeError::Decode(format!("DSD seek failed: {e}")))?;

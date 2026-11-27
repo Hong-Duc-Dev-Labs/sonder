@@ -26,8 +26,8 @@ pub use crossfade::{
 pub use dsp::{DspConfig, LoudnessSource, MAX_TARGET_LUFS, MIN_TARGET_LUFS, NoLoudness, TrackGain};
 pub use pipeline::Pipeline;
 pub use player::{
-    Command, DsdPcmRate, PlaybackState, Player, PlayerConfig, PlayerEvent, RepeatMode, SignalPath,
-    TapFactory,
+    Command, DsdPcmRate, LocalSourceOpener, PlaybackState, Player, PlayerConfig, PlayerEvent,
+    RepeatMode, SignalPath, SourceOpener, TapFactory,
 };
 pub use queue::Queue;
 pub use rate::{FilterSourceConfig, SignalStage, SrcConfig, SrcTarget};

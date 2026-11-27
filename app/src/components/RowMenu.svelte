@@ -98,19 +98,23 @@
         <Icon name="playlist" size={18} /> <span class="name">{t("common.addToPlaylist")}</span>
         <Icon name="chevron" size={16} />
       </button>
-      <button role="menuitem" onclick={() => act(() => app.editTags(track))}>
-        <Icon name="edit" size={18} /> {t("menu.editTags")}
-      </button>
-      <button role="menuitem" onclick={() => act(() => app.checkQuality(track))}>
-        <Icon name="spectrum" size={18} /> {t("menu.checkQuality")}
-      </button>
+      {#if track.source !== "gdrive"}
+        <button role="menuitem" onclick={() => act(() => app.editTags(track))}>
+          <Icon name="edit" size={18} /> {t("menu.editTags")}
+        </button>
+        <button role="menuitem" onclick={() => act(() => app.checkQuality(track))}>
+          <Icon name="spectrum" size={18} /> {t("menu.checkQuality")}
+        </button>
+      {/if}
       <button role="menuitem" onclick={() => act(() => void app.toggleFavorite(track.path))}>
         <Icon name={fav ? "heart" : "heart-outline"} size={18} />
         {fav ? t("favorites.remove") : t("favorites.add")}
       </button>
-      <button role="menuitem" onclick={() => act(() => void app.revealInFolder(track.path))}>
-        <Icon name="folder-open" size={18} /> {t("menu.revealInFolder")}
-      </button>
+      {#if track.source !== "gdrive"}
+        <button role="menuitem" onclick={() => act(() => void app.revealInFolder(track.path))}>
+          <Icon name="folder-open" size={18} /> {t("menu.revealInFolder")}
+        </button>
+      {/if}
       {#if onremove}
         <button role="menuitem" onclick={() => act(onremove)}>
           <Icon name="trash" size={18} /> {t("menu.removeFromPlaylist")}

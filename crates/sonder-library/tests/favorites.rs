@@ -134,7 +134,22 @@ fn opening_v6_database_creates_backup_and_migrates_to_v7() {
     }
     {
         let conn = Connection::open(&db_path).unwrap();
-        conn.execute("DROP TABLE favorites", []).unwrap();
+        conn.execute_batch(
+            "DROP TABLE favorites;
+             DROP INDEX IF EXISTS roots_source_kind;
+             DROP INDEX IF EXISTS roots_remote_folder;
+             DROP INDEX IF EXISTS tracks_source_kind;
+             DROP INDEX IF EXISTS tracks_remote_file;
+             ALTER TABLE roots DROP COLUMN source_kind;
+             ALTER TABLE roots DROP COLUMN remote_folder_id;
+             ALTER TABLE roots DROP COLUMN display_name;
+             ALTER TABLE tracks DROP COLUMN source_kind;
+             ALTER TABLE tracks DROP COLUMN remote_file_id;
+             ALTER TABLE tracks DROP COLUMN remote_folder_id;
+             ALTER TABLE tracks DROP COLUMN remote_modified_time;
+             ALTER TABLE tracks DROP COLUMN remote_size;",
+        )
+        .unwrap();
         conn.pragma_update(None, "user_version", 6).unwrap();
     }
 

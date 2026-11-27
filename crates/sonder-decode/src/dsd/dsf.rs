@@ -5,14 +5,11 @@
 //! are LSB-first when `bits_per_sample` is 1 and MSB-first when it is 8. Both quirks are
 //! undone here, so callers always get interleaved MSB-first bytes.
 
-use std::fs::File;
-use std::path::Path;
-
 use super::{DsdFormat, MAX_ALLOC, le_u32, le_u64, read_exact, seek_to, skip};
-use crate::DecodeError;
+use crate::{DecodeError, ReadSeek};
 
 pub(super) struct Dsf {
-    file: File,
+    file: Box<dyn ReadSeek>,
     pub(super) format: DsdFormat,
     /// File offset of the first audio byte.
     data_start: u64,
@@ -30,13 +27,20 @@ pub(super) struct Dsf {
 }
 
 impl Dsf {
-    pub(super) fn open(path: &Path) -> Result<Self, DecodeError> {
-        let mut file = File::open(path).map_err(DecodeError::Open)?;
+    #[cfg(test)]
+    pub(super) fn open(path: &std::path::Path) -> Result<Self, DecodeError> {
+        let file = std::fs::File::open(path).map_err(DecodeError::Open)?;
         let file_len = file.metadata().map_err(DecodeError::Open)?.len();
+        Self::open_source(Box::new(file), file_len)
+    }
 
+    pub(super) fn open_source(
+        mut file: Box<dyn ReadSeek>,
+        file_len: u64,
+    ) -> Result<Self, DecodeError> {
         // "DSD " chunk: id, chunk size (28), total file size, pointer to ID3 metadata.
         let mut head = [0u8; 28];
-        read_exact(&mut file, &mut head)?;
+        read_exact(&mut *file, &mut head)?;
         if &head[..4] != b"DSD " || le_u64(&head[4..]) != 28 {
             return Err(DecodeError::Unsupported("not a DSF file".into()));
         }
@@ -48,9 +52,9 @@ impl Dsf {
         }
 
         // "fmt " chunk (52 bytes including the chunk header).
-        seek_to(&mut file, 28)?;
+        seek_to(&mut *file, 28)?;
         let mut fmt = [0u8; 52];
-        read_exact(&mut file, &mut fmt)?;
+        read_exact(&mut *file, &mut fmt)?;
         if &fmt[..4] != b"fmt " || le_u64(&fmt[4..]) != 52 {
             return Err(DecodeError::Unsupported(
                 "DSF without a standard fmt chunk".into(),
@@ -98,7 +102,7 @@ impl Dsf {
 
         // "data" chunk header; its size counts the 12-byte header itself.
         let mut chunk = [0u8; 12];
-        read_exact(&mut file, &mut chunk)?;
+        read_exact(&mut *file, &mut chunk)?;
         if &chunk[..4] != b"data" {
             return Err(DecodeError::Unsupported("DSF without a data chunk".into()));
         }
@@ -168,7 +172,7 @@ impl Dsf {
             .data_start
             .checked_add(group.saturating_mul(group_bytes))
             .ok_or_else(|| DecodeError::Decode("DSF seek overflow".into()))?;
-        seek_to(&mut self.file, at)?;
+        seek_to(&mut *self.file, at)?;
         self.position = frame;
         self.skip = offset;
         Ok(())
@@ -189,9 +193,9 @@ impl Dsf {
         let drop_frames = drop_frames.min(frames);
 
         for block in &mut self.blocks[..channels] {
-            read_exact(&mut self.file, &mut block[..frames])?;
+            read_exact(&mut *self.file, &mut block[..frames])?;
             // Blocks are fixed size even at the end of the stream; the padding is not audio.
-            skip(&mut self.file, (self.block_size - frames) as u64)?;
+            skip(&mut *self.file, (self.block_size - frames) as u64)?;
         }
 
         let emitted = frames - drop_frames;
@@ -214,7 +218,9 @@ impl Dsf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use std::io::Write;
+    use std::path::Path;
 
     const RATE: u32 = 2_822_400;
 

@@ -5,14 +5,11 @@
 //! metadata. Audio bytes are already MSB-first and interleaved, which is the internal layout,
 //! so they are passed through unchanged. `DST `-compressed audio is rejected.
 
-use std::fs::File;
-use std::path::Path;
-
 use super::{DsdFormat, READ_BLOCK, be_u32, be_u64, read_exact, seek_to};
-use crate::DecodeError;
+use crate::{DecodeError, ReadSeek};
 
 pub(super) struct Dff {
-    file: File,
+    file: Box<dyn ReadSeek>,
     pub(super) format: DsdFormat,
     data_start: u64,
     /// Total bytes in the `DSD ` chunk (all channels).
@@ -22,12 +19,19 @@ pub(super) struct Dff {
 }
 
 impl Dff {
-    pub(super) fn open(path: &Path) -> Result<Self, DecodeError> {
-        let mut file = File::open(path).map_err(DecodeError::Open)?;
+    #[cfg(test)]
+    pub(super) fn open(path: &std::path::Path) -> Result<Self, DecodeError> {
+        let file = std::fs::File::open(path).map_err(DecodeError::Open)?;
         let file_len = file.metadata().map_err(DecodeError::Open)?.len();
+        Self::open_source(Box::new(file), file_len)
+    }
 
+    pub(super) fn open_source(
+        mut file: Box<dyn ReadSeek>,
+        file_len: u64,
+    ) -> Result<Self, DecodeError> {
         let mut head = [0u8; 16];
-        read_exact(&mut file, &mut head)?;
+        read_exact(&mut *file, &mut head)?;
         if &head[..4] != b"FRM8" || &head[12..16] != b"DSD " {
             return Err(DecodeError::Unsupported(
                 "not a DSDIFF (FRM8/DSD) file".into(),
@@ -47,9 +51,9 @@ impl Dff {
         let form_end = 12u64.saturating_add(form_size);
         let mut at = 16u64;
         while at + 12 <= form_end {
-            seek_to(&mut file, at)?;
+            seek_to(&mut *file, at)?;
             let mut chunk = [0u8; 12];
-            read_exact(&mut file, &mut chunk)?;
+            read_exact(&mut *file, &mut chunk)?;
             let id = &chunk[..4];
             let size = be_u64(&chunk[4..]);
             let data_start = at + 12;
@@ -61,12 +65,12 @@ impl Dff {
             }
             match id {
                 b"PROP" => {
-                    seek_to(&mut file, data_start)?;
+                    seek_to(&mut *file, data_start)?;
                     let mut kind = [0u8; 4];
-                    read_exact(&mut file, &mut kind)?;
+                    read_exact(&mut *file, &mut kind)?;
                     if &kind == b"SND " {
                         parse_prop(
-                            &mut file,
+                            &mut *file,
                             data_start + 4,
                             data_start + size,
                             &mut rate,
@@ -132,7 +136,7 @@ impl Dff {
             .data_start
             .checked_add(frame.saturating_mul(u64::from(self.format.channels)))
             .ok_or_else(|| DecodeError::Decode("DSDIFF seek overflow".into()))?;
-        seek_to(&mut self.file, at)?;
+        seek_to(&mut *self.file, at)?;
         self.position = frame;
         Ok(())
     }
@@ -148,7 +152,7 @@ impl Dff {
             .unwrap_or(usize::MAX)
             .min(self.buf.len() / channels);
         let bytes = frames * channels;
-        read_exact(&mut self.file, &mut self.buf[..bytes])?;
+        read_exact(&mut *self.file, &mut self.buf[..bytes])?;
         out.extend_from_slice(&self.buf[..bytes]);
         self.position += frames as u64;
         Ok(frames)
@@ -157,7 +161,7 @@ impl Dff {
 
 /// Parses the subchunks of a `SND ` property block.
 fn parse_prop(
-    file: &mut File,
+    file: &mut dyn ReadSeek,
     mut at: u64,
     end: u64,
     rate: &mut Option<u32>,
@@ -219,7 +223,9 @@ fn parse_prop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use std::io::Write;
+    use std::path::Path;
 
     const RATE: u32 = 2_822_400;
 

@@ -385,6 +385,7 @@ impl Library {
         let count: i64 = self.conn.query_row(
             "SELECT count(*) FROM tracks
              WHERE loudness_lufs IS NULL AND rg_track_gain IS NULL
+               AND source_kind = 'local'
                AND codec NOT IN ('dsf', 'dff')",
             [],
             |row| row.get(0),
@@ -411,6 +412,7 @@ impl Library {
             .prepare(
                 "SELECT id, album_id, path, mtime, size FROM tracks
                  WHERE loudness_lufs IS NULL AND rg_track_gain IS NULL
+                   AND source_kind = 'local'
                    AND codec NOT IN ('dsf', 'dff')
                  ORDER BY album_id, coalesce(disc_no, 1), track_no IS NULL, track_no, path",
             )?

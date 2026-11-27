@@ -211,6 +211,25 @@ pub struct SignalPath {
 /// Builds a tap for each stream the player opens (bit-perfect verification).
 pub type TapFactory = Box<dyn FnMut(DeviceFormat) -> Box<dyn WriteTap> + Send>;
 
+/// Opens a queued track path into a [`SourceDecoder`].
+///
+/// The default [`LocalSourceOpener`] opens local filesystem paths via [`SourceDecoder::open`].
+/// Applications can supply a custom opener to stream remote tracks (such as Google Drive) through
+/// the exact same decode, DSP, and bit-perfect output pipeline.
+pub trait SourceOpener: Send + Sync {
+    fn open(&self, path: &Path) -> Result<SourceDecoder, DecodeError>;
+}
+
+/// Default [`SourceOpener`] that opens local files with [`SourceDecoder::open`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LocalSourceOpener;
+
+impl SourceOpener for LocalSourceOpener {
+    fn open(&self, path: &Path) -> Result<SourceDecoder, DecodeError> {
+        SourceDecoder::open(path)
+    }
+}
+
 /// The PCM rate DSD→PCM conversion targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DsdPcmRate {
@@ -257,6 +276,8 @@ pub struct PlayerConfig {
     pub crossfade: CrossfadeConfig,
     /// Device sharing policy: exclusive bit-perfect (default) or OS mixer shared mode.
     pub share_mode: ShareMode,
+    /// Opens queued track paths into decoders (defaults to local filesystem files).
+    pub source_opener: Arc<dyn SourceOpener>,
 }
 
 impl PlayerConfig {
@@ -276,6 +297,7 @@ impl PlayerConfig {
             loudness: Arc::new(NoLoudness),
             crossfade: CrossfadeConfig::default(),
             share_mode: ShareMode::Exclusive,
+            source_opener: Arc::new(LocalSourceOpener),
         }
     }
 
@@ -2293,7 +2315,7 @@ impl Engine {
                 return Err(index);
             };
             self.update_leveling(index, &path);
-            match open_decoder(&path, pos) {
+            match open_decoder(&*self.config.source_opener, &path, pos) {
                 Ok(decoder) => {
                     let source = decoder.source_format();
                     let mut spec = match decoder.format() {
@@ -2548,7 +2570,7 @@ impl Engine {
                 let Some(path) = self.queue.get(next).map(Path::to_path_buf) else {
                     return false;
                 };
-                let Ok(decoder) = open_decoder(&path, Pos::ZERO) else {
+                let Ok(decoder) = open_decoder(&*self.config.source_opener, &path, Pos::ZERO) else {
                     // The normal advance reports the failure and moves on.
                     self.fade_checked = true;
                     return false;
@@ -2615,7 +2637,7 @@ impl Engine {
         let Some(path) = self.queue.get(next).map(Path::to_path_buf) else {
             return false;
         };
-        let Ok(decoder) = open_decoder(&path, Pos::ZERO) else {
+        let Ok(decoder) = open_decoder(&*self.config.source_opener, &path, Pos::ZERO) else {
             self.fade_checked = true;
             return false;
         };
@@ -3470,8 +3492,12 @@ fn reusable(current: DeviceFormat, mode: OutputMode, spec: OutputSpec) -> bool {
     mode == spec.mode && current.rate == spec.rate && current.channels == spec.channels && container
 }
 
-fn open_decoder(path: &Path, pos: Pos) -> Result<SourceDecoder, DecodeError> {
-    let mut decoder = SourceDecoder::open(path)?;
+fn open_decoder(
+    opener: &dyn SourceOpener,
+    path: &Path,
+    pos: Pos,
+) -> Result<SourceDecoder, DecodeError> {
+    let mut decoder = opener.open(path)?;
     let frame = pos.frames_at(decoder.source_format().rate);
     if frame > 0 {
         decoder.seek(frame)?;

@@ -82,7 +82,7 @@
         aria-label={t("quality.checkAll")}
         title={t("quality.checkAll")}
         disabled={!tracks?.length}
-        onclick={() => tracks && app.checkQualityBatch(tracks.map((tr) => tr.id))}
+        onclick={() => tracks && app.checkQualityBatch(tracks.filter((tr) => tr.source !== "gdrive").map((tr) => tr.id))}
       >
         <Icon name="spectrum" size={20} />
       </button>

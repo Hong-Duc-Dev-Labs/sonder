@@ -23,6 +23,7 @@ sonder-metadata.workspace = true
 sonder-autoeq.workspace = true
 sonder-quality = { workspace = true, features = ["specta"] }
 sonder-output.workspace = true
+sonder-gdrive.workspace = true
 crossbeam-channel.workspace = true
 thiserror.workspace = true
 tauri = { version = "2.12.5", features = [] }

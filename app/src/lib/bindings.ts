@@ -225,12 +225,27 @@ export const commands = {
 	playerOpenPaths: (paths: string[]) => __TAURI_INVOKE<number>("player_open_paths", { paths }),
 	/**  Opens the system file manager highlighting `path`. */
 	revealInFolder: (path: string) => __TAURI_INVOKE<null>("reveal_in_folder", { path }),
+	gdriveStatus: () => __TAURI_INVOKE<GdriveStatus>("gdrive_status"),
+	gdriveSaveConfig: (clientId: string, clientSecret: string | null) => __TAURI_INVOKE<GdriveStatus>("gdrive_save_config", { clientId, clientSecret }),
+	gdriveSignIn: () => __TAURI_INVOKE<GdriveStatus>("gdrive_sign_in"),
+	gdriveCancelSignIn: () => __TAURI_INVOKE<null>("gdrive_cancel_sign_in"),
+	gdriveSignOut: () => __TAURI_INVOKE<GdriveStatus>("gdrive_sign_out"),
+	gdriveListFolders: (parentId: string | null) => __TAURI_INVOKE<GdriveFolderItem[]>("gdrive_list_folders", { parentId }),
+	gdriveSyncedFolders: () => __TAURI_INVOKE<GdriveSyncedFolder[]>("gdrive_synced_folders"),
+	gdriveAddFolder: (folderId: string, name: string) => __TAURI_INVOKE<GdriveSyncedFolder>("gdrive_add_folder", { folderId, name }),
+	gdriveRemoveFolder: (folderId: string) => __TAURI_INVOKE<null>("gdrive_remove_folder", { folderId }),
+	gdriveSyncNow: () => __TAURI_INVOKE<null>("gdrive_sync_now"),
+	gdriveCacheStats: () => __TAURI_INVOKE<GdriveCacheStats>("gdrive_cache_stats"),
+	gdriveSetCacheLimit: (maxMb: number) => __TAURI_INVOKE<GdriveCacheStats>("gdrive_set_cache_limit", { maxMb }),
+	gdriveClearCache: () => __TAURI_INVOKE<GdriveCacheStats>("gdrive_clear_cache"),
 };
 
 /** Events */
 export const events = {
 	devicesChangedEvent: makeEvent<DevicesChangedEvent, DevicesChangedEvent>("devices-changed-event"),
 	favoritesChangedEvent: makeEvent<FavoritesChangedEvent, FavoritesChangedEvent>("favorites-changed-event"),
+	gdriveSyncFinishedEvent: makeEvent<GdriveSyncFinishedEvent, GdriveSyncFinishedEvent>("gdrive-sync-finished-event"),
+	gdriveSyncProgressEvent: makeEvent<GdriveSyncProgressEvent, GdriveSyncProgressEvent>("gdrive-sync-progress-event"),
 	historyChangedEvent: makeEvent<HistoryChangedEvent, HistoryChangedEvent>("history-changed-event"),
 	libraryChangedEvent: makeEvent<LibraryChangedEvent, LibraryChangedEvent>("library-changed-event"),
 	loudnessFinishedEvent: makeEvent<LoudnessFinishedEvent, LoudnessFinishedEvent>("loudness-finished-event"),
@@ -409,6 +424,53 @@ export type FoundLyrics = {
 	/**  The service says the track has no vocals; the text is empty. */
 	instrumental: boolean,
 	text: string,
+};
+
+export type GdriveCacheStats = {
+	totalBytes: number,
+	maxBytes: number,
+	chunkCount: number,
+	fileCount: number,
+};
+
+export type GdriveFolderItem = {
+	id: string,
+	name: string,
+};
+
+export type GdriveStatus = {
+	configured: boolean,
+	clientId: string,
+	hasClientSecret: boolean,
+	envOverride: boolean,
+	authenticated: boolean,
+	accountEmail: string | null,
+	syncing: boolean,
+};
+
+export type GdriveSyncFinishedEvent = {
+	added: number,
+	updated: number,
+	removed: number,
+	unchanged: number,
+	failureCount: number,
+	error: string | null,
+};
+
+export type GdriveSyncPhase = "listing" | "reading" | "writing";
+
+export type GdriveSyncProgressEvent = {
+	phase: GdriveSyncPhase,
+	folderName: string,
+	done: number,
+	total: number,
+};
+
+export type GdriveSyncedFolder = {
+	id: number,
+	folderId: string,
+	name: string,
+	addedAt: number,
 };
 
 /**
@@ -787,6 +849,7 @@ export type QueueItem = {
 	art: string | null,
 	artColors: string[],
 	durationMs: number,
+	source: TrackSource,
 };
 
 export type RecentPlayItem = {
@@ -888,6 +951,12 @@ export type Settings = {
 	dither?: boolean,
 	/**  Rate-conversion policy, filter source and headroom. */
 	src?: SrcSetting,
+	/**  User-configured Google OAuth Desktop Client ID for Google Drive streaming. */
+	gdriveClientId?: string | null,
+	/**  Optional Google OAuth Desktop Client Secret. */
+	gdriveClientSecret?: string | null,
+	/**  Maximum disk cache size for Google Drive audio chunks, in MiB. */
+	gdriveCacheMaxMb?: number,
 };
 
 /**  The stages a track passes through, in processing order. */
@@ -1033,7 +1102,12 @@ export type TrackItem = {
 	quality: QualityBadge | null,
 	/**  Whether this track is marked as favorite. */
 	favorite: boolean,
+	/**  Whether this track is local or streamed from Google Drive. */
+	source: TrackSource,
 };
+
+/**  Where a track's audio bytes live. */
+export type TrackSource = "local" | "gdrive";
 
 /**
  *  What the metadata editor shows for a track: the tags in its file and the cover embedded

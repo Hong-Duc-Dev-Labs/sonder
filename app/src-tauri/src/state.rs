@@ -27,6 +27,10 @@ pub struct AppPaths {
     pub autoeq: PathBuf,
     /// Cached online lyrics lookups.
     pub lyrics: PathBuf,
+    /// Persisted Google Drive OAuth tokens.
+    pub gdrive_tokens: PathBuf,
+    /// Progressive Range chunk cache for Google Drive streams.
+    pub gdrive_cache: PathBuf,
 }
 
 impl AppPaths {
@@ -40,6 +44,8 @@ impl AppPaths {
             session: dirs.data_dir().join("session.json"),
             lyrics: dirs.data_dir().join("lyrics"),
             autoeq: dirs.data_dir().join("autoeq"),
+            gdrive_tokens: dirs.config_dir().join("gdrive_tokens.json"),
+            gdrive_cache: dirs.cache_dir().join("gdrive"),
         })
     }
 }
@@ -133,6 +139,8 @@ pub struct AppState {
     pub sleep: Mutex<crate::sleep::SleepTimer>,
     /// AutoEQ headphone search; the index loads on the first search.
     pub autoeq: Arc<sonder_autoeq::AutoEq>,
+    /// Google Drive OAuth, API client, and progressive chunk cache.
+    pub gdrive: Arc<crate::gdrive::GdriveService>,
 }
 
 impl AppState {
@@ -147,6 +155,13 @@ impl AppState {
             crate::commands::USER_AGENT,
         ));
         let loudness = Arc::new(Mutex::new(Library::open(&paths.db, &paths.art)?));
+        let gdrive = Arc::new(crate::gdrive::GdriveService::new(
+            paths.gdrive_tokens.clone(),
+            paths.gdrive_cache.clone(),
+            settings.gdrive_client_id.as_deref(),
+            settings.gdrive_client_secret.as_deref(),
+            settings.gdrive_cache_max_mb,
+        ));
 
         let mut devices = DeviceList::new(backend());
         let found = devices.list().unwrap_or_default();
@@ -161,6 +176,10 @@ impl AppState {
         config.src = settings.engine_src();
         config.crossfade = settings.engine_crossfade();
         config.loudness = Arc::new(LibraryLoudness::new(loudness.clone()));
+        config.source_opener = Arc::new(crate::gdrive::HybridSourceOpener::new(
+            gdrive.clone(),
+            loudness.clone(),
+        ));
         let (player, events) = Player::spawn(backend(), config)?;
         if settings.volume_db.is_some() {
             player.set_volume(settings.volume_db);
@@ -179,7 +198,7 @@ impl AppState {
             let mut restored_paths = Vec::new();
             for raw in &saved.paths {
                 let path = PathBuf::from(raw);
-                if !path.is_file() {
+                if !path.is_file() && !sonder_gdrive::is_gdrive_path(&path) {
                     continue;
                 }
                 let entry_id = entry_ids.fetch_add(1, Ordering::Relaxed);
@@ -235,6 +254,7 @@ impl AppState {
                 quality: crate::quality::QualityControl::default(),
                 sleep: Mutex::default(),
                 autoeq,
+                gdrive,
             },
             events,
         ))

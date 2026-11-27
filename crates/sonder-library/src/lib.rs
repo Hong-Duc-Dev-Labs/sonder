@@ -48,14 +48,15 @@ pub use playlist::{PlaylistDetail, PlaylistEntry, PlaylistItem, PlaylistSummary}
 pub use quality::{QualityResult, QualitySubject};
 pub use query::{
     AlbumDetail, AlbumSort, AlbumSummary, ArtistDetail, ArtistSummary, Track, TrackQuality,
+    TrackSource,
 };
-pub use scan::{ScanFailure, ScanProgress, ScanReport};
+pub use scan::{RemoteAudioFile, ScanFailure, ScanProgress, ScanReport};
 pub use schema::SCHEMA_VERSION;
 pub use tags::{
     AUDIO_EXTENSIONS, AudioInfo, Codec, CoverEdit, FileMeta, ReplayGain, TagEdit, TagError,
-    TrackTags, cover_mime,
+    TrackTags, cover_mime, fallback_meta, is_audio_file, read_file, read_file_tags, read_stream,
+    write_file,
 };
-pub use tags::{is_audio_file, read_file, read_file_tags, write_file};
 pub use watch::{LibraryWatcher, WatchEvent};
 
 #[derive(Debug, thiserror::Error)]
@@ -82,6 +83,15 @@ pub enum LibraryError {
     Watch(#[from] notify_debouncer_mini::notify::Error),
     #[error(transparent)]
     Tags(#[from] TagError),
+}
+
+/// A Google Drive folder synced into the library.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteRoot {
+    pub id: i64,
+    pub folder_id: String,
+    pub name: String,
+    pub added_at: i64,
 }
 
 /// A folder the library indexes.
@@ -189,15 +199,93 @@ impl Library {
     }
 
     pub fn roots(&self) -> Result<Vec<Root>, LibraryError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, path, follow_symlinks FROM roots ORDER BY path")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, follow_symlinks FROM roots
+             WHERE source_kind = 'local'
+             ORDER BY path",
+        )?;
         let roots = stmt
             .query_map([], |row| {
                 Ok(Root {
                     id: row.get(0)?,
                     path: PathBuf::from(row.get::<_, String>(1)?),
                     follow_symlinks: row.get(2)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(roots)
+    }
+
+    /// Adds a Google Drive folder to sync into the library. Adding an already-registered folder
+    /// updates its display name.
+    pub fn add_gdrive_root(
+        &mut self,
+        folder_id: &str,
+        name: &str,
+    ) -> Result<RemoteRoot, LibraryError> {
+        let virtual_root = format!("gdrive://folder/{folder_id}");
+        let now = unix_now();
+        let id: i64 = self.conn.query_row(
+            "INSERT INTO roots (path, follow_symlinks, added_at, source_kind, remote_folder_id, display_name)
+             VALUES (?1, 0, ?2, 'gdrive', ?3, ?4)
+             ON CONFLICT (path) DO UPDATE SET display_name = excluded.display_name
+             RETURNING id",
+            params![virtual_root, now, folder_id, name],
+            |row| row.get(0),
+        )?;
+        Ok(RemoteRoot {
+            id,
+            folder_id: folder_id.to_owned(),
+            name: name.to_owned(),
+            added_at: now,
+        })
+    }
+
+    /// Removes a synced Google Drive folder and all tracks indexed under it.
+    pub fn remove_gdrive_root(&mut self, folder_id: &str) -> Result<bool, LibraryError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(root_id): Option<i64> = tx
+            .query_row(
+                "SELECT id FROM roots WHERE source_kind = 'gdrive' AND remote_folder_id = ?1",
+                [folder_id],
+                |r| r.get(0),
+            )
+            .optional()?
+        else {
+            return Ok(false);
+        };
+        let albums: Vec<i64> = {
+            let mut stmt = tx.prepare("SELECT DISTINCT album_id FROM tracks WHERE root_id = ?1")?;
+            stmt.query_map([root_id], |r| r.get(0))?
+                .collect::<Result<_, _>>()?
+        };
+        tx.execute("DELETE FROM roots WHERE id = ?1", [root_id])?;
+        scan::refresh_albums(&tx, albums)?;
+        let orphan_art = scan::delete_orphans(&tx)?;
+        tx.commit()?;
+        for hash in orphan_art {
+            self.art.remove(&hash);
+        }
+        Ok(true)
+    }
+
+    /// Lists all Google Drive folders registered in the library.
+    pub fn gdrive_roots(&self) -> Result<Vec<RemoteRoot>, LibraryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, remote_folder_id, coalesce(display_name, remote_folder_id), added_at
+             FROM roots
+             WHERE source_kind = 'gdrive' AND remote_folder_id IS NOT NULL
+             ORDER BY lower(coalesce(display_name, remote_folder_id))",
+        )?;
+        let roots = stmt
+            .query_map([], |row| {
+                Ok(RemoteRoot {
+                    id: row.get(0)?,
+                    folder_id: row.get(1)?,
+                    name: row.get(2)?,
+                    added_at: row.get(3)?,
                 })
             })?
             .collect::<Result<_, _>>()?;

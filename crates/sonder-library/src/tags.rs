@@ -187,6 +187,64 @@ pub fn read_file(path: &Path) -> Result<FileMeta, TagError> {
     Ok(meta)
 }
 
+/// Reads tags and technical format from any seekable byte stream (such as a Google Drive
+/// Range-cached reader) without requiring a local file on disk.
+///
+/// `virtual_path` is used only for its file extension hint and fallback title/track-number
+/// parsing.
+pub fn read_stream<R: Read + Seek + Send + Sync + 'static>(
+    mut reader: R,
+    byte_len: u64,
+    virtual_path: &Path,
+) -> Result<FileMeta, TagError> {
+    let ext = virtual_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let mut meta = match ext.as_str() {
+        "dsf" => dsd::read_dsf_from(&mut reader, byte_len)?,
+        "dff" => dsd::read_dff_from(&mut reader, byte_len)?,
+        "m4a" | "mp4" => read_mp4_stream(reader, byte_len)?,
+        _ => read_lofty_stream(reader, &ext)?,
+    };
+    fill_from_file_name(&mut meta.tags, virtual_path);
+    Ok(meta)
+}
+
+/// Builds a minimal [`FileMeta`] from a filename and optional parent folder name when remote
+/// tag probing fails. Returns `None` if the extension is not a supported audio format.
+pub fn fallback_meta(virtual_path: &Path, folder_hint: Option<&str>) -> Option<FileMeta> {
+    let ext = virtual_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)?;
+    let (codec, rate, bits) = match ext.as_str() {
+        "flac" => (Codec::Flac, 44_100, Some(16)),
+        "m4a" | "mp4" => (Codec::Alac, 44_100, Some(16)),
+        "wav" => (Codec::Wav, 44_100, Some(16)),
+        "aif" | "aiff" | "aifc" => (Codec::Aiff, 44_100, Some(16)),
+        "dsf" => (Codec::Dsf, 2_822_400, Some(1)),
+        "dff" => (Codec::Dff, 2_822_400, Some(1)),
+        _ => return None,
+    };
+    let mut tags = TrackTags::default();
+    fill_from_file_name(&mut tags, virtual_path);
+    if tags.album.is_none() {
+        tags.album = folder_hint.and_then(clean);
+    }
+    Some(FileMeta {
+        tags,
+        audio: AudioInfo {
+            codec,
+            rate,
+            bits,
+            channels: 2,
+            duration_ms: 0,
+        },
+    })
+}
+
 /// What the file itself holds, without values guessed from its name.
 fn read_stored(path: &Path) -> Result<FileMeta, TagError> {
     let ext = path
@@ -480,6 +538,76 @@ fn decoder_audio_info(
             Some(frames) => frames.saturating_mul(1000) / u64::from(format.rate),
             None => container_duration.as_millis() as u64,
         },
+    })
+}
+
+fn read_mp4_stream<R: Read + Seek + Send + Sync + 'static>(
+    mut reader: R,
+    byte_len: u64,
+) -> Result<FileMeta, TagError> {
+    let mp4 = Mp4File::read_from(&mut reader, ParseOptions::new())?;
+    let codec = mp4.properties().codec();
+    let tagged: TaggedFile = mp4.into();
+    let audio = match codec {
+        Some(Mp4Codec::ALAC) => audio_info(&tagged, Codec::Alac)?,
+        None => {
+            reader.seek(SeekFrom::Start(0))?;
+            let decoder = sonder_decode::Decoder::open_source(
+                Box::new(reader),
+                Some(byte_len),
+                Some("m4a"),
+            )
+            .map_err(|e| TagError::Unsupported(format!("cannot open MP4 audio: {e}")))?;
+            if !decoder.is_alac() {
+                return Err(TagError::Unsupported("MP4 audio is not ALAC".into()));
+            }
+            let format = decoder.format();
+            let container_duration = tagged.properties().duration();
+            AudioInfo {
+                codec: Codec::Alac,
+                rate: format.rate,
+                bits: Some(format.bits),
+                channels: format.channels,
+                duration_ms: match decoder.total_frames().filter(|frames| *frames > 0) {
+                    Some(frames) => frames.saturating_mul(1000) / u64::from(format.rate),
+                    None => container_duration.as_millis() as u64,
+                },
+            }
+        }
+        Some(other) => {
+            return Err(TagError::Unsupported(format!(
+                "MP4 audio is {other:?}, not ALAC"
+            )));
+        }
+    };
+    Ok(FileMeta {
+        tags: extract(&tagged),
+        audio,
+    })
+}
+
+fn read_lofty_stream<R: Read + Seek>(reader: R, ext: &str) -> Result<FileMeta, TagError> {
+    let buffered = io::BufReader::new(reader);
+    let probe = match ext {
+        "flac" => Probe::with_file_type(buffered, FileType::Flac),
+        "wav" => Probe::with_file_type(buffered, FileType::Wav),
+        "aif" | "aiff" | "aifc" => Probe::with_file_type(buffered, FileType::Aiff),
+        _ => Probe::new(buffered).guess_file_type()?,
+    };
+    let tagged = probe.read()?;
+    let codec = match tagged.file_type() {
+        FileType::Flac => Codec::Flac,
+        FileType::Wav => Codec::Wav,
+        FileType::Aiff => Codec::Aiff,
+        other => {
+            return Err(TagError::Unsupported(format!(
+                "{other:?} files are not indexed"
+            )));
+        }
+    };
+    Ok(FileMeta {
+        tags: extract(&tagged),
+        audio: audio_info(&tagged, codec)?,
     })
 }
 
@@ -800,6 +928,13 @@ mod dsd {
     pub(super) fn read_dsf(path: &Path) -> Result<FileMeta, TagError> {
         let mut f = File::open(path)?;
         let file_len = f.metadata()?.len();
+        read_dsf_from(&mut f, file_len)
+    }
+
+    pub(super) fn read_dsf_from<R: Read + Seek>(
+        f: &mut R,
+        file_len: u64,
+    ) -> Result<FileMeta, TagError> {
         let mut head = [0u8; 28 + 52];
         f.read_exact(&mut head)
             .map_err(|_| bad("DSF header truncated"))?;
@@ -816,7 +951,7 @@ mod dsd {
             return Err(bad("DSF format chunk is invalid"));
         }
         let tags = if metadata_offset > 0 && metadata_offset < file_len {
-            read_id3_at(&mut f, metadata_offset, file_len - metadata_offset)?.unwrap_or_default()
+            read_id3_at(f, metadata_offset, file_len - metadata_offset)?.unwrap_or_default()
         } else {
             TrackTags::default()
         };
@@ -836,6 +971,13 @@ mod dsd {
     pub(super) fn read_dff(path: &Path) -> Result<FileMeta, TagError> {
         let mut f = File::open(path)?;
         let file_len = f.metadata()?.len();
+        read_dff_from(&mut f, file_len)
+    }
+
+    pub(super) fn read_dff_from<R: Read + Seek>(
+        f: &mut R,
+        file_len: u64,
+    ) -> Result<FileMeta, TagError> {
         let mut head = [0u8; 16];
         f.read_exact(&mut head)
             .map_err(|_| bad("DFF header truncated"))?;
@@ -855,17 +997,17 @@ mod dsd {
 
         let mut pos = 16u64;
         while pos + 12 <= form_end {
-            let (id, size) = chunk_header(&mut f, pos)?;
+            let (id, size) = chunk_header(f, pos)?;
             let data = pos + 12;
             // A size past the end of the form is clamped: the last chunk of a truncated
             // download is still worth reading.
             let len = size.min(form_end.saturating_sub(data));
             match &id {
-                b"PROP" => read_prop(&mut f, data, len, &mut rate, &mut channels)?,
+                b"PROP" => read_prop(f, data, len, &mut rate, &mut channels)?,
                 b"DSD " => sound_bytes = Some(len),
-                b"DST " => dst_frames = read_dst_info(&mut f, data, len)?,
-                b"DIIN" => read_diin(&mut f, data, len, &mut native)?,
-                b"ID3 " => id3 = read_tag_at(&mut f, data, len)?,
+                b"DST " => dst_frames = read_dst_info(f, data, len)?,
+                b"DIIN" => read_diin(f, data, len, &mut native)?,
+                b"ID3 " => id3 = read_tag_at(f, data, len)?,
                 _ => {}
             }
             match next_chunk(data, size, form_end) {
@@ -875,9 +1017,9 @@ mod dsd {
         }
         // Files written by sacd_extract carry the tag after the form instead of inside it.
         if id3.is_none()
-            && let Some(spot) = tail_spot(&mut f, form_end, file_len)?
+            && let Some(spot) = tail_spot(f, form_end, file_len)?
         {
-            id3 = read_tag_at(&mut f, spot.body, spot.len)?;
+            id3 = read_tag_at(f, spot.body, spot.len)?;
         }
         if rate == 0 || channels == 0 {
             return Err(bad("DSDIFF property chunk is missing or invalid"));
@@ -908,7 +1050,7 @@ mod dsd {
         })
     }
 
-    fn chunk_header(f: &mut File, pos: u64) -> Result<([u8; 4], u64), TagError> {
+    fn chunk_header<R: Read + Seek>(f: &mut R, pos: u64) -> Result<([u8; 4], u64), TagError> {
         let mut h = [0u8; 12];
         f.seek(SeekFrom::Start(pos))?;
         f.read_exact(&mut h)
@@ -919,8 +1061,8 @@ mod dsd {
         ))
     }
 
-    fn read_prop(
-        f: &mut File,
+    fn read_prop<R: Read + Seek>(
+        f: &mut R,
         data: u64,
         size: u64,
         rate: &mut u32,
@@ -958,7 +1100,11 @@ mod dsd {
     }
 
     /// DST-compressed sound: the `FRTE` chunk gives frame count and frames per second.
-    fn read_dst_info(f: &mut File, data: u64, size: u64) -> Result<Option<(u32, u16)>, TagError> {
+    fn read_dst_info<R: Read + Seek>(
+        f: &mut R,
+        data: u64,
+        size: u64,
+    ) -> Result<Option<(u32, u16)>, TagError> {
         if size < 12 + 6 {
             return Ok(None);
         }
@@ -975,7 +1121,12 @@ mod dsd {
     }
 
     /// `DIIN` edited-master info: `DITI` title and `DIAR` artist (u32 length + text).
-    fn read_diin(f: &mut File, data: u64, size: u64, tags: &mut TrackTags) -> Result<(), TagError> {
+    fn read_diin<R: Read + Seek>(
+        f: &mut R,
+        data: u64,
+        size: u64,
+        tags: &mut TrackTags,
+    ) -> Result<(), TagError> {
         let end = data + size;
         let mut pos = data;
         while pos + 12 <= end {
@@ -1017,8 +1168,8 @@ mod dsd {
     }
 
     /// The tag a DDF file appends after its form, if the bytes there are one.
-    pub(super) fn tail_spot(
-        f: &mut File,
+    pub(super) fn tail_spot<R: Read + Seek>(
+        f: &mut R,
         start: u64,
         file_len: u64,
     ) -> Result<Option<TagSpot>, TagError> {

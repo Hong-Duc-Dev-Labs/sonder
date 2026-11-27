@@ -118,6 +118,25 @@ impl WalkOutput {
     }
 }
 
+/// A remote audio file discovered during a Google Drive folder scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAudioFile {
+    /// Canonical virtual path stored in `tracks.path` (`gdrive://<file_id>/<name>`).
+    pub virtual_path: PathBuf,
+    /// Virtual folder-structured path used only for fallback album grouping when tags lack an album.
+    pub grouping_path: PathBuf,
+    pub remote_file_id: String,
+    pub remote_folder_id: String,
+    pub remote_modified_time: i64,
+    pub remote_size: u64,
+}
+
+struct PendingRemote<'a> {
+    root_id: i64,
+    file: &'a RemoteAudioFile,
+    indexed: Option<Indexed>,
+}
+
 struct Pending {
     root_id: i64,
     file: FoundFile,
@@ -370,6 +389,152 @@ impl Library {
             self.art.remove(&hash);
         }
         self.track(id)
+    }
+
+    /// Reconciles a synced Google Drive folder against the indexed tracks under its root.
+    ///
+    /// Tracks whose `(remote_modified_time, remote_size)` are unchanged are skipped without
+    /// calling `probe`. New and modified tracks are probed via `probe` (in parallel with bounded
+    /// concurrency via rayon) and written in one transaction; removed remote files are deleted
+    /// and affected albums / orphan cover art are cleaned up.
+    pub fn sync_gdrive_folder(
+        &mut self,
+        folder_id: &str,
+        files: &[RemoteAudioFile],
+        probe: &(dyn Fn(&RemoteAudioFile) -> Result<FileMeta, TagError> + Sync),
+        progress: &(dyn Fn(ScanProgress) + Sync),
+    ) -> Result<ScanReport, LibraryError> {
+        let start = Instant::now();
+        let mut report = ScanReport::default();
+
+        let Some(root_id): Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM roots WHERE source_kind = 'gdrive' AND remote_folder_id = ?1",
+                [folder_id],
+                |r| r.get(0),
+            )
+            .optional()?
+        else {
+            report.elapsed = start.elapsed();
+            return Ok(report);
+        };
+
+        let mut indexed = self.indexed_under_root(root_id)?;
+        let mut pending: Vec<PendingRemote<'_>> = Vec::new();
+        for file in files {
+            let key = path_str(&file.virtual_path)?.to_owned();
+            let size = file.remote_size as i64;
+            match indexed.remove(&key) {
+                Some(old) if old.mtime == file.remote_modified_time && old.size == size => {
+                    report.unchanged += 1;
+                }
+                old => pending.push(PendingRemote {
+                    root_id,
+                    file,
+                    indexed: old,
+                }),
+            }
+        }
+        let removed: Vec<Indexed> = indexed.into_values().collect();
+
+        // Probe metadata and cover art for new/changed remote files.
+        let resolver = ArtResolver::new(&self.art, self.known_art()?);
+        let total = pending.len();
+        let done = AtomicUsize::new(0);
+        progress(ScanProgress::Reading { done: 0, total });
+        let read: Vec<(PendingRemote<'_>, ReadResult)> = pending
+            .into_par_iter()
+            .map(|p| {
+                let _done = CountDone {
+                    done: &done,
+                    total,
+                    progress,
+                };
+                let result = probe(p.file).map(|mut meta| {
+                    let cover = meta.tags.cover.take();
+                    let art = cover
+                        .as_deref()
+                        .and_then(|bytes| resolver.resolve(Some(bytes), &p.file.virtual_path));
+                    (meta, art)
+                });
+                (p, result)
+            })
+            .collect();
+        drop(resolver);
+
+        if read.is_empty() && removed.is_empty() {
+            report.elapsed = start.elapsed();
+            return Ok(report);
+        }
+
+        progress(ScanProgress::Writing);
+        let now = unix_now();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut touched: BTreeSet<i64> = BTreeSet::new();
+        for old in &removed {
+            tx.execute("DELETE FROM tracks WHERE id = ?1", [old.id])?;
+            touched.insert(old.album_id);
+        }
+        report.removed += removed.len();
+
+        for (p, result) in read {
+            match result {
+                Ok((meta, art)) => {
+                    let album_id = write_remote_track(&tx, &p, &meta, art.as_ref(), now)?;
+                    touched.insert(album_id);
+                    match p.indexed {
+                        Some(old) => {
+                            touched.insert(old.album_id);
+                            report.updated += 1;
+                        }
+                        None => report.added += 1,
+                    }
+                }
+                Err(err) => {
+                    report.failed.push(ScanFailure {
+                        path: p.file.virtual_path.clone(),
+                        reason: err.to_string(),
+                    });
+                    if let Some(old) = p.indexed {
+                        tx.execute("DELETE FROM tracks WHERE id = ?1", [old.id])?;
+                        touched.insert(old.album_id);
+                        report.removed += 1;
+                    }
+                }
+            }
+        }
+
+        crate::loudness::invalidate_album_loudness(&tx, &touched)?;
+        refresh_albums(&tx, touched)?;
+        let orphan_art = delete_orphans(&tx)?;
+        tx.commit()?;
+        for hash in orphan_art {
+            self.art.remove(&hash);
+        }
+
+        report.elapsed = start.elapsed();
+        Ok(report)
+    }
+
+    fn indexed_under_root(&self, root_id: i64) -> Result<HashMap<String, Indexed>, LibraryError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT path, id, mtime, size, album_id FROM tracks WHERE root_id = ?1",
+        )?;
+        let rows = stmt.query_map([root_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                Indexed {
+                    id: row.get(1)?,
+                    mtime: row.get(2)?,
+                    size: row.get(3)?,
+                    album_id: row.get(4)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Indexed tracks at `path` or below it, keyed by path.
@@ -714,6 +879,169 @@ fn write_track(
     Ok(album_id)
 }
 
+/// Inserts or updates one Google Drive track and returns its album id.
+fn write_remote_track(
+    tx: &Transaction,
+    p: &PendingRemote<'_>,
+    meta: &FileMeta,
+    art: Option<&ArtImage>,
+    now: i64,
+) -> Result<i64, LibraryError> {
+    let tags = &meta.tags;
+    let audio = &meta.audio;
+    let artist = joined(&tags.artists);
+    let album_artist = joined(&tags.album_artists);
+    let identity = album_identity(
+        tags.album.as_deref(),
+        album_artist.as_deref(),
+        tags.mb_album_id.as_deref(),
+        &p.file.grouping_path,
+    );
+    let album_id: i64 = tx
+        .prepare_cached(
+            "INSERT INTO albums (group_key, title, mb_album_id, added_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (group_key) DO UPDATE SET group_key = excluded.group_key
+             RETURNING id",
+        )?
+        .query_row(
+            params![identity.key, identity.title, tags.mb_album_id, now],
+            |r| r.get(0),
+        )?;
+    let art_id: Option<i64> = match art {
+        Some(a) => Some(
+            tx.prepare_cached(
+                "INSERT INTO art (hash, width, height, colors) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (hash) DO UPDATE SET colors = coalesce(excluded.colors, art.colors)
+                 RETURNING id",
+            )?
+            .query_row(params![a.hash, a.width, a.height, a.colors], |r| r.get(0))?,
+        ),
+        None => None,
+    };
+    let title = tags.title.clone().unwrap_or_default();
+    let rg = &tags.replay_gain;
+    let key = path_str(&p.file.virtual_path)?;
+    let size = p.file.remote_size as i64;
+    let track_id: i64 = match p.indexed {
+        Some(old) => {
+            tx.prepare_cached(
+                "UPDATE tracks SET root_id = ?1, path = ?2, mtime = ?3, size = ?4, album_id = ?5,
+                 title = ?6, artist = ?7, album_artist = ?8, compilation = ?9, track_no = ?10,
+                 disc_no = ?11, year = ?12, genre = ?13, codec = ?14, rate = ?15, bits = ?16,
+                 channels = ?17, duration_ms = ?18, rg_track_gain = ?19, rg_track_peak = ?20,
+                 rg_album_gain = ?21, rg_album_peak = ?22, art_id = ?23,
+                 source_kind = 'gdrive', remote_file_id = ?24, remote_folder_id = ?25,
+                 remote_modified_time = ?26, remote_size = ?27,
+                 loudness_lufs = NULL, loudness_peak = NULL, album_lufs = NULL, album_peak = NULL
+                 WHERE id = ?28",
+            )?
+            .execute(params![
+                p.root_id,
+                key,
+                p.file.remote_modified_time,
+                size,
+                album_id,
+                title,
+                artist,
+                album_artist,
+                tags.compilation,
+                tags.track_no,
+                tags.disc_no,
+                tags.year,
+                tags.genre,
+                audio.codec.as_str(),
+                audio.rate,
+                audio.bits,
+                audio.channels,
+                audio.duration_ms as i64,
+                rg.track_gain,
+                rg.track_peak,
+                rg.album_gain,
+                rg.album_peak,
+                art_id,
+                p.file.remote_file_id,
+                p.file.remote_folder_id,
+                p.file.remote_modified_time,
+                size,
+                old.id,
+            ])?;
+            tx.prepare_cached("DELETE FROM track_artists WHERE track_id = ?1")?
+                .execute([old.id])?;
+            tx.prepare_cached("DELETE FROM track_search WHERE rowid = ?1")?
+                .execute([old.id])?;
+            old.id
+        }
+        None => tx
+            .prepare_cached(
+                "INSERT INTO tracks (root_id, path, mtime, size, album_id, title, artist,
+                 album_artist, compilation, track_no, disc_no, year, genre, codec, rate, bits,
+                 channels, duration_ms, rg_track_gain, rg_track_peak, rg_album_gain,
+                 rg_album_peak, art_id, added_at, source_kind, remote_file_id, remote_folder_id,
+                 remote_modified_time, remote_size)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, 'gdrive', ?25, ?26, ?27, ?28)
+                 RETURNING id",
+            )?
+            .query_row(
+                params![
+                    p.root_id,
+                    key,
+                    p.file.remote_modified_time,
+                    size,
+                    album_id,
+                    title,
+                    artist,
+                    album_artist,
+                    tags.compilation,
+                    tags.track_no,
+                    tags.disc_no,
+                    tags.year,
+                    tags.genre,
+                    audio.codec.as_str(),
+                    audio.rate,
+                    audio.bits,
+                    audio.channels,
+                    audio.duration_ms as i64,
+                    rg.track_gain,
+                    rg.track_peak,
+                    rg.album_gain,
+                    rg.album_peak,
+                    art_id,
+                    now,
+                    p.file.remote_file_id,
+                    p.file.remote_folder_id,
+                    p.file.remote_modified_time,
+                    size,
+                ],
+                |r| r.get(0),
+            )?,
+    };
+
+    for (role, names) in [(0, &tags.artists), (1, &tags.album_artists)] {
+        for (position, name) in names.iter().enumerate() {
+            let artist_id = artist_id(tx, name)?;
+            tx.prepare_cached(
+                "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role, position)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?
+            .execute(params![track_id, artist_id, role, position as i64])?;
+        }
+    }
+
+    let search_artists = tags
+        .artists
+        .iter()
+        .chain(&tags.album_artists)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" ");
+    tx.prepare_cached(
+        "INSERT INTO track_search (rowid, title, album, artist) VALUES (?1, ?2, ?3, ?4)",
+    )?
+    .execute(params![track_id, title, identity.title, search_artists])?;
+    Ok(album_id)
+}
+
 fn artist_id(tx: &Transaction, name: &str) -> Result<i64, LibraryError> {
     Ok(tx
         .prepare_cached(
@@ -893,5 +1221,102 @@ mod tests {
         assert_ne!(updated.album_id, old_album);
         assert_eq!(library.albums(AlbumSort::Artist).unwrap().len(), 1);
         assert!(library.album(old_album).unwrap().is_none());
+    }
+
+    #[test]
+    fn gdrive_sync_reconciles_added_unchanged_updated_and_removed_tracks() {
+        use crate::query::TrackSource;
+        use crate::tags::{AudioInfo, Codec, TrackTags};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut library =
+            Library::open(dir.path().join("library.db"), dir.path().join("art")).unwrap();
+        let root = library.add_gdrive_root("folder_1", "Hi-Res Drive").unwrap();
+        assert_eq!(root.folder_id, "folder_1");
+        // Local roots list stays isolated from Google Drive roots.
+        assert!(library.roots().unwrap().is_empty());
+        assert_eq!(library.gdrive_roots().unwrap().len(), 1);
+
+        let f1 = RemoteAudioFile {
+            virtual_path: PathBuf::from("gdrive://file_a/01 - Dawn.flac"),
+            grouping_path: PathBuf::from("gdrive://folder/folder_1/AlbumA/01 - Dawn.flac"),
+            remote_file_id: "file_a".into(),
+            remote_folder_id: "folder_1".into(),
+            remote_modified_time: 1000,
+            remote_size: 10_000,
+        };
+        let f2 = RemoteAudioFile {
+            virtual_path: PathBuf::from("gdrive://file_b/02 - Dusk.flac"),
+            grouping_path: PathBuf::from("gdrive://folder/folder_1/AlbumA/02 - Dusk.flac"),
+            remote_file_id: "file_b".into(),
+            remote_folder_id: "folder_1".into(),
+            remote_modified_time: 1000,
+            remote_size: 20_000,
+        };
+
+        let probe_calls = AtomicUsize::new(0);
+        let probe = |f: &RemoteAudioFile| -> Result<FileMeta, TagError> {
+            probe_calls.fetch_add(1, Ordering::SeqCst);
+            let title = if f.remote_file_id == "file_a" {
+                if f.remote_modified_time > 1000 {
+                    "Dawn (Remaster)"
+                } else {
+                    "Dawn"
+                }
+            } else {
+                "Dusk"
+            };
+            Ok(FileMeta {
+                tags: TrackTags {
+                    title: Some(title.into()),
+                    artists: vec!["Cloud Artist".into()],
+                    album: Some("Cloud Album".into()),
+                    album_artists: vec!["Cloud Artist".into()],
+                    ..Default::default()
+                },
+                audio: AudioInfo {
+                    codec: Codec::Flac,
+                    rate: 96_000,
+                    bits: Some(24),
+                    channels: 2,
+                    duration_ms: 180_000,
+                },
+            })
+        };
+
+        // 1. Initial sync adds both tracks.
+        let r1 = library
+            .sync_gdrive_folder("folder_1", &[f1.clone(), f2.clone()], &probe, &|_| {})
+            .unwrap();
+        assert_eq!((r1.added, r1.updated, r1.removed, r1.unchanged), (2, 0, 0, 0));
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 2);
+        let tracks = library.tracks().unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert!(tracks.iter().all(|t| t.source == TrackSource::Gdrive));
+        assert_eq!(tracks[0].remote_file_id.as_deref(), Some("file_a"));
+
+        // 2. Re-sync with f1 modified and f2 removed: f1 updated, f2 removed.
+        let mut f1_mod = f1.clone();
+        f1_mod.remote_modified_time = 2000;
+        let r2 = library
+            .sync_gdrive_folder("folder_1", &[f1_mod.clone()], &probe, &|_| {})
+            .unwrap();
+        assert_eq!((r2.added, r2.updated, r2.removed, r2.unchanged), (0, 1, 1, 0));
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 3);
+
+        // 3. Re-sync unchanged: 0 probes.
+        let r3 = library
+            .sync_gdrive_folder("folder_1", &[f1_mod], &probe, &|_| {})
+            .unwrap();
+        assert_eq!((r3.added, r3.updated, r3.removed, r3.unchanged), (0, 0, 0, 1));
+        assert_eq!(probe_calls.load(Ordering::SeqCst), 3);
+        let remaining = library.tracks().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].title, "Dawn (Remaster)");
+
+        // 4. Removing the Drive root removes all its tracks and empties the album.
+        assert!(library.remove_gdrive_root("folder_1").unwrap());
+        assert!(library.tracks().unwrap().is_empty());
+        assert!(library.albums(AlbumSort::Artist).unwrap().is_empty());
     }
 }

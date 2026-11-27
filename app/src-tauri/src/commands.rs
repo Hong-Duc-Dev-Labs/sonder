@@ -660,6 +660,11 @@ pub async fn track_tags(
     let Some(track) = lock(&state.library).track(track_id)? else {
         return Ok(None);
     };
+    if track.source == sonder_library::TrackSource::Gdrive {
+        return Err(AppError(
+            "Google Drive tracks are read-only and cannot be edited locally".into(),
+        ));
+    }
     let mut tags =
         tauri::async_runtime::spawn_blocking(move || sonder_library::read_file_tags(&track.path))
             .await??;
@@ -685,6 +690,11 @@ pub async fn track_update_tags(
     let Some(track) = lock(&state.library).track(track_id)? else {
         return Ok(None);
     };
+    if track.source == sonder_library::TrackSource::Gdrive {
+        return Err(AppError(
+            "Google Drive tracks are read-only and cannot be edited locally".into(),
+        ));
+    }
     let path = track.path;
     let library_edit: sonder_library::TagEdit = edit.try_into()?;
     tauri::async_runtime::spawn_blocking(move || sonder_library::write_file(&path, &library_edit))
@@ -763,6 +773,11 @@ pub async fn track_find_lyrics(
     let Some(track) = lock(&state.library).track(track_id)? else {
         return Ok(None);
     };
+    if track.source == sonder_library::TrackSource::Gdrive {
+        return Err(AppError(
+            "Google Drive tracks are read-only and cannot be edited locally".into(),
+        ));
+    }
     let query = sonder_lyrics::Query {
         title: query.title.trim().to_string(),
         artist: filled(&query.artist),
@@ -1065,10 +1080,14 @@ async fn load_lyrics_for(
     let online = lock(&state.settings).lyrics_online;
     let cache = sonder_lyrics::Cache::new(state.paths.lyrics.clone());
     let found = tauri::async_runtime::spawn_blocking(move || {
-        let embedded = sonder_library::read_file(&path)
-            .ok()
-            .and_then(|m| m.tags.lyrics);
-        let local = sonder_lyrics::local(&path, embedded.as_deref());
+        let local = if sonder_gdrive::is_gdrive_path(&path) {
+            None
+        } else {
+            let embedded = sonder_library::read_file(&path)
+                .ok()
+                .and_then(|m| m.tags.lyrics);
+            sonder_lyrics::local(&path, embedded.as_deref())
+        };
         sonder_lyrics::choose(local, || {
             // A cached answer is used even with lookups off: it sends nothing.
             if let Some(cached) = cache.get(&query) {
@@ -1388,6 +1407,11 @@ fn collect_one(path: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>,
 #[specta::specta]
 pub async fn reveal_in_folder(path: String) -> AppResult<()> {
     let target = PathBuf::from(&path);
+    if sonder_gdrive::is_gdrive_path(&target) {
+        return Err(AppError(
+            "Google Drive tracks do not have a local folder on disk".into(),
+        ));
+    }
     if !target.exists() {
         return Err(AppError(format!(
             "file does not exist: {}",

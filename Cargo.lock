@@ -4346,6 +4346,7 @@ dependencies = [
  "sonder-decode",
  "sonder-dsp",
  "sonder-engine",
+ "sonder-gdrive",
  "sonder-library",
  "sonder-lyrics",
  "sonder-metadata",
@@ -4419,6 +4420,22 @@ dependencies = [
  "sonder-decode",
  "sonder-dsp",
  "sonder-output",
+]
+
+[[package]]
+name = "sonder-gdrive"
+version = "0.1.5"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "getrandom 0.4.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "ureq",
+ "url",
 ]
 
 [[package]]

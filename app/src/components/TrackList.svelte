@@ -204,6 +204,11 @@
         {/if}
       </span>
       <span class="tags">
+        {#if track.source === "gdrive"}
+          <span class="cloud-badge" title={t("tracks.gdriveBadge")} aria-label={t("tracks.gdriveBadge")}>
+            <Icon name="cloud" size={13} />
+          </span>
+        {/if}
         <QualityBadge {track} />
         {#if key(track) !== common}
           <span class="badge" class:accent={isHiRes(track)}>{track.codec.toUpperCase()} {quality(track)}</span>
@@ -236,6 +241,17 @@
     padding: 6px;
     /* Concentric with the rows inside: their radius plus the padding between them. */
     border-radius: calc(var(--r-sm) + 6px);
+  }
+  .cloud-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: var(--r-pill);
+    background: var(--soft);
+    color: var(--ink-2);
+    border: 1px solid var(--hairline);
   }
   .disc {
     display: flex;

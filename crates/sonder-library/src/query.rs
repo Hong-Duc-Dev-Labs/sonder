@@ -37,6 +37,30 @@ pub struct AlbumSummary {
     pub added_at: i64,
 }
 
+/// Where a track's audio bytes live.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TrackSource {
+    #[default]
+    Local,
+    Gdrive,
+}
+
+impl TrackSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TrackSource::Local => "local",
+            TrackSource::Gdrive => "gdrive",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "gdrive" => TrackSource::Gdrive,
+            _ => TrackSource::Local,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
     pub id: i64,
@@ -60,6 +84,12 @@ pub struct Track {
     pub quality: Option<TrackQuality>,
     /// Whether this track's path is currently marked as favorite.
     pub favorite: bool,
+    /// Whether this track is local or streamed from Google Drive.
+    pub source: TrackSource,
+    /// Google Drive file ID when `source == TrackSource::Gdrive`.
+    pub remote_file_id: Option<String>,
+    /// Remote file size in bytes when `source == TrackSource::Gdrive`.
+    pub remote_size: Option<u64>,
 }
 
 /// Verdict and confidence words of a quality check, as `sonder-quality` names them.
@@ -112,7 +142,8 @@ macro_rules! track_columns {
         "t.id, t.path, t.title, t.artist, t.album_artist, t.album_id, a.title, t.track_no,
            t.disc_no, t.year, t.genre, t.codec, t.rate, t.bits, t.channels, t.duration_ms,
            t.rg_track_gain, t.rg_track_peak, t.rg_album_gain, t.rg_album_peak, art.hash,
-           art.colors, q.verdict, q.confidence, f.path IS NOT NULL"
+           art.colors, q.verdict, q.confidence, f.path IS NOT NULL,
+           t.source_kind, t.remote_file_id, t.remote_size"
     };
 }
 
@@ -130,7 +161,7 @@ macro_rules! track_from {
 pub(crate) const TRACK_COLUMNS: &str = track_columns!();
 pub(crate) const TRACK_FROM: &str = track_from!();
 /// Number of columns in [`TRACK_COLUMNS`].
-pub(crate) const TRACK_COLUMN_COUNT: usize = 25;
+pub(crate) const TRACK_COLUMN_COUNT: usize = 28;
 
 const TRACK_SELECT: &str = concat!("SELECT ", track_columns!(), " ", track_from!());
 
@@ -228,6 +259,9 @@ pub(crate) fn track_row(row: &Row) -> rusqlite::Result<Track> {
             _ => None,
         },
         favorite: row.get(24)?,
+        source: TrackSource::parse(&row.get::<_, String>(25)?),
+        remote_file_id: row.get(26)?,
+        remote_size: row.get::<_, Option<i64>>(27)?.map(|s| s.max(0) as u64),
     })
 }
 

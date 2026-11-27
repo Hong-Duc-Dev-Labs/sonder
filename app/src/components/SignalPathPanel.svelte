@@ -3,12 +3,12 @@
   // engine ran (named by the engine itself), then the device. Source and device are solid
   // nodes, stages hollow ones, joined by one line. The verdict up top says whether the device
   // receives the decoded samples unchanged, in words as well as colour.
-  import type { SignalPathInfo } from "../lib/bindings";
+  import type { SignalPathInfo, TrackSource } from "../lib/bindings";
   import { rate } from "../lib/format";
   import { t } from "../lib/i18n.svelte";
   import Icon from "./Icon.svelte";
 
-  let { path }: { path: SignalPathInfo } = $props();
+  let { path, sourceKind = "local" }: { path: SignalPathInfo; sourceKind?: TrackSource } = $props();
 
   let outputMode = $derived(
     path.mode === "dop" ? "DoP" : path.mode === "nativeDsd" ? t("path.nativeDsd") : "PCM",
@@ -28,7 +28,7 @@
 
   <ol class="chain">
     <li class="node end">
-      <span class="name">{t("path.source")}</span>
+      <span class="name">{sourceKind === "gdrive" ? t("path.sourceGdrive") : t("path.source")}</span>
       <span class="detail">{source}</span>
     </li>
     {#each path.stages as stage (stage.name + stage.detail)}

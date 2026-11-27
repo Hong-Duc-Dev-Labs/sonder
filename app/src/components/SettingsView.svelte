@@ -34,6 +34,7 @@
   import { rate } from "../lib/format";
   import { t } from "../lib/i18n.svelte";
   import Icon from "./Icon.svelte";
+  import GdriveSettingsSection from "./GdriveSettingsSection.svelte";
   import { rangeFill } from "../lib/rangeFill";
 
   let roots = $state<RootFolder[]>([]);
@@ -1233,6 +1234,8 @@
         {/if}
       </div>
     </section>
+
+    <GdriveSettingsSection />
 
     <section aria-labelledby="look-title">
       <div class="group-head"><h3 id="look-title">{t("settings.look.title")}</h3></div>

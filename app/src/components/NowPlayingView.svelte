@@ -844,7 +844,7 @@
   >
     {#if app.signalPathOpen && path}
       <div class="signal-modal-content">
-        <SignalPathPanel {path} />
+        <SignalPathPanel {path} sourceKind={app.current?.source ?? "local"} />
       </div>
     {/if}
   </dialog>

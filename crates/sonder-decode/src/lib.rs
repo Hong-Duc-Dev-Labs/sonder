@@ -7,11 +7,45 @@
 //! MSB-first bytes (eight 1-bit samples per channel per byte).
 
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 pub mod dsd;
 
 pub use dsd::{DSD_RATES, DsdDecoder, DsdFormat};
+
+/// A seekable, thread-safe byte stream that [`SourceDecoder`], [`Decoder`], and [`DsdDecoder`]
+/// can decode from (local files, in-memory buffers, HTTP Range-cached streams, etc.).
+pub trait ReadSeek: Read + Seek + Send + Sync {}
+impl<T: Read + Seek + Send + Sync> ReadSeek for T {}
+
+/// Adapts a [`ReadSeek`] stream to symphonia's [`symphonia::core::io::MediaSource`].
+struct StreamMediaSource {
+    inner: Box<dyn ReadSeek>,
+    byte_len: Option<u64>,
+}
+
+impl Read for StreamMediaSource {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl Seek for StreamMediaSource {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+impl symphonia::core::io::MediaSource for StreamMediaSource {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        self.byte_len
+    }
+}
 
 use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::audio::conv::ConvertibleSample;
@@ -76,10 +110,29 @@ impl SourceDecoder {
         Self::open_with(path.as_ref(), true)
     }
 
+    /// Opens any seekable byte stream, sniffing the container's magic before falling back to
+    /// symphonia.
+    pub fn open_source(
+        source: Box<dyn ReadSeek>,
+        byte_len: Option<u64>,
+        extension_hint: Option<&str>,
+    ) -> Result<Self, DecodeError> {
+        Self::open_source_with(source, byte_len, extension_hint, false)
+    }
+
+    /// Opens a seekable byte stream like [`open_source`](Self::open_source), with PCM opened
+    /// through [`Decoder::open_source_verifying`].
+    pub fn open_source_verifying(
+        source: Box<dyn ReadSeek>,
+        byte_len: Option<u64>,
+        extension_hint: Option<&str>,
+    ) -> Result<Self, DecodeError> {
+        Self::open_source_with(source, byte_len, extension_hint, true)
+    }
+
     fn open_with(path: &Path, verify: bool) -> Result<Self, DecodeError> {
         let mut magic = [0u8; 4];
         let head = {
-            use std::io::Read;
             File::open(path).and_then(|mut file| {
                 file.read_exact(&mut magic)?;
                 Ok(magic)
@@ -88,6 +141,30 @@ impl SourceDecoder {
         match head {
             Ok(m) if &m == b"DSD " || &m == b"FRM8" => Ok(Self::Dsd(DsdDecoder::open(path)?)),
             _ => Ok(Self::Pcm(Decoder::open_with(path, verify)?)),
+        }
+    }
+
+    fn open_source_with(
+        mut source: Box<dyn ReadSeek>,
+        byte_len: Option<u64>,
+        extension_hint: Option<&str>,
+        verify: bool,
+    ) -> Result<Self, DecodeError> {
+        let mut magic = [0u8; 4];
+        let is_dsd = match source.read_exact(&mut magic) {
+            Ok(()) => &magic == b"DSD " || &magic == b"FRM8",
+            Err(_) => false,
+        };
+        source.seek(SeekFrom::Start(0))?;
+        if is_dsd {
+            Ok(Self::Dsd(DsdDecoder::open_source(source, byte_len)?))
+        } else {
+            Ok(Self::Pcm(Decoder::open_source_with(
+                source,
+                byte_len,
+                extension_hint,
+                verify,
+            )?))
         }
     }
 
@@ -195,12 +272,52 @@ impl Decoder {
         Self::open_with(path.as_ref(), true)
     }
 
+    /// Opens any seekable byte stream and selects its default audio track.
+    pub fn open_source(
+        source: Box<dyn ReadSeek>,
+        byte_len: Option<u64>,
+        extension_hint: Option<&str>,
+    ) -> Result<Self, DecodeError> {
+        Self::open_source_with(source, byte_len, extension_hint, false)
+    }
+
+    /// Opens a seekable byte stream with codec checksum verification enabled.
+    pub fn open_source_verifying(
+        source: Box<dyn ReadSeek>,
+        byte_len: Option<u64>,
+        extension_hint: Option<&str>,
+    ) -> Result<Self, DecodeError> {
+        Self::open_source_with(source, byte_len, extension_hint, true)
+    }
+
     fn open_with(path: &Path, verify: bool) -> Result<Self, DecodeError> {
         let file = File::open(path)?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let ext = path.extension().and_then(|e| e.to_str());
+        Self::open_mss(mss, ext, verify)
+    }
 
+    fn open_source_with(
+        source: Box<dyn ReadSeek>,
+        byte_len: Option<u64>,
+        extension_hint: Option<&str>,
+        verify: bool,
+    ) -> Result<Self, DecodeError> {
+        let media = StreamMediaSource {
+            inner: source,
+            byte_len,
+        };
+        let mss = MediaSourceStream::new(Box::new(media), Default::default());
+        Self::open_mss(mss, extension_hint, verify)
+    }
+
+    fn open_mss(
+        mss: MediaSourceStream<'static>,
+        extension_hint: Option<&str>,
+        verify: bool,
+    ) -> Result<Self, DecodeError> {
         let mut hint = Hint::new();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if let Some(ext) = extension_hint {
             hint.with_extension(ext);
         }
 
@@ -516,5 +633,91 @@ mod tests {
         let mut p = params(CODEC_ID_ALAC);
         p.with_sample_format(SampleFormat::F32);
         assert!(is_float_source(&p));
+    }
+
+    #[test]
+    fn open_source_decodes_and_seeks_pcm_from_memory_cursor() {
+        let mut wav_bytes = Vec::new();
+        {
+            let spec = hound::WavSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut writer = hound::WavWriter::new(std::io::Cursor::new(&mut wav_bytes), spec).unwrap();
+            for i in 0..2048i16 {
+                writer.write_sample(i).unwrap();
+                writer.write_sample(-i).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+        let len = wav_bytes.len() as u64;
+        let mut dec = SourceDecoder::open_source(
+            Box::new(std::io::Cursor::new(wav_bytes)),
+            Some(len),
+            Some("wav"),
+        )
+        .unwrap();
+        assert_eq!(
+            dec.source_format(),
+            SourceFormat {
+                rate: 44_100,
+                bits: 16,
+                channels: 2,
+            }
+        );
+        dec.seek(100).unwrap();
+        let SourceDecoder::Pcm(ref mut pcm) = dec else {
+            panic!("expected PCM decoder");
+        };
+        let mut out = Vec::new();
+        let frames = pcm.next_i32(&mut out).unwrap();
+        assert!(frames > 0);
+        // Frame 100 was written as (100, -100) left-justified into i32.
+        assert_eq!(out[0], 100i32 << 16);
+        assert_eq!(out[1], (-100i32) << 16);
+    }
+
+    #[test]
+    fn open_source_decodes_and_seeks_dsf_from_memory_cursor() {
+        let mut dsf_bytes = Vec::new();
+        let left = [0x12u8, 0x34, 0x56, 0x78];
+        let right = [0x9Au8, 0xBC, 0xDE, 0xF0];
+        let data_len = 8u64;
+        dsf_bytes.extend_from_slice(b"DSD ");
+        dsf_bytes.extend_from_slice(&28u64.to_le_bytes());
+        dsf_bytes.extend_from_slice(&(28 + 52 + 12 + data_len).to_le_bytes());
+        dsf_bytes.extend_from_slice(&0u64.to_le_bytes());
+        dsf_bytes.extend_from_slice(b"fmt ");
+        dsf_bytes.extend_from_slice(&52u64.to_le_bytes());
+        dsf_bytes.extend_from_slice(&1u32.to_le_bytes());
+        dsf_bytes.extend_from_slice(&0u32.to_le_bytes());
+        dsf_bytes.extend_from_slice(&2u32.to_le_bytes());
+        dsf_bytes.extend_from_slice(&2u32.to_le_bytes());
+        dsf_bytes.extend_from_slice(&2_822_400u32.to_le_bytes());
+        dsf_bytes.extend_from_slice(&8u32.to_le_bytes()); // MSB-first
+        dsf_bytes.extend_from_slice(&(4u64 * 8).to_le_bytes());
+        dsf_bytes.extend_from_slice(&4u32.to_le_bytes());
+        dsf_bytes.extend_from_slice(&0u32.to_le_bytes());
+        dsf_bytes.extend_from_slice(b"data");
+        dsf_bytes.extend_from_slice(&(12 + data_len).to_le_bytes());
+        dsf_bytes.extend_from_slice(&left);
+        dsf_bytes.extend_from_slice(&right);
+
+        let len = dsf_bytes.len() as u64;
+        let mut dec = SourceDecoder::open_source(
+            Box::new(std::io::Cursor::new(dsf_bytes)),
+            Some(len),
+            Some("dsf"),
+        )
+        .unwrap();
+        dec.seek(2).unwrap();
+        let SourceDecoder::Dsd(ref mut dsd) = dec else {
+            panic!("expected DSD decoder");
+        };
+        let mut out = Vec::new();
+        assert_eq!(dsd.next_bytes(&mut out).unwrap(), 2);
+        assert_eq!(out, vec![0x56, 0xDE, 0x78, 0xF0]);
     }
 }

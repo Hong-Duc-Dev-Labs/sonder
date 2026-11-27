@@ -163,6 +163,11 @@ pub async fn check_track(app: &AppHandle, track_id: i64) -> AppResult<Report> {
     let subject = lock(&state.library)
         .quality_subject(track_id)?
         .ok_or_else(|| AppError("the track is no longer in the library".into()))?;
+    if sonder_gdrive::is_gdrive_path(&subject.path) {
+        return Err(AppError(
+            "Quality verification is only supported for local files".into(),
+        ));
+    }
     let cancel = state.quality.cancel_single.clone();
     cancel.store(false, Ordering::SeqCst);
     let app = app.clone();

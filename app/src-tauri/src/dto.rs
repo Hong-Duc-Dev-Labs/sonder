@@ -431,6 +431,24 @@ pub struct AlbumPage {
     pub albums: Vec<Album>,
 }
 
+/// Where a track's audio bytes live.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum TrackSource {
+    #[default]
+    Local,
+    Gdrive,
+}
+
+impl From<sonder_library::TrackSource> for TrackSource {
+    fn from(s: sonder_library::TrackSource) -> Self {
+        match s {
+            sonder_library::TrackSource::Local => TrackSource::Local,
+            sonder_library::TrackSource::Gdrive => TrackSource::Gdrive,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackItem {
@@ -456,6 +474,8 @@ pub struct TrackItem {
     pub quality: Option<QualityBadge>,
     /// Whether this track is marked as favorite.
     pub favorite: bool,
+    /// Whether this track is local or streamed from Google Drive.
+    pub source: TrackSource,
 }
 
 /// A track's cached quality verdict, for the badge in track lists.
@@ -494,6 +514,7 @@ impl From<Track> for TrackItem {
                 })
             }),
             favorite: t.favorite,
+            source: t.source.into(),
         }
     }
 }
@@ -893,6 +914,7 @@ pub struct QueueItem {
     pub art: Option<String>,
     pub art_colors: Vec<String>,
     pub duration_ms: u64,
+    pub source: TrackSource,
 }
 
 impl QueueItem {
@@ -908,6 +930,7 @@ impl QueueItem {
             art: t.art.clone(),
             art_colors: t.art_colors.clone(),
             duration_ms: t.duration_ms,
+            source: t.source,
         }
     }
 
@@ -949,6 +972,11 @@ impl QueueItem {
             art: None,
             art_colors: Vec::new(),
             duration_ms,
+            source: if sonder_gdrive::is_gdrive_path(path) {
+                TrackSource::Gdrive
+            } else {
+                TrackSource::Local
+            },
         }
     }
 }

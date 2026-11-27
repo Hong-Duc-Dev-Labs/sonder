@@ -1430,6 +1430,16 @@
             {/each}
           </div>
         </div>
+        <div class="row">
+          <span class="icon"><Icon name="disc" size={18} /></span>
+          <span class="info">
+            <span class="name">{t("settings.welcome.name")}</span>
+            <span class="dim small">{t("settings.welcome.hint")}</span>
+          </span>
+          <button class="btn small" onclick={() => app.openWelcomeSetup()}>
+            {t("settings.welcome.run")}
+          </button>
+        </div>
       </div>
     </section>
   </div>

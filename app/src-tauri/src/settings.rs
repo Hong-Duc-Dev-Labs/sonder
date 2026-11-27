@@ -239,6 +239,8 @@ pub struct Settings {
     /// Look up lyrics online (title, artist, album and length are sent) when a track has
     /// none of its own.
     pub lyrics_online: bool,
+    /// Whether the first-run welcome setup wizard has been completed or skipped.
+    pub onboarding_completed: bool,
     /// Look for a newer release on GitHub when the app starts.
     pub update_check: bool,
     /// Closing the main window while a track is loaded shows the mini player instead of
@@ -287,6 +289,7 @@ impl Default for Settings {
             glass: GlassQuality::default(),
             language: LanguageSetting::default(),
             lyrics_online: true,
+            onboarding_completed: false,
             update_check: true,
             mini_player: true,
             dsd_modes: BTreeMap::new(),
@@ -395,6 +398,17 @@ impl Settings {
     pub fn apply_share_mode(&self, player: &sonder_engine::Player) {
         player.set_share_mode(self.output_mode.into());
     }
+
+    /// Migrates existing users upgrading from versions before the welcome wizard: if onboarding
+    /// has not been recorded yet and the user already has music sources configured, mark it
+    /// completed and return `true` so callers can persist the migration.
+    pub fn migrate_onboarding_for_existing_user(&mut self, has_existing_sources: bool) -> bool {
+        if !self.onboarding_completed && has_existing_sources {
+            self.onboarding_completed = true;
+            return true;
+        }
+        false
+    }
 }
 
 pub struct SettingsStore {
@@ -499,6 +513,33 @@ mod tests {
         assert_eq!(loaded.output_device, None);
         assert!(loaded.dsd_modes.is_empty());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn onboarding_defaults_false_round_trips_and_migrates_existing_users() {
+        let fresh = Settings::default();
+        assert!(!fresh.onboarding_completed);
+
+        // Existing settings.toml from v0.1.6 without onboardingCompleted defaults to false.
+        let legacy: Settings = toml::from_str("language = \"vi\"\n").unwrap();
+        assert!(!legacy.onboarding_completed);
+
+        // Fresh install with no music sources stays uncompleted.
+        let mut no_sources = legacy.clone();
+        assert!(!no_sources.migrate_onboarding_for_existing_user(false));
+        assert!(!no_sources.onboarding_completed);
+
+        // Upgrading user with existing music sources is migrated and returns true once.
+        let mut with_sources = legacy;
+        assert!(with_sources.migrate_onboarding_for_existing_user(true));
+        assert!(with_sources.onboarding_completed);
+        assert!(!with_sources.migrate_onboarding_for_existing_user(true));
+
+        // Explicit onboardingCompleted = true round-trips via TOML.
+        let encoded = toml::to_string_pretty(&with_sources).unwrap();
+        assert!(encoded.contains("onboardingCompleted = true"));
+        let decoded: Settings = toml::from_str(&encoded).unwrap();
+        assert!(decoded.onboarding_completed);
     }
 }
 

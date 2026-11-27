@@ -927,6 +927,8 @@ export type Settings = {
 	 *  none of its own.
 	 */
 	lyricsOnline?: boolean,
+	/**  Whether the first-run welcome setup wizard has been completed or skipped. */
+	onboardingCompleted?: boolean,
 	/**  Look for a newer release on GitHub when the app starts. */
 	updateCheck?: boolean,
 	/**

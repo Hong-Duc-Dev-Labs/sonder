@@ -771,4 +771,55 @@ export const vi: Record<MessageKey, Message> = {
   "settings.gdrive.cacheCleared": "Đã xoá bộ đệm Google Drive.",
   "tracks.gdriveBadge": "Google Drive",
   "path.sourceGdrive": "Google Drive (HTTP Range)",
+
+  // settings: welcome setup
+  "settings.welcome.name": "Thiết lập ban đầu",
+  "settings.welcome.hint": "Mở lại hướng dẫn thiết lập ngôn ngữ, nguồn nhạc, đầu ra âm thanh và lời bài hát.",
+  "settings.welcome.run": "Chạy lại thiết lập ban đầu",
+
+  // welcome wizard
+  "welcome.aria": "Thiết lập ban đầu",
+  "welcome.skip": "Bỏ qua",
+  "welcome.back": "Quay lại",
+  "welcome.next": "Tiếp theo",
+  "welcome.startListening": "Bắt đầu nghe nhạc",
+  "welcome.stepProgress": "Bước {current} / {total}",
+  "welcome.step.welcome": "Chào mừng",
+  "welcome.step.sources": "Nguồn nhạc",
+  "welcome.step.audio": "Âm thanh",
+  "welcome.step.finish": "Hoàn tất",
+  "welcome.s1.greeting": "Chào mừng đến với Sonder",
+  "welcome.s1.subtitle": "Nghe nhạc lossless & DSD nguyên bản bit-perfect, tuỳ chỉnh theo cách của bạn.",
+  "welcome.s1.appearance": "Giao diện & chuyển động",
+  "welcome.s2.title": "Thêm nguồn nhạc",
+  "welcome.s2.subtitle":
+    "Chọn thư mục trên máy hoặc dán liên kết Google Drive chia sẻ công khai. Cả hai đều tuỳ chọn — bạn có thể thêm hoặc thay đổi bất cứ lúc nào trong Cài đặt.",
+  "welcome.s2.localTitle": "Thư mục nhạc trên máy",
+  "welcome.s2.localEmpty": "Chưa thêm thư mục nào.",
+  "welcome.s2.gdriveTitle": "Google Drive (liên kết chia sẻ)",
+  "welcome.s2.gdriveEmpty": "Chưa thêm liên kết Google Drive nào.",
+  "welcome.s3.title": "Đầu ra âm thanh",
+  "welcome.s3.subtitle":
+    "Chọn DAC hoặc loa phát nhạc và cách Sonder chia sẻ thiết bị với các ứng dụng khác.",
+  "welcome.s3.modeTitle": "Chế độ phát",
+  "welcome.s3.exclusiveTitle": "Độc quyền · Bit-perfect",
+  "welcome.s3.exclusiveDesc":
+    "Điều khiển trực tiếp DAC, bỏ qua bộ trộn của hệ điều hành để giữ nguyên vẹn từng mẫu âm thanh.",
+  "welcome.s3.exclusiveBadge": "Bit-perfect",
+  "welcome.s3.sharedTitle": "Chế độ dùng chung",
+  "welcome.s3.sharedDesc":
+    "Phát qua bộ trộn của hệ điều hành để nghe song song với trình duyệt, cuộc gọi và âm thanh hệ thống.",
+  "welcome.s4.title": "Lời bài hát & sẵn sàng",
+  "welcome.s4.subtitle":
+    "Chọn xem Sonder có tự động tìm lời bài hát trực tuyến hay không, rồi kiểm tra lại thiết lập.",
+  "welcome.s4.privacyNote":
+    "Khi bật, chỉ gửi tên bài, nghệ sĩ, album và thời lượng. Lời nhúng trong tệp và tệp .lrc cục bộ luôn được ưu tiên trước.",
+  "welcome.s4.summaryTitle": "Tóm tắt thiết lập",
+  "welcome.s4.summaryLanguage": "Ngôn ngữ",
+  "welcome.s4.summarySources": "Nguồn nhạc",
+  "welcome.s4.summarySourcesNone": "Chưa thêm (có thể thêm sau trong Cài đặt)",
+  "welcome.s4.summaryLocalCount": "{count} thư mục cục bộ",
+  "welcome.s4.summaryDriveCount": "{count} liên kết Drive",
+  "welcome.s4.summaryAudio": "Đầu ra âm thanh",
+  "welcome.s4.summaryLyrics": "Lời bài hát trực tuyến",
 };

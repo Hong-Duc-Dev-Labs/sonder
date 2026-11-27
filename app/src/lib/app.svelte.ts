@@ -24,6 +24,7 @@ import { applyLanguage, t } from "./i18n.svelte";
 import { plural } from "./format";
 import { reducedMotion } from "./motion";
 import { isFlagged } from "./quality";
+import { markOnboardingCompleted, shouldShowWelcomeOnLaunch } from "./welcome";
 
 export type View =
   | { kind: "home" }
@@ -246,6 +247,8 @@ export class AppState {
   lyricsVersion = $state(0);
   /** The track whose tags the metadata editor is showing, if any. */
   editing = $state<TrackItem | null>(null);
+  /** Whether the fullscreen first-run Welcome Setup wizard is currently open. */
+  welcomeOpen = $state(false);
   /** What the quality page checks; it stays put while the user browses elsewhere. */
   qualityTarget = $state<QualityTarget | null>(null);
   /**
@@ -449,6 +452,19 @@ export class AppState {
   /** Closes the metadata editor. */
   closeEditor() {
     this.editing = null;
+  }
+
+  /** Opens the Welcome Setup wizard on demand (e.g. from Settings). */
+  openWelcomeSetup() {
+    this.welcomeOpen = true;
+  }
+
+  /** Closes the Welcome Setup wizard and persists onboarding completion. */
+  async completeWelcomeSetup() {
+    this.welcomeOpen = false;
+    if (!this.settings.onboardingCompleted) {
+      await this.saveSettings(markOnboardingCompleted(this.settings));
+    }
   }
 
   /** Opens the quality page on `track`. */
@@ -741,6 +757,7 @@ export class AppState {
     this.player = player;
     this.queue = queue;
     this.settings = settings;
+    this.welcomeOpen = shouldShowWelcomeOnLaunch(settings);
     this.favoritePaths = new Set(favPaths);
     applyLanguage(settings.language);
     if (scanning && this.scan.phase === "idle") this.scan = { ...this.scan, phase: "walking" };

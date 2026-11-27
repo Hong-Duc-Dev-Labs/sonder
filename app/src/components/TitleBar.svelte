@@ -24,10 +24,12 @@
 
   let {
     onNow = false,
+    onboarding = false,
     os = resolveDesktopOs(),
     onWindowStateChange,
   }: {
     onNow?: boolean;
+    onboarding?: boolean;
     os?: DesktopOs;
     onWindowStateChange?: (state: WindowChromeState) => void;
   } = $props();
@@ -216,6 +218,7 @@
   <div class="left" data-tauri-drag-region>
     <button
       class="brand-btn"
+      disabled={onboarding}
       aria-label={t("window.home")}
       title={t("nav.home")}
       onclick={() => app.go({ kind: "home" })}
@@ -229,7 +232,7 @@
       <span class="wordmark">Sonder</span>
     </button>
 
-    {#if !onNow && !app.narrow}
+    {#if !onNow && !onboarding && !app.narrow}
       <button
         class="tb-btn sidebar-toggle"
         class:collapsed={app.sidebarCollapsed}
@@ -242,19 +245,21 @@
       </button>
     {/if}
 
-    <button
-      class="tb-btn"
-      disabled={!canGoBack}
-      aria-label={backLabel}
-      title={backLabel}
-      onclick={() => app.back()}
-    >
-      <Icon name="back" size={16} />
-    </button>
+    {#if !onboarding}
+      <button
+        class="tb-btn"
+        disabled={!canGoBack}
+        aria-label={backLabel}
+        title={backLabel}
+        onclick={() => app.back()}
+      >
+        <Icon name="back" size={16} />
+      </button>
+    {/if}
   </div>
 
   <div class="center" data-tauri-drag-region>
-    {#if !onNow}
+    {#if !onNow && !onboarding}
       <button
         class="search-pill"
         class:active={app.view.kind === "search"}

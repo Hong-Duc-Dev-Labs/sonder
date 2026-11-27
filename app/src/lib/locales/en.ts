@@ -770,6 +770,56 @@ export const en = {
   "settings.gdrive.cacheCleared": "Google Drive stream cache cleared.",
   "tracks.gdriveBadge": "Google Drive",
   "path.sourceGdrive": "Google Drive (HTTP Range)",
+
+  // settings: welcome setup
+  "settings.welcome.name": "Welcome setup",
+  "settings.welcome.hint": "Re-open the setup guide for language, music sources, audio output, and lyrics.",
+  "settings.welcome.run": "Run Welcome Setup",
+
+  // welcome wizard
+  "welcome.aria": "Welcome setup",
+  "welcome.skip": "Skip",
+  "welcome.back": "Back",
+  "welcome.next": "Next",
+  "welcome.startListening": "Start listening",
+  "welcome.stepProgress": "Step {current} of {total}",
+  "welcome.step.welcome": "Welcome",
+  "welcome.step.sources": "Music",
+  "welcome.step.audio": "Audio",
+  "welcome.step.finish": "Ready",
+  "welcome.s1.greeting": "Welcome to Sonder",
+  "welcome.s1.subtitle": "Bit-perfect lossless & DSD listening, shaped to your setup.",
+  "welcome.s1.appearance": "Appearance & motion",
+  "welcome.s2.title": "Add your music",
+  "welcome.s2.subtitle":
+    "Choose local folders or paste a shared Google Drive link. Both are optional — you can add or change them anytime in Settings.",
+  "welcome.s2.localTitle": "Local music folders",
+  "welcome.s2.localEmpty": "No folders added yet.",
+  "welcome.s2.gdriveTitle": "Google Drive (shared link)",
+  "welcome.s2.gdriveEmpty": "No Google Drive links added yet.",
+  "welcome.s3.title": "Audio output",
+  "welcome.s3.subtitle":
+    "Pick the DAC or speakers Sonder plays to and choose how it shares the device with other apps.",
+  "welcome.s3.modeTitle": "Playback mode",
+  "welcome.s3.exclusiveTitle": "Exclusive · Bit-perfect",
+  "welcome.s3.exclusiveDesc":
+    "Takes direct control of your DAC and bypasses the OS mixer so every sample arrives untouched.",
+  "welcome.s3.exclusiveBadge": "Bit-perfect",
+  "welcome.s3.sharedTitle": "Shared mode",
+  "welcome.s3.sharedDesc": "Plays through the OS mixer alongside browsers, calls, and system sounds.",
+  "welcome.s4.title": "Lyrics & ready to play",
+  "welcome.s4.subtitle":
+    "Decide whether Sonder can look up missing lyrics online, then review your setup.",
+  "welcome.s4.privacyNote":
+    "Only track title, artist, album, and duration are sent when enabled. Embedded tags and local .lrc files always take priority.",
+  "welcome.s4.summaryTitle": "Your setup",
+  "welcome.s4.summaryLanguage": "Language",
+  "welcome.s4.summarySources": "Music sources",
+  "welcome.s4.summarySourcesNone": "None yet (add later in Settings)",
+  "welcome.s4.summaryLocalCount": { one: "{count} local folder", other: "{count} local folders" },
+  "welcome.s4.summaryDriveCount": { one: "{count} Drive link", other: "{count} Drive links" },
+  "welcome.s4.summaryAudio": "Audio output",
+  "welcome.s4.summaryLyrics": "Online lyrics",
 } satisfies Record<string, Message>;
 
 export type MessageKey = keyof typeof en;

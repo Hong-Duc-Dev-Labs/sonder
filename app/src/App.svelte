@@ -36,6 +36,7 @@
   import TitleBar from "./components/TitleBar.svelte";
   import TrackEditDialog from "./components/TrackEditDialog.svelte";
   import TransportBar from "./components/TransportBar.svelte";
+  import WelcomeWizard from "./components/WelcomeWizard.svelte";
 
   const os = resolveDesktopOs();
   let windowState = $state({ maximized: false, fullscreen: false, focused: true });
@@ -109,7 +110,7 @@
   function onKey(e: KeyboardEvent) {
     const target = e.target as HTMLElement | null;
     const action = resolveGlobalShortcut(e, os, {
-      modalOpen: Boolean(app.dialog || app.editing || app.signalPathOpen),
+      modalOpen: Boolean(app.dialog || app.editing || app.signalPathOpen || app.welcomeOpen),
       editable: Boolean(target?.closest("input, textarea, [contenteditable]")),
       ownsSpace: Boolean(target?.closest(OWNS_SPACE)),
       narrow: app.narrow,
@@ -213,7 +214,7 @@
     still={(app.settings.glass ?? "full") === "off"}
   />
 
-  <TitleBar {onNow} {os} onWindowStateChange={(s) => (windowState = s)} />
+  <TitleBar {onNow} {os} onboarding={app.welcomeOpen} onWindowStateChange={(s) => (windowState = s)} />
 
   <main class:full={onNow}>
     <div class="content">
@@ -356,6 +357,10 @@
 
   <Dialog />
   <TrackEditDialog />
+
+  {#if ready && app.welcomeOpen}
+    <WelcomeWizard />
+  {/if}
 
   {#if app.flight}
     {#key app.flight}
@@ -740,7 +745,7 @@
 
   .toasts {
     position: absolute;
-    z-index: 30;
+    z-index: 180;
     right: calc(var(--gutter) * 2 + var(--inset-right));
     bottom: calc(var(--gutter) * 2);
     display: flex;

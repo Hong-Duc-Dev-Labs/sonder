@@ -463,7 +463,7 @@ export class AppState {
   async completeWelcomeSetup() {
     this.welcomeOpen = false;
     if (!this.settings.onboardingCompleted) {
-      await this.saveSettings(markOnboardingCompleted(this.settings));
+      await this.patchSettings(markOnboardingCompleted);
     }
   }
 
@@ -806,14 +806,50 @@ export class AppState {
     await this.run(commands.libraryAnalyzeLoudness());
   }
 
+  /** Serializes settings writes and device switches so rapid toggles never race on stale snapshots. */
+  private settingsQueue: Promise<unknown> = Promise.resolve();
+  /** Monotonic counter so an older in-flight `settingsSet` response never overwrites newer edits. */
+  private settingsSeq = 0;
+
+  /**
+   * Applies a partial update to `this.settings` synchronously and persists it through the
+   * serialized settings queue, preventing concurrent writes from clobbering each other.
+   */
+  patchSettings(patch: Partial<Settings> | ((current: Settings) => Settings)): Promise<Settings | undefined> {
+    const next = typeof patch === "function" ? patch(this.settings) : { ...this.settings, ...patch };
+    return this.saveSettings(next);
+  }
+
+  /**
+   * Switches the active output device on the backend and keeps `this.settings.outputDevice`
+   * in sync so subsequent `settingsSet` calls never overwrite the chosen device.
+   */
+  selectDevice(id: string): Promise<boolean> {
+    const work = this.settingsQueue.then(async () => {
+      const ok = await this.run(commands.deviceSelect(id));
+      if (ok === undefined) return false;
+      this.settings = { ...this.settings, outputDevice: id };
+      return true;
+    });
+    this.settingsQueue = work.catch(() => {});
+    return work;
+  }
+
   /** Saves settings on the backend; the saved copy, or nothing when the save failed. */
-  async saveSettings(next: Settings) {
-    const saved = await this.run(commands.settingsSet(next));
-    if (saved) {
-      this.settings = saved;
-      applyLanguage(saved.language);
-    }
-    return saved;
+  saveSettings(next: Settings): Promise<Settings | undefined> {
+    const seq = ++this.settingsSeq;
+    this.settings = next;
+    applyLanguage(next.language);
+    const work = this.settingsQueue.then(async () => {
+      const saved = await this.run(commands.settingsSet(this.settings));
+      if (saved && seq === this.settingsSeq) {
+        this.settings = saved;
+        applyLanguage(saved.language);
+      }
+      return saved;
+    });
+    this.settingsQueue = work.catch(() => {});
+    return work;
   }
 }
 

@@ -70,12 +70,19 @@
   let ready = $state(false);
   let fileDropping = $state(false);
   onMount(() => {
-    app.init().then(() => (ready = true));
+    app
+      .init()
+      .catch(() => {})
+      .finally(() => (ready = true));
     let unlistenDrop: (() => void) | undefined;
     try {
       const win = getCurrentWebviewWindow();
       void win
         .onDragDropEvent((event) => {
+          if (app.welcomeOpen || app.dialog || app.editing) {
+            fileDropping = false;
+            return;
+          }
           if (event.payload.type === "enter" || event.payload.type === "over") {
             fileDropping = true;
           } else if (event.payload.type === "leave") {
@@ -214,9 +221,9 @@
     still={(app.settings.glass ?? "full") === "off"}
   />
 
-  <TitleBar {onNow} {os} onboarding={app.welcomeOpen} onWindowStateChange={(s) => (windowState = s)} />
+  <TitleBar {onNow} {os} onboarding={!ready || app.welcomeOpen} onWindowStateChange={(s) => (windowState = s)} />
 
-  <main class:full={onNow}>
+  <main class:full={onNow} inert={app.welcomeOpen}>
     <div class="content">
       {#if ready}
         <!-- Each view fades in on its own; the old one leaves at once, so nothing outside the
@@ -258,7 +265,7 @@
     </div>
   </main>
 
-  <nav class="sidebar glass" class:hidden={onNow} aria-label={t("nav.main")}>
+  <nav class="sidebar glass" class:hidden={onNow} inert={app.welcomeOpen} aria-label={t("nav.main")}>
     <!-- The middle scrolls on short windows; Now Playing and Settings stay put. -->
     <div class="nav-scroll">
       {#each top as item (item.view.kind)}{@render navButton(item)}{/each}
@@ -344,7 +351,7 @@
   </nav>
 
   {#if app.inspector}
-    <div class="inspector" class:docked={app.docked} transition:slidePanel>
+    <div class="inspector" class:docked={app.docked} inert={app.welcomeOpen} transition:slidePanel>
       {#if app.inspector === "queue"}
         <QueuePanel />
       {:else}
@@ -353,7 +360,9 @@
     </div>
   {/if}
 
-  <TransportBar hidden={onNow && !app.nowExiting} />
+  <div class="transport-host" inert={app.welcomeOpen}>
+    <TransportBar hidden={onNow && !app.nowExiting} />
+  </div>
 
   <Dialog />
   <TrackEditDialog />
@@ -741,6 +750,9 @@
   }
   .inspector.docked {
     bottom: var(--gutter);
+  }
+  .transport-host {
+    display: contents;
   }
 
   .toasts {

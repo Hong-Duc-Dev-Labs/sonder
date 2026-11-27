@@ -150,12 +150,17 @@ impl AppState {
     /// Opens the library, loads settings and starts the player on the chosen device.
     pub fn open(paths: AppPaths) -> AppResult<(Self, Receiver<PlayerEvent>)> {
         let store = SettingsStore::new(paths.settings.clone());
-        let mut settings = store.load();
+        let loaded = store.load_with_meta();
+        let mut settings = loaded.settings;
         let mut library = Library::open(&paths.db, &paths.art)?;
         if !settings.onboarding_completed {
             let has_local = library.roots().map(|r| !r.is_empty()).unwrap_or(false);
             let has_gdrive = library.gdrive_roots().map(|r| !r.is_empty()).unwrap_or(false);
-            if settings.migrate_onboarding_for_existing_user(has_local || has_gdrive) {
+            if settings.migrate_onboarding_for_existing_user(
+                loaded.file_existed,
+                loaded.had_onboarding_key,
+                has_local || has_gdrive,
+            ) {
                 let _ = store.save(&settings);
             }
         }

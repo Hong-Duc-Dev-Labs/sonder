@@ -216,21 +216,32 @@
   aria-label={t("window.titlebar")}
 >
   <div class="left" data-tauri-drag-region>
-    <button
-      class="brand-btn"
-      disabled={onboarding}
-      aria-label={t("window.home")}
-      title={t("nav.home")}
-      onclick={() => app.go({ kind: "home" })}
-    >
-      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="10.5" fill="#0b0b0d" stroke="currentColor" stroke-width="1.5" />
-        <circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width=".9" />
-        <circle cx="12" cy="12" r="3.6" fill="currentColor" />
-        <circle cx="12" cy="12" r="1" fill="#0b0b0d" />
-      </svg>
-      <span class="wordmark">Sonder</span>
-    </button>
+    {#if onboarding}
+      <div class="brand-static" data-tauri-drag-region>
+        <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="10.5" fill="#0b0b0d" stroke="currentColor" stroke-width="1.5" />
+          <circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width=".9" />
+          <circle cx="12" cy="12" r="3.6" fill="currentColor" />
+          <circle cx="12" cy="12" r="1" fill="#0b0b0d" />
+        </svg>
+        <span class="wordmark">Sonder</span>
+      </div>
+    {:else}
+      <button
+        class="brand-btn"
+        aria-label={t("window.home")}
+        title={t("nav.home")}
+        onclick={() => app.go({ kind: "home" })}
+      >
+        <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="10.5" fill="#0b0b0d" stroke="currentColor" stroke-width="1.5" />
+          <circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width=".9" />
+          <circle cx="12" cy="12" r="3.6" fill="currentColor" />
+          <circle cx="12" cy="12" r="1" fill="#0b0b0d" />
+        </svg>
+        <span class="wordmark">Sonder</span>
+      </button>
+    {/if}
 
     {#if !onNow && !onboarding && !app.narrow}
       <button
@@ -452,6 +463,7 @@
     opacity: 1;
   }
 
+  .brand-static,
   .brand-btn {
     display: inline-flex;
     align-items: center;
@@ -462,6 +474,8 @@
     border-radius: var(--r-pill);
     color: var(--ink);
     flex: none;
+  }
+  .brand-btn {
     transition:
       background var(--dur-fast) var(--ease-standard),
       transform var(--dur-med) var(--ease-spring);

@@ -820,6 +820,7 @@ export const en = {
   "welcome.s4.summaryDriveCount": { one: "{count} Drive link", other: "{count} Drive links" },
   "welcome.s4.summaryAudio": "Audio output",
   "welcome.s4.summaryLyrics": "Online lyrics",
+  "welcome.s4.systemDefault": "System default",
 } satisfies Record<string, Message>;
 
 export type MessageKey = keyof typeof en;

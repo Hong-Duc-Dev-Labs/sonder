@@ -85,8 +85,8 @@
   }
 
   async function selectDevice(id: string) {
-    await app.run(commands.deviceSelect(id));
-    if (devices) devices = devices.map((d) => ({ ...d, selected: d.id === id }));
+    const ok = await app.selectDevice(id);
+    if (ok && devices) devices = devices.map((d) => ({ ...d, selected: d.id === id }));
   }
 
   let scanning = $derived(app.scan.phase !== "idle");

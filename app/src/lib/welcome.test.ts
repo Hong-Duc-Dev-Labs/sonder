@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AppState } from "./app.svelte";
+import { commands, type Settings } from "./bindings";
 import {
   WELCOME_STEP_COUNT,
   WELCOME_STEPS,
@@ -9,6 +11,10 @@ import {
   prevStep,
   shouldShowWelcomeOnLaunch,
 } from "./welcome";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("welcome wizard navigation", () => {
   it("defines the 4 ordered onboarding steps", () => {
@@ -53,5 +59,75 @@ describe("welcome wizard persistence", () => {
     const updated = markOnboardingCompleted(initial);
     expect(updated).toEqual({ language: "vi", lyricsOnline: false, onboardingCompleted: true });
     expect(initial.onboardingCompleted).toBe(false);
+  });
+
+  it("preserves device selection across subsequent mode/lyrics/completion saves", async () => {
+    const state = new AppState();
+    state.settings = {
+      outputDevice: null,
+      outputMode: "exclusive",
+      lyricsOnline: true,
+      onboardingCompleted: false,
+    };
+    state.welcomeOpen = true;
+
+    const savedPayloads: Settings[] = [];
+    vi.spyOn(commands, "deviceSelect").mockResolvedValue(null);
+    vi.spyOn(commands, "settingsSet").mockImplementation(async (next) => {
+      savedPayloads.push({ ...next });
+      return { ...next };
+    });
+
+    const selected = await state.selectDevice("usb-dac-1");
+    expect(selected).toBe(true);
+    expect(state.settings.outputDevice).toBe("usb-dac-1");
+
+    await state.patchSettings({ outputMode: "shared" });
+    await state.completeWelcomeSetup();
+
+    expect(state.welcomeOpen).toBe(false);
+    expect(savedPayloads).toHaveLength(2);
+    expect(savedPayloads[0]).toMatchObject({
+      outputDevice: "usb-dac-1",
+      outputMode: "shared",
+      onboardingCompleted: false,
+    });
+    expect(savedPayloads[1]).toMatchObject({
+      outputDevice: "usb-dac-1",
+      outputMode: "shared",
+      onboardingCompleted: true,
+    });
+  });
+
+  it("serializes concurrent patchSettings and completeWelcomeSetup without clobbering fields", async () => {
+    const state = new AppState();
+    state.settings = {
+      lyricsOnline: true,
+      onboardingCompleted: false,
+    };
+    state.welcomeOpen = true;
+
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((r) => (releaseFirst = r));
+    const savedPayloads: Settings[] = [];
+
+    vi.spyOn(commands, "settingsSet").mockImplementation(async (next) => {
+      const snapshot = { ...next };
+      if (savedPayloads.length === 0) await firstGate;
+      savedPayloads.push(snapshot);
+      return snapshot;
+    });
+
+    const p1 = state.patchSettings({ lyricsOnline: false });
+    const p2 = state.completeWelcomeSetup();
+    releaseFirst();
+    await Promise.all([p1, p2]);
+
+    expect(state.settings.lyricsOnline).toBe(false);
+    expect(state.settings.onboardingCompleted).toBe(true);
+    expect(savedPayloads.at(-1)).toMatchObject({
+      lyricsOnline: false,
+      onboardingCompleted: true,
+    });
   });
 });

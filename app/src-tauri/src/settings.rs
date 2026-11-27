@@ -399,16 +399,36 @@ impl Settings {
         player.set_share_mode(self.output_mode.into());
     }
 
-    /// Migrates existing users upgrading from versions before the welcome wizard: if onboarding
-    /// has not been recorded yet and the user already has music sources configured, mark it
-    /// completed and return `true` so callers can persist the migration.
-    pub fn migrate_onboarding_for_existing_user(&mut self, has_existing_sources: bool) -> bool {
-        if !self.onboarding_completed && has_existing_sources {
+    /// Migrates existing users upgrading from versions before the welcome wizard:
+    /// - If onboarding is already completed, returns `false`.
+    /// - If `settings.toml` explicitly recorded `onboardingCompleted` (e.g. `false` saved during
+    ///   an unfinished first-run wizard), preserves it and returns `false` so adding a folder in
+    ///   Step 2 does not skip Steps 3–4 on relaunch.
+    /// - Otherwise, if an existing `settings.toml` was present or the library already has local
+    ///   or Google Drive sources, marks onboarding completed and returns `true`.
+    pub fn migrate_onboarding_for_existing_user(
+        &mut self,
+        file_existed: bool,
+        had_onboarding_key: bool,
+        has_existing_sources: bool,
+    ) -> bool {
+        if self.onboarding_completed || had_onboarding_key {
+            return false;
+        }
+        if file_existed || has_existing_sources {
             self.onboarding_completed = true;
             return true;
         }
         false
     }
+}
+
+/// Settings paired with on-disk presence metadata used for one-time upgrade migrations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedSettings {
+    pub settings: Settings,
+    pub file_existed: bool,
+    pub had_onboarding_key: bool,
 }
 
 pub struct SettingsStore {
@@ -420,24 +440,52 @@ impl SettingsStore {
         SettingsStore { path }
     }
 
+    /// Reads the settings along with whether the file existed and declared `onboardingCompleted`.
+    /// A missing file gives the defaults. A file that does not parse is moved aside (so the next
+    /// save does not destroy it) and the defaults are used.
+    pub fn load_with_meta(&self) -> LoadedSettings {
+        match fs::read_to_string(&self.path) {
+            Ok(text) => {
+                let had_onboarding_key = toml::from_str::<toml::Table>(&text)
+                    .ok()
+                    .is_some_and(|table| table.contains_key("onboardingCompleted"));
+                match toml::from_str::<Settings>(&text) {
+                    Ok(settings) => LoadedSettings {
+                        settings: settings.sanitized(),
+                        file_existed: true,
+                        had_onboarding_key,
+                    },
+                    Err(err) => {
+                        eprintln!("sonder: ignoring unreadable {}: {err}", self.path.display());
+                        let _ = fs::rename(&self.path, self.path.with_extension("toml.broken"));
+                        LoadedSettings {
+                            settings: Settings::default(),
+                            file_existed: false,
+                            had_onboarding_key: false,
+                        }
+                    }
+                }
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => LoadedSettings {
+                settings: Settings::default(),
+                file_existed: false,
+                had_onboarding_key: false,
+            },
+            Err(err) => {
+                eprintln!("sonder: cannot read {}: {err}", self.path.display());
+                LoadedSettings {
+                    settings: Settings::default(),
+                    file_existed: false,
+                    had_onboarding_key: false,
+                }
+            }
+        }
+    }
+
     /// Reads the settings; a missing file gives the defaults. A file that does not parse is
     /// moved aside (so the next save does not destroy it) and the defaults are used.
     pub fn load(&self) -> Settings {
-        match fs::read_to_string(&self.path) {
-            Ok(text) => match toml::from_str::<Settings>(&text) {
-                Ok(settings) => settings.sanitized(),
-                Err(err) => {
-                    eprintln!("sonder: ignoring unreadable {}: {err}", self.path.display());
-                    let _ = fs::rename(&self.path, self.path.with_extension("toml.broken"));
-                    Settings::default()
-                }
-            },
-            Err(err) if err.kind() == ErrorKind::NotFound => Settings::default(),
-            Err(err) => {
-                eprintln!("sonder: cannot read {}: {err}", self.path.display());
-                Settings::default()
-            }
-        }
+        self.load_with_meta().settings
     }
 
     /// Writes atomically: a crash mid-write leaves the previous file intact.
@@ -517,29 +565,69 @@ mod tests {
 
     #[test]
     fn onboarding_defaults_false_round_trips_and_migrates_existing_users() {
-        let fresh = Settings::default();
-        assert!(!fresh.onboarding_completed);
+        let dir = std::env::temp_dir().join(format!("sonder-onboarding-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let store = SettingsStore::new(dir.join("settings.toml"));
+        let _ = fs::remove_file(store.path());
 
-        // Existing settings.toml from v0.1.6 without onboardingCompleted defaults to false.
-        let legacy: Settings = toml::from_str("language = \"vi\"\n").unwrap();
-        assert!(!legacy.onboarding_completed);
+        // 1. Fresh install: no settings.toml and no music sources -> stays false.
+        let mut fresh = store.load_with_meta();
+        assert!(!fresh.file_existed);
+        assert!(!fresh.had_onboarding_key);
+        assert!(!fresh.settings.onboarding_completed);
+        assert!(!fresh.settings.migrate_onboarding_for_existing_user(
+            fresh.file_existed,
+            fresh.had_onboarding_key,
+            false
+        ));
+        assert!(!fresh.settings.onboarding_completed);
 
-        // Fresh install with no music sources stays uncompleted.
-        let mut no_sources = legacy.clone();
-        assert!(!no_sources.migrate_onboarding_for_existing_user(false));
-        assert!(!no_sources.onboarding_completed);
+        // 2. Existing user without settings.toml but with library roots -> migrates to true.
+        let mut roots_only = fresh.settings.clone();
+        assert!(roots_only.migrate_onboarding_for_existing_user(false, false, true));
+        assert!(roots_only.onboarding_completed);
 
-        // Upgrading user with existing music sources is migrated and returns true once.
-        let mut with_sources = legacy;
-        assert!(with_sources.migrate_onboarding_for_existing_user(true));
-        assert!(with_sources.onboarding_completed);
-        assert!(!with_sources.migrate_onboarding_for_existing_user(true));
+        // 3. Existing v0.1.6 user with settings.toml (no onboardingCompleted key) and no roots
+        //    -> migrates to true so they aren't forced through onboarding on upgrade.
+        fs::write(store.path(), "language = \"vi\"\n").unwrap();
+        let mut legacy = store.load_with_meta();
+        assert!(legacy.file_existed);
+        assert!(!legacy.had_onboarding_key);
+        assert!(!legacy.settings.onboarding_completed);
+        assert!(legacy.settings.migrate_onboarding_for_existing_user(
+            legacy.file_existed,
+            legacy.had_onboarding_key,
+            false
+        ));
+        assert!(legacy.settings.onboarding_completed);
+        assert!(!legacy.settings.migrate_onboarding_for_existing_user(true, false, true));
 
-        // Explicit onboardingCompleted = true round-trips via TOML.
-        let encoded = toml::to_string_pretty(&with_sources).unwrap();
-        assert!(encoded.contains("onboardingCompleted = true"));
-        let decoded: Settings = toml::from_str(&encoded).unwrap();
-        assert!(decoded.onboarding_completed);
+        // 4. Fresh user who interacted with Step 1 (persisted onboardingCompleted = false) and
+        //    added a folder in Step 2 before quitting -> must NOT auto-complete.
+        let incomplete = Settings {
+            language: LanguageSetting::En,
+            onboarding_completed: false,
+            ..Settings::default()
+        };
+        store.save(&incomplete).unwrap();
+        let mut resumed = store.load_with_meta();
+        assert!(resumed.file_existed);
+        assert!(resumed.had_onboarding_key);
+        assert!(!resumed.settings.onboarding_completed);
+        assert!(!resumed.settings.migrate_onboarding_for_existing_user(
+            resumed.file_existed,
+            resumed.had_onboarding_key,
+            true
+        ));
+        assert!(!resumed.settings.onboarding_completed);
+
+        // 5. Explicit onboardingCompleted = true round-trips via TOML.
+        store.save(&legacy.settings).unwrap();
+        let completed = store.load_with_meta();
+        assert!(completed.had_onboarding_key);
+        assert!(completed.settings.onboarding_completed);
+
+        let _ = fs::remove_dir_all(dir);
     }
 }
 

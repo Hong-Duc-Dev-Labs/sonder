@@ -822,4 +822,5 @@ export const vi: Record<MessageKey, Message> = {
   "welcome.s4.summaryDriveCount": "{count} liên kết Drive",
   "welcome.s4.summaryAudio": "Đầu ra âm thanh",
   "welcome.s4.summaryLyrics": "Lời bài hát trực tuyến",
+  "welcome.s4.systemDefault": "Mặc định hệ thống",
 };

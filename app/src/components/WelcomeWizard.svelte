@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { cubicOut } from "svelte/easing";
   import { app } from "../lib/app.svelte";
   import {
@@ -7,6 +7,7 @@
     events,
     type Device,
     type GdriveSyncedFolder,
+    type GdriveSyncPhase,
     type GlassQuality,
     type LanguageSetting,
     type OutputShareMode,
@@ -25,20 +26,33 @@
   } from "../lib/welcome";
   import Icon from "./Icon.svelte";
 
+  const FOCUSABLE_SELECTOR =
+    'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
+  let wizardEl: HTMLDivElement | undefined = $state();
   let step = $state(0);
   let highestVisited = $state(0);
   let direction = $state<1 | -1>(1);
   let finishing = $state(false);
+  let alive = true;
+  let previousFocus: HTMLElement | null = null;
 
   // Step 2: Music sources
   let roots = $state<RootFolder[]>([]);
   let addingFolder = $state(false);
+  let removingRoots = $state<Set<string>>(new Set());
   let gdriveFolders = $state<GdriveSyncedFolder[]>([]);
   let linkDraft = $state("");
   let addingLink = $state(false);
+  let removingGdrive = $state<Set<string>>(new Set());
+  let gdriveSyncPhase = $state<GdriveSyncPhase | "idle">("idle");
+  let gdriveSyncFolder = $state("");
+  let gdriveSyncDone = $state(0);
+  let gdriveSyncTotal = $state(0);
 
   // Step 3: Audio devices
   let devices = $state<Device[] | null>(null);
+  let devicesSeq = 0;
 
   let stepLabels = $derived([
     t("welcome.step.welcome"),
@@ -63,39 +77,90 @@
   let lyricsOnline = $derived(app.settings.lyricsOnline ?? true);
   let selectedDevice = $derived(devices?.find((d) => d.selected) ?? null);
   let scanning = $derived(app.scan.phase !== "idle");
+  let gdriveSyncText = $derived.by(() => {
+    if (gdriveSyncPhase === "listing") {
+      return t("settings.gdrive.syncListing", { folder: gdriveSyncFolder || "Google Drive" });
+    }
+    if (gdriveSyncPhase === "reading") {
+      return t("settings.gdrive.syncReading", {
+        folder: gdriveSyncFolder || "Google Drive",
+        done: gdriveSyncDone,
+        total: gdriveSyncTotal,
+      });
+    }
+    if (gdriveSyncPhase === "writing") return t("settings.gdrive.syncWriting");
+    return null;
+  });
+
+  // Focus the active step heading on mount and on every step change.
+  $effect(() => {
+    void step;
+    void tick().then(() => {
+      if (!alive) return;
+      wizardEl?.querySelector<HTMLElement>("[data-welcome-heading]")?.focus({ preventScroll: true });
+    });
+  });
 
   // Keep local folders in sync with library changes & scans.
   $effect(() => {
     void app.libraryVersion;
     void app.scan.phase;
     app.run(commands.libraryRoots()).then((r) => {
-      if (r) roots = r;
+      if (alive && r) roots = r;
     });
   });
 
   async function refreshGdriveFolders() {
     const folders = await app.run(commands.gdriveSyncedFolders());
-    if (folders) gdriveFolders = folders;
+    if (alive && folders) gdriveFolders = folders;
   }
 
   async function loadDevices() {
+    const seq = ++devicesSeq;
     devices = null;
-    devices = (await app.run(commands.devicesList())) ?? [];
+    const found = (await app.run(commands.devicesList())) ?? [];
+    if (alive && seq === devicesSeq) devices = found;
   }
 
   void refreshGdriveFolders();
   void loadDevices();
 
   const unlistenDevices = events.devicesChangedEvent.listen((e) => {
+    if (!alive) return;
+    devicesSeq++;
     devices = e.payload;
   });
-  const unlistenGdrive = events.gdriveSyncFinishedEvent.listen(() => {
+  const unlistenGdriveProgress = events.gdriveSyncProgressEvent.listen((e) => {
+    if (!alive) return;
+    gdriveSyncPhase = e.payload.phase;
+    gdriveSyncFolder = e.payload.folderName;
+    gdriveSyncDone = e.payload.done;
+    gdriveSyncTotal = e.payload.total;
+  });
+  const unlistenGdriveFinished = events.gdriveSyncFinishedEvent.listen(() => {
+    if (!alive) return;
+    gdriveSyncPhase = "idle";
     void refreshGdriveFolders();
   });
 
+  onMount(() => {
+    if (typeof document !== "undefined") {
+      previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+  });
+
   onDestroy(() => {
+    alive = false;
     unlistenDevices.then((f) => f());
-    unlistenGdrive.then((f) => f());
+    unlistenGdriveProgress.then((f) => f());
+    unlistenGdriveFinished.then((f) => f());
+    if (typeof document !== "undefined") {
+      const target = previousFocus?.isConnected
+        ? previousFocus
+        : document.querySelector<HTMLElement>("[data-view-heading]");
+      // Restore focus after `inert` is cleared on the underlying shell.
+      queueMicrotask(() => target?.focus({ preventScroll: true }));
+    }
   });
 
   function stepIn(_node: Element, { dir }: { dir: 1 | -1 }) {
@@ -105,6 +170,33 @@
       easing: cubicOut,
       css: (t: number, u: number) => `opacity: ${t}; transform: translateX(${dir * u * 18}px)`,
     };
+  }
+
+  function onKeyDown(e: KeyboardEvent) {
+    if (app.dialog) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      void complete();
+      return;
+    }
+    if (e.key === "Tab" && wizardEl) {
+      const focusable = [...wizardEl.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter(
+        (el) => el.offsetParent !== null,
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (!active || !wizardEl.contains(active) || active === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (!active || !wizardEl.contains(active) || active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
   }
 
   function goTo(target: number) {
@@ -130,20 +222,32 @@
     if (finishing) return;
     finishing = true;
     await app.completeWelcomeSetup();
-    finishing = false;
+    if (alive) finishing = false;
   }
 
   async function addLocalFolder() {
     if (addingFolder) return;
     addingFolder = true;
-    await app.run(commands.libraryAddRoot(false));
+    const picked = await app.run(commands.libraryAddRoot(false));
+    if (!alive) return;
     addingFolder = false;
-    roots = (await app.run(commands.libraryRoots())) ?? roots;
+    if (picked) {
+      const next = await app.run(commands.libraryRoots());
+      if (alive && next) roots = next;
+    }
   }
 
   async function removeLocalFolder(path: string) {
+    if (removingRoots.has(path)) return;
+    removingRoots = new Set([...removingRoots, path]);
     await app.run(commands.libraryRemoveRoot(path));
-    roots = (await app.run(commands.libraryRoots())) ?? roots;
+    if (!alive) return;
+    const next = await app.run(commands.libraryRoots());
+    if (!alive) return;
+    if (next) roots = next;
+    const remaining = new Set(removingRoots);
+    remaining.delete(path);
+    removingRoots = remaining;
   }
 
   async function addPublicLink(e?: SubmitEvent) {
@@ -152,6 +256,7 @@
     if (!raw || addingLink) return;
     addingLink = true;
     const added = await app.run(commands.gdriveAddPublicLink(raw));
+    if (!alive) return;
     addingLink = false;
     if (added) {
       linkDraft = "";
@@ -161,18 +266,27 @@
   }
 
   async function removeGdriveFolder(folderId: string) {
+    if (removingGdrive.has(folderId)) return;
+    removingGdrive = new Set([...removingGdrive, folderId]);
     await app.run(commands.gdriveRemoveFolder(folderId));
+    if (!alive) return;
     await refreshGdriveFolders();
+    if (!alive) return;
+    const remaining = new Set(removingGdrive);
+    remaining.delete(folderId);
+    removingGdrive = remaining;
   }
 
   async function selectDevice(id: string) {
-    await app.run(commands.deviceSelect(id));
-    if (devices) devices = devices.map((d) => ({ ...d, selected: d.id === id }));
+    const ok = await app.selectDevice(id);
+    if (alive && ok && devices) {
+      devices = devices.map((d) => ({ ...d, selected: d.id === id }));
+    }
   }
 
   function setOutputMode(mode: OutputShareMode) {
     if (mode !== outputMode) {
-      void app.saveSettings({ ...app.settings, outputMode: mode });
+      void app.patchSettings({ outputMode: mode });
     }
   }
 
@@ -201,14 +315,17 @@
   });
 
   let summaryAudio = $derived.by(() => {
-    const deviceName = selectedDevice?.name ?? t("settings.systemDefault");
+    const deviceName = selectedDevice?.name ?? t("welcome.s4.systemDefault");
     const modeLabel =
       outputMode === "exclusive" ? t("welcome.s3.exclusiveTitle") : t("welcome.s3.sharedTitle");
     return `${deviceName} — ${modeLabel}`;
   });
 </script>
 
+<svelte:window onkeydown={onKeyDown} />
+
 <div
+  bind:this={wizardEl}
   class="wizard"
   role="dialog"
   aria-modal="true"
@@ -229,6 +346,8 @@
             class:current
             class:completed
             disabled={!clickable && !current}
+            aria-label={stepLabels[i]}
+            title={stepLabels[i]}
             aria-current={current ? "step" : undefined}
             onclick={() => goTo(i)}
           >
@@ -268,7 +387,7 @@
                   <circle cx="32" cy="32" r="2.2" fill="#0b0b0d" />
                 </svg>
               </div>
-              <h1 class="greeting" data-welcome-heading>{t("welcome.s1.greeting")}</h1>
+              <h1 class="greeting" tabindex="-1" data-welcome-heading>{t("welcome.s1.greeting")}</h1>
               <p class="lead">{t("welcome.s1.subtitle")}</p>
             </div>
 
@@ -288,7 +407,7 @@
                         role="radio"
                         lang={language.value === "system" ? undefined : language.value}
                         aria-checked={(app.settings.language ?? "system") === language.value}
-                        onclick={() => app.saveSettings({ ...app.settings, language: language.value })}
+                        onclick={() => app.patchSettings({ language: language.value })}
                       >
                         {language.label}
                       </button>
@@ -312,7 +431,7 @@
                         class="chip"
                         role="radio"
                         aria-checked={(app.settings.glass ?? "full") === level.value}
-                        onclick={() => app.saveSettings({ ...app.settings, glass: level.value })}
+                        onclick={() => app.patchSettings({ glass: level.value })}
                       >
                         {level.label}
                       </button>
@@ -333,7 +452,7 @@
                         class="chip"
                         role="radio"
                         aria-checked={(app.settings.fogBackdrop ?? true) === on}
-                        onclick={() => app.saveSettings({ ...app.settings, fogBackdrop: on })}
+                        onclick={() => app.patchSettings({ fogBackdrop: on })}
                       >
                         {on ? t("common.on") : t("common.off")}
                       </button>
@@ -354,7 +473,7 @@
                         class="chip"
                         role="radio"
                         aria-checked={(app.settings.growFromCover ?? true) === on}
-                        onclick={() => app.saveSettings({ ...app.settings, growFromCover: on })}
+                        onclick={() => app.patchSettings({ growFromCover: on })}
                       >
                         {on ? t("common.on") : t("common.off")}
                       </button>
@@ -367,7 +486,7 @@
           {:else if step === 1}
             <!-- Step 2: Music Sources (Local & Google Drive) -->
             <div class="step-head">
-              <h1 data-welcome-heading>{t("welcome.s2.title")}</h1>
+              <h1 tabindex="-1" data-welcome-heading>{t("welcome.s2.title")}</h1>
               <p class="lead">{t("welcome.s2.subtitle")}</p>
             </div>
 
@@ -396,6 +515,7 @@
                     <button
                       type="button"
                       class="btn small"
+                      disabled={removingRoots.has(root.path)}
                       onclick={() => removeLocalFolder(root.path)}
                     >
                       {t("common.remove")}
@@ -456,6 +576,7 @@
                     <button
                       type="button"
                       class="btn small"
+                      disabled={removingGdrive.has(folder.folderId)}
                       onclick={() => removeGdriveFolder(folder.folderId)}
                     >
                       {t("common.remove")}
@@ -464,13 +585,20 @@
                 {:else}
                   <p class="dim small empty-pad">{t("welcome.s2.gdriveEmpty")}</p>
                 {/each}
+
+                {#if gdriveSyncText}
+                  <div class="scan-note" aria-live="polite">
+                    <span class="spinner" aria-hidden="true"></span>
+                    <span class="dim small">{gdriveSyncText}</span>
+                  </div>
+                {/if}
               </section>
             </div>
 
           {:else if step === 2}
             <!-- Step 3: Audio Output & Playback Mode -->
             <div class="step-head">
-              <h1 data-welcome-heading>{t("welcome.s3.title")}</h1>
+              <h1 tabindex="-1" data-welcome-heading>{t("welcome.s3.title")}</h1>
               <p class="lead">{t("welcome.s3.subtitle")}</p>
             </div>
 
@@ -558,7 +686,7 @@
           {:else}
             <!-- Step 4: Online Lyrics & Finish -->
             <div class="step-head">
-              <h1 data-welcome-heading>{t("welcome.s4.title")}</h1>
+              <h1 tabindex="-1" data-welcome-heading>{t("welcome.s4.title")}</h1>
               <p class="lead">{t("welcome.s4.subtitle")}</p>
             </div>
 
@@ -577,7 +705,7 @@
                         class="chip"
                         role="radio"
                         aria-checked={lyricsOnline === on}
-                        onclick={() => app.saveSettings({ ...app.settings, lyricsOnline: on })}
+                        onclick={() => app.patchSettings({ lyricsOnline: on })}
                       >
                         {on ? t("common.on") : t("common.off")}
                       </button>
@@ -772,6 +900,7 @@
   .wizard-body {
     flex: 1;
     min-height: 0;
+    overflow-x: hidden;
     padding: 22px 2px 18px;
   }
   .step-panel {
@@ -994,6 +1123,7 @@
     scrollbar-width: thin;
   }
   .row.choice {
+    position: relative;
     cursor: pointer;
     transition: background var(--dur-fast) var(--ease-standard);
   }
@@ -1002,6 +1132,10 @@
   }
   .row.choice.selected {
     background: var(--soft-active);
+  }
+  :global(:root:not([data-modality="pointer"])) .row.choice:focus-within {
+    outline: 2px solid var(--ink);
+    outline-offset: -2px;
   }
   .row.choice .check {
     opacity: 0;
@@ -1040,6 +1174,11 @@
   }
   .mode-card:active {
     transform: scale(0.985);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .mode-card:active {
+      transform: none;
+    }
   }
   .mode-card.selected {
     background: var(--soft-active);

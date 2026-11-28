@@ -4335,7 +4335,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-app"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
@@ -4366,7 +4366,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-autoeq"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "tempfile",
  "thiserror 2.0.21",
@@ -4375,7 +4375,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "clap",
@@ -4390,7 +4390,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-decode"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "hound",
  "symphonia",
@@ -4400,7 +4400,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-dsp"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "criterion",
  "hound",
@@ -4413,7 +4413,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-engine"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "crossbeam-channel",
  "hound",
@@ -4424,7 +4424,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-gdrive"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4440,7 +4440,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-library"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "crossbeam-channel",
  "hound",
@@ -4458,7 +4458,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-lyrics"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -4470,7 +4470,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-metadata"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -4479,7 +4479,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-output"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "alsa",
  "libc",
@@ -4494,7 +4494,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-quality"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "hound",
  "md-5",
@@ -4511,7 +4511,7 @@ dependencies = [
 
 [[package]]
 name = "sonder-verify"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "crossbeam-channel",
  "hound",
